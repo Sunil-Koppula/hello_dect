@@ -1,0 +1,25 @@
+/*
+ * Device-type selection pins (active-low, internal pull-up):
+ *   P0.21  P0.23  →  type
+ *     0      0       Gateway
+ *     0      1       Anchor
+ *     1      0       Sensor
+ *     1      1       (reserved, defaults to Sensor)
+ */
+/ {
+	chosen {
+		nordic,pm-ext-flash = &gd25wb256;
+	};
+
+	device_type_pins {
+		compatible = "gpio-keys";
+		devtype_pin0: devtype_pin0 {
+			gpios = <&gpio0 21 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			label = "Device type bit 0";
+		};
+		devtype_pin1: devtype_pin1 {
+			gpios = <&gpio0 23 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			label = "Device type bit 1";
+		};
+	};
+};
