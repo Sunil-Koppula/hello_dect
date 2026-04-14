@@ -23,3 +23,18 @@
 		};
 	};
 };
+
+/* I2C2: P0.30 = SDA, P0.31 = SCL (pinctrl already defined in board DTS). */
+&i2c2 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+
+	eeprom: eeprom@50 {
+		compatible = "atmel,at24";
+		reg = <0x50>;
+		size = <DT_SIZE_K(256)>;
+		pagesize = <256>;
+		address-width = <16>;
+		timeout = <10>;
+	};
+};

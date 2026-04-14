@@ -11,6 +11,7 @@
 #include "radio.h"
 #include "queue.h"
 #include "product_info.h"
+#include "mesh.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 
@@ -102,10 +103,7 @@ int main(void)
 
 		while (rx_count < MAX_PROCESS_PER_CYCLE &&
 		       rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
-			LOG_INF("From device %d (RSSI: %d.%d)",
-				rx_item.sender_id,
-				(rx_item.rssi_2 / 2),
-				(rx_item.rssi_2 & 0b1) * 5);
+			LOG_INF("From device %d (RSSI: %d.%d)", rx_item.sender_id, (rx_item.rssi_2 / 2), (rx_item.rssi_2 & 0b1) * 5);
 			rx_count++;
 		}
 

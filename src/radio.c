@@ -157,20 +157,20 @@ static void on_pcc(const struct nrf_modem_dect_phy_pcc_event *evt)
 {
 	last_sender_id = evt->hdr.hdr_type_1.transmitter_id_hi << 8 |
 			 evt->hdr.hdr_type_1.transmitter_id_lo;
-	LOG_INF("PCC from device %d (status: %d, handle: %d)",
+	LOG_DBG("PCC from device %d (status: %d, handle: %d)",
 		last_sender_id, evt->header_status, evt->handle);
 }
 
 /* Physical Control Channel CRC error notification. */
 static void on_pcc_crc_err(const struct nrf_modem_dect_phy_pcc_crc_failure_event *evt)
 {
-	LOG_DBG("pcc_crc_err cb time %"PRIu64"", modem_time);
+	LOG_WRN("pcc_crc_err cb time %"PRIu64"", modem_time);
 }
 
 /* Physical Data Channel reception notification. */
 static void on_pdc(const struct nrf_modem_dect_phy_pdc_event *evt)
 {
-	LOG_INF("PDC received, len %d, rssi_2 %d", evt->len, evt->rssi_2);
+	LOG_DBG("PDC received, len %d, rssi_2 %d", evt->len, evt->rssi_2);
 
 	struct rx_data_item item = {
 		.sender_id = last_sender_id,
