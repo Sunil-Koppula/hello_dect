@@ -4,10 +4,11 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <zephyr/kernel.h>
+#include "product_info.h"
 
 #define QUEUE_DATA_MAX 30
-#define RX_QUEUE_DEPTH 8
-#define TX_QUEUE_DEPTH 8
+#define QUEUE_DEPTH (MAX_SENSORS + MAX_ANCHORS)
+#define MAX_QUEUE_PROCESS_PER_CYCLE 4
 
 /* Priority levels. */
 enum queue_priority {

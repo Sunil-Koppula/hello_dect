@@ -25,7 +25,6 @@ static const struct gpio_dt_spec pin0 = GPIO_DT_SPEC_GET(DEVTYPE_PIN0_NODE, gpio
 static const struct gpio_dt_spec pin1 = GPIO_DT_SPEC_GET(DEVTYPE_PIN1_NODE, gpios);
 
 device_type_t PRODUCT_DEVICE_TYPE;
-uint16_t device_id;
 
 int product_info_init(void)
 {
@@ -76,11 +75,7 @@ int product_info_init(void)
 		break;
 	}
 
-	/* Read hardware device ID. */
-	hwinfo_get_device_id((void *)&device_id, sizeof(device_id));
-
-	LOG_INF("Device type: %s, Device ID: %d",
-		device_type_str(PRODUCT_DEVICE_TYPE), device_id);
+	LOG_INF("Device type: %s", device_type_str(PRODUCT_DEVICE_TYPE));
 
 	return 0;
 }

@@ -8,10 +8,12 @@
 #include <zephyr/logging/log.h>
 #include <nrf_modem_dect_phy.h>
 #include <modem/nrf_modem_lib.h>
+#include <zephyr/drivers/hwinfo.h>
 #include "radio.h"
 #include "queue.h"
 #include "product_info.h"
 #include "mesh.h"
+#include "storage.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 
@@ -28,6 +30,12 @@ int main(void)
 	err = product_info_init();
 	if (err) {
 		LOG_ERR("product_info_init failed, err %d", err);
+		return err;
+	}
+
+	err = storage_init();
+	if (err) {
+		LOG_ERR("storage_init failed, err %d", err);
 		return err;
 	}
 
@@ -76,16 +84,18 @@ int main(void)
 		return -EIO;
 	}
 
-	radio_set_device_id(device_id);
+	uint16_t hw_id;
 
-	LOG_INF("Dect NR+ PHY initialized, device ID: %d", device_id);
+	hwinfo_get_device_id((void *)&hw_id, sizeof(hw_id));
+	radio_set_device_id(hw_id);
+
+	LOG_INF("Dect NR+ PHY initialized, device ID: %d", hw_id);
 
 	err = nrf_modem_dect_phy_capability_get();
 	if (err) {
 		LOG_ERR("nrf_modem_dect_phy_capability_get failed, err %d", err);
 	}
 
-	#define MAX_PROCESS_PER_CYCLE 4
 
 	while (1) {
 		/* RX window. */
@@ -101,7 +111,7 @@ int main(void)
 		struct rx_data_item rx_item;
 		int rx_count = 0;
 
-		while (rx_count < MAX_PROCESS_PER_CYCLE &&
+		while (rx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
 		       rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
 			LOG_INF("From device %d (RSSI: %d.%d)", rx_item.sender_id, (rx_item.rssi_2 / 2), (rx_item.rssi_2 & 0b1) * 5);
 			rx_count++;
@@ -111,7 +121,7 @@ int main(void)
 		struct tx_data_item tx_item;
 		int tx_count = 0;
 
-		while (tx_count < MAX_PROCESS_PER_CYCLE &&
+		while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
 		       tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
 			err = transmit(tx_handle, tx_item.data, tx_item.data_len);
 			if (err) {

@@ -13,12 +13,12 @@
 LOG_MODULE_REGISTER(queue, CONFIG_RADIO_LOG_LEVEL);
 
 /* RX queues: high and low priority. */
-K_MSGQ_DEFINE(rx_msgq_hi, sizeof(struct rx_data_item), RX_QUEUE_DEPTH, 4);
-K_MSGQ_DEFINE(rx_msgq_lo, sizeof(struct rx_data_item), RX_QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(rx_msgq_hi, sizeof(struct rx_data_item), QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(rx_msgq_lo, sizeof(struct rx_data_item), QUEUE_DEPTH, 4);
 
 /* TX queues: high and low priority. */
-K_MSGQ_DEFINE(tx_msgq_hi, sizeof(struct tx_data_item), TX_QUEUE_DEPTH, 4);
-K_MSGQ_DEFINE(tx_msgq_lo, sizeof(struct tx_data_item), TX_QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(tx_msgq_hi, sizeof(struct tx_data_item), QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(tx_msgq_lo, sizeof(struct tx_data_item), QUEUE_DEPTH, 4);
 
 static struct k_msgq *rx_queues[QUEUE_PRIO_COUNT] = {
 	[QUEUE_PRIO_HIGH] = &rx_msgq_hi,

@@ -15,4 +15,5 @@ target_sources(app PRIVATE
   src/queue.c
   src/product_info.c
   src/mesh.c
+  src/storage.c
 )
