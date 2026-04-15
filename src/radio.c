@@ -179,7 +179,7 @@ static void on_pdc(const struct nrf_modem_dect_phy_pdc_event *evt)
 	};
 
 	memcpy(item.data, evt->data, item.data_len);
-	rx_queue_put(&item, QUEUE_PRIO_LOW);
+	rx_queue_put(&item, item.data[2]);
 }
 
 /* Physical Data Channel CRC error notification. */
@@ -275,6 +275,11 @@ void dect_phy_event_handler(const struct nrf_modem_dect_phy_event *evt)
 void radio_set_device_id(uint16_t id)
 {
 	device_id = id;
+}
+
+uint16_t radio_get_device_id(void)
+{
+	return device_id;
 }
 
 /* Send operation. */

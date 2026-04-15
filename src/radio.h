@@ -19,8 +19,9 @@ void dect_phy_event_handler(const struct nrf_modem_dect_phy_event *evt);
 /* PHY config parameters */
 extern struct nrf_modem_dect_phy_config_params dect_phy_config_params;
 
-/* Set the device ID used in TX headers. */
+/* Set/get the 16-bit short device ID used in TX headers. */
 void radio_set_device_id(uint16_t id);
+uint16_t radio_get_device_id(void);
 
 /* Transmit and receive functions. */
 int transmit(uint32_t handle, void *data, size_t data_len);

@@ -1,7 +1,7 @@
 /*
  * EEPROM storage for mesh network device tables.
  *
- * Partition 1 (0x00000): Infrastructure devices — Gateway + Anchor
+ * Partition 1 (0x00000): Infrastructure devices — Gateway + Anchor + Sensor
  * Partition 2 (0x01000): Connected sensors     — Gateway + Anchor
  * Partition 3 (0x02000): Mesh network table    — Gateway only
  */

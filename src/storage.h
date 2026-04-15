@@ -8,7 +8,7 @@
 /*
  * EEPROM partition layout (M24M02 — 256KB):
  *
- * Partition 1: Connected infrastructure (Gateway/Anchors)
+ * Partition 1: Connected infrastructure (Gateway/Anchors/Sensors)
  *   Offset 0x00000, 4KB — stored by Gateway + Anchor
  *
  * Partition 2: Connected sensors
@@ -37,9 +37,9 @@
 #define STORAGE_MAGIC_1       0xC7
 
 /* Max entries per partition. */
-#define STORAGE_PART1_MAX_ENTRIES ((STORAGE_PART1_SIZE - STORAGE_HEADER_SIZE) / sizeof(infra_entry_t))
-#define STORAGE_PART2_MAX_ENTRIES ((STORAGE_PART2_SIZE - STORAGE_HEADER_SIZE) / sizeof(sensor_entry_t))
-#define STORAGE_PART3_MAX_ENTRIES ((STORAGE_PART3_SIZE - STORAGE_HEADER_SIZE) / sizeof(mesh_entry_t))
+#define STORAGE_PART1_MAX_ENTRIES 8
+#define STORAGE_PART2_MAX_ENTRIES 128
+#define STORAGE_PART3_MAX_ENTRIES 1024
 
 /*
  * Partition 1 entry: Connected infrastructure devices (Gateway/Anchors).
@@ -49,6 +49,7 @@ typedef struct {
 	uint8_t  device_type;      /* device_type_t */
 	uint16_t device_id;        /* short device ID */
 	uint8_t  hop_num;          /* hop count from gateway */
+	uint16_t rssi_2;           /* RSSI */
 } __attribute__((packed)) infra_entry_t;
 
 /*

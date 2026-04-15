@@ -6,7 +6,6 @@
 #define PROTOCOL_H
 
 #include <stdint.h>
-#include "product_info.h"
 
 /* Device Type */
 typedef enum {
@@ -24,6 +23,10 @@ typedef enum {
 	PACKET_PAIR_CONFIRM  		= 0x03,
 	PACKET_PAIR_ACK       		= 0x04,
 } packet_type_t;
+
+/* Packet Priority Levels */
+#define PACKET_PRIORITY_HIGH    0x00
+#define PACKET_PRIORITY_LOW     0x01
 
 /* General Status Codes — unified across all packet types */
 #define STATUS_SUCCESS                  0x00
@@ -47,6 +50,7 @@ typedef enum {
 typedef struct {
 	uint8_t packet_type;        /* packet_type_t */
 	uint8_t device_type;        /* device_type_t */
+	uint8_t priority;     		/* packet_priority_t */
 	uint32_t random_num;
 } __attribute__((packed)) pair_request_t;
 
@@ -56,7 +60,8 @@ typedef struct {
 typedef struct {
 	uint8_t packet_type;        /* packet_type_t */
 	uint8_t device_type;        /* device_type_t */
-	uint16_t device_id;     /* requester's ID (unicast target) */
+	uint8_t priority;     		/* packet_priority_t */
+	uint16_t device_id;     	/* requester's ID (unicast target) */
 	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
 	uint32_t hash;
 	uint8_t hop_num;
@@ -66,7 +71,8 @@ typedef struct {
 typedef struct {
 	uint8_t packet_type;        /* packet_type_t */
 	uint8_t device_type;        /* device_type_t */
-	uint16_t device_id;     /* responder's ID (unicast target) */
+	uint8_t priority;     		/* packet_priority_t */
+	uint16_t device_id;     	/* responder's ID (unicast target) */
 	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
 	uint16_t version;
 } __attribute__((packed)) pair_confirm_t;
@@ -77,7 +83,8 @@ typedef struct {
 typedef struct {
 	uint8_t packet_type;        /* packet_type_t */
 	uint8_t device_type;        /* device_type_t */
-	uint16_t device_id;     /* responder's ID (unicast target) */
+	uint8_t priority;     		/* packet_priority_t */
+	uint16_t device_id;     	/* responder's ID (unicast target) */
 	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
 	uint16_t version;
 } __attribute__((packed)) pair_ack_t;

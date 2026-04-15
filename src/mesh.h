@@ -11,7 +11,7 @@
 #include "protocol.h"
 
 /* TX helpers */
-int send_pair_request(uint32_t handle, uint32_t random_num);
+int send_pair_request(uint32_t handle);
 int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t status, uint32_t hash);
 int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t status);
 int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t status);

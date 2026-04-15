@@ -10,10 +10,11 @@
 #include <modem/nrf_modem_lib.h>
 #include <zephyr/drivers/hwinfo.h>
 #include "radio.h"
-#include "queue.h"
 #include "product_info.h"
-#include "mesh.h"
 #include "storage.h"
+#include "gateway.h"
+#include "anchor.h"
+#include "sensor.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 
@@ -22,8 +23,6 @@ BUILD_ASSERT(CONFIG_CARRIER, "Carrier must be configured according to local regu
 int main(void)
 {
 	int err;
-	uint32_t tx_handle = 0;
-	uint32_t rx_handle = 1;
 
 	LOG_INF("Dect NR+ PHY mesh started");
 
@@ -96,41 +95,24 @@ int main(void)
 		LOG_ERR("nrf_modem_dect_phy_capability_get failed, err %d", err);
 	}
 
+	//Testing Purpose Only, to be removed
+	storage_infra_clear();
+	storage_sensor_clear();
+	storage_mesh_clear();
 
-	while (1) {
-		/* RX window. */
-		err = receive(rx_handle, 30);
-		if (err) {
-			LOG_ERR("Reception failed, err %d", err);
-			return err;
-		}
-
-		k_sem_take(&operation_sem, K_FOREVER);
-
-		/* Process up to 4 received messages per cycle. */
-		struct rx_data_item rx_item;
-		int rx_count = 0;
-
-		while (rx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-		       rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
-			LOG_INF("From device %d (RSSI: %d.%d)", rx_item.sender_id, (rx_item.rssi_2 / 2), (rx_item.rssi_2 & 0b1) * 5);
-			rx_count++;
-		}
-
-		/* Transmit up to 4 queued packets per cycle (high priority first). */
-		struct tx_data_item tx_item;
-		int tx_count = 0;
-
-		while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-		       tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
-			err = transmit(tx_handle, tx_item.data, tx_item.data_len);
-			if (err) {
-				LOG_ERR("TX queue transmit failed, err %d", err);
-				break;
-			}
-			k_sem_take(&operation_sem, K_FOREVER);
-			tx_count++;
-		}
+	switch (PRODUCT_DEVICE_TYPE) {
+	case DEVICE_TYPE_GATEWAY:
+		gateway_main();
+		break;
+	case DEVICE_TYPE_ANCHOR:
+		anchor_main();
+		break;
+	case DEVICE_TYPE_SENSOR:
+		sensor_main();
+		break;
+	default:
+		LOG_ERR("Unable to detect device type");
+		break;
 	}
 
 	return 0;

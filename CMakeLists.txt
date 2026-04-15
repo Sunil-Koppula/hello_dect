@@ -16,4 +16,9 @@ target_sources(app PRIVATE
   src/product_info.c
   src/mesh.c
   src/storage.c
+  src/sensor.c
+  src/gateway.c
+  src/anchor.c
+  src/timeout.c
+  src/tracker.c
 )
