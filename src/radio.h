@@ -23,8 +23,9 @@ extern struct nrf_modem_dect_phy_config_params dect_phy_config_params;
 void radio_set_device_id(uint16_t id);
 uint16_t radio_get_device_id(void);
 
-/* Transmit and receive functions. */
-int transmit(uint32_t handle, void *data, size_t data_len);
+/* Transmit and receive functions.
+ * packet_length: number of subslots (1–15). Use 0 for auto-calc from data_len. */
+int transmit(uint32_t handle, void *data, size_t data_len, uint8_t packet_length);
 int receive(uint32_t handle, uint32_t duration_ms);
 
 #endif /* RADIO_H */

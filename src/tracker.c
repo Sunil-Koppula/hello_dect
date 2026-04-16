@@ -20,7 +20,7 @@ void tracker_init(void)
 	}
 }
 
-int tracker_add(uint16_t device_id, uint16_t tracking_id,
+int tracker_add(uint16_t device_id, uint8_t tracking_id,
 		uint32_t timeout_ms, uint8_t max_retries)
 {
 	for (int i = 0; i < TRACKER_MAX_ENTRIES; i++) {
@@ -49,7 +49,7 @@ int tracker_find_by_device(uint16_t device_id)
 	return -1;
 }
 
-int tracker_find_by_tracking_id(uint16_t tracking_id)
+int tracker_find_by_tracking_id(uint8_t tracking_id)
 {
 	for (int i = 0; i < TRACKER_MAX_ENTRIES; i++) {
 		if (pool[i].active && pool[i].tracking_id == tracking_id) {

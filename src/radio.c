@@ -283,14 +283,18 @@ uint16_t radio_get_device_id(void)
 }
 
 /* Send operation. */
-int transmit(uint32_t handle, void *data, size_t data_len)
+int transmit(uint32_t handle, void *data, size_t data_len, uint8_t packet_length)
 {
 	int err;
+
+	if (packet_length == 0 || packet_length > 15) {
+		packet_length = 1;
+	}
 
 	struct phy_ctrl_field_common header = {
 		.header_format = 0x0,
 		.packet_length_type = 0x0,
-		.packet_length = 0x01,
+		.packet_length = packet_length,
 		.short_network_id = (CONFIG_NETWORK_ID & 0xff),
 		.transmitter_id_hi = (device_id >> 8),
 		.transmitter_id_lo = (device_id & 0xff),

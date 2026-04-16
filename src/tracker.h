@@ -11,7 +11,7 @@
 /* Tracked device entry. */
 struct data_tracker {
 	uint16_t device_id;
-	uint16_t tracking_id;
+	uint8_t tracking_id;
 	struct nbtimeout timeout;
 	bool active;
 };
@@ -20,14 +20,14 @@ struct data_tracker {
 void tracker_init(void);
 
 /* Add a new tracked entry. Returns index on success, -1 if pool full. */
-int tracker_add(uint16_t device_id, uint16_t tracking_id,
+int tracker_add(uint16_t device_id, uint8_t tracking_id,
 		uint32_t timeout_ms, uint8_t max_retries);
 
 /* Find entry by device ID. Returns index, or -1 if not found. */
 int tracker_find_by_device(uint16_t device_id);
 
 /* Find entry by tracking ID. Returns index, or -1 if not found. */
-int tracker_find_by_tracking_id(uint16_t tracking_id);
+int tracker_find_by_tracking_id(uint8_t tracking_id);
 
 /* Get entry by index. Returns NULL if index invalid or inactive. */
 struct data_tracker *tracker_get(int index);

@@ -21,4 +21,5 @@ target_sources(app PRIVATE
   src/anchor.c
   src/timeout.c
   src/tracker.c
+  src/fragment.c
 )

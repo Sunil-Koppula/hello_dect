@@ -51,6 +51,7 @@ typedef struct {
 	uint8_t packet_type;        /* packet_type_t */
 	uint8_t device_type;        /* device_type_t */
 	uint8_t priority;     		/* packet_priority_t */
+	uint8_t tracking_id;	   	/* Tracking ID */
 	uint32_t random_num;
 } __attribute__((packed)) pair_request_t;
 
@@ -61,6 +62,7 @@ typedef struct {
 	uint8_t packet_type;        /* packet_type_t */
 	uint8_t device_type;        /* device_type_t */
 	uint8_t priority;     		/* packet_priority_t */
+	uint8_t tracking_id;	   	/* Tracking ID */
 	uint16_t device_id;     	/* requester's ID (unicast target) */
 	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
 	uint32_t hash;
@@ -72,6 +74,7 @@ typedef struct {
 	uint8_t packet_type;        /* packet_type_t */
 	uint8_t device_type;        /* device_type_t */
 	uint8_t priority;     		/* packet_priority_t */
+	uint8_t tracking_id;	   	/* Tracking ID */
 	uint16_t device_id;     	/* responder's ID (unicast target) */
 	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
 	uint16_t version;
@@ -84,6 +87,7 @@ typedef struct {
 	uint8_t packet_type;        /* packet_type_t */
 	uint8_t device_type;        /* device_type_t */
 	uint8_t priority;     		/* packet_priority_t */
+	uint8_t tracking_id;	   	/* Tracking ID */
 	uint16_t device_id;     	/* responder's ID (unicast target) */
 	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
 	uint16_t version;

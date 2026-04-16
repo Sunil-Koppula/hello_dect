@@ -32,13 +32,14 @@ static uint32_t compute_pair_hash(uint16_t dev_id, uint32_t random_num)
 }
 
 /* Send pairing request packet. */
-int send_pair_request(uint32_t handle)
+int send_pair_request(uint32_t handle, uint8_t tracking_id)
 {
     uint32_t random_num = generate_random_number();
     pair_request_t packet = {
         .packet_type = PACKET_PAIR_REQUEST,
         .device_type = PRODUCT_DEVICE_TYPE,
         .priority = PACKET_PRIORITY_HIGH,
+        .tracking_id = tracking_id,
         .random_num = random_num,
     };
 
@@ -46,12 +47,13 @@ int send_pair_request(uint32_t handle)
 }
 
 /* Send pairing response packet. */
-int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t status, uint32_t hash)
+int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status, uint32_t hash)
 {
     pair_response_t packet = {
         .packet_type = PACKET_PAIR_RESPONSE,
         .device_type = PRODUCT_DEVICE_TYPE,
         .priority = PACKET_PRIORITY_HIGH,
+        .tracking_id = tracking_id,
         .device_id = dst_id,
         .status = status,
         .hash = hash,
@@ -61,12 +63,13 @@ int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t status, uint32_
 }
 
 /* Send pairing confirm packet. */
-int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t status)
+int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
 {
     pair_confirm_t packet = {
         .packet_type = PACKET_PAIR_CONFIRM,
         .device_type = PRODUCT_DEVICE_TYPE,
         .priority = PACKET_PRIORITY_HIGH,
+        .tracking_id = tracking_id,
         .device_id = dst_id,
         .status = status,
     };
@@ -75,12 +78,13 @@ int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t status)
 }
 
 /* Send pairing acknowledgment packet. */
-int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t status)
+int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
 {
     pair_ack_t packet = {
         .packet_type = PACKET_PAIR_ACK,
         .device_type = PRODUCT_DEVICE_TYPE,
         .priority = PACKET_PRIORITY_HIGH,
+        .tracking_id = tracking_id,
         .device_id = dst_id,
         .status = status,
     };
@@ -103,14 +107,14 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
                 infra_entry_t entry;
                 if (storage_infra_get(i, &entry) == 0 && entry.device_id == dst_id) {
                     LOG_INF("Device %d already paired, responding with ALREADY_EXISTS", dst_id);
-                    send_pair_response(0, dst_id, STATUS_ALREADY_EXISTS, 0);
+                    send_pair_response(0, dst_id, pkt->tracking_id, STATUS_ALREADY_EXISTS, 0);
                     return;
                 }
             }
             // Check if infra partition is full
             if (storage_infra_count() >= STORAGE_PART1_MAX_ENTRIES) {
                 LOG_WRN("Infra storage full, rejecting pair request from %d", dst_id);
-                send_pair_response(0, dst_id, STATUS_STORAGE_FULL, 0);
+                send_pair_response(0, dst_id, pkt->tracking_id, STATUS_STORAGE_FULL, 0);
                 return;
             }
             break;
@@ -120,14 +124,14 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
                 sensor_entry_t entry;
                 if (storage_sensor_get(i, &entry) == 0 && entry.device_id == dst_id) {
                     LOG_INF("Device %d already paired, responding with ALREADY_EXISTS", dst_id);
-                    send_pair_response(0, dst_id, STATUS_ALREADY_EXISTS, 0);
+                    send_pair_response(0, dst_id, pkt->tracking_id, STATUS_ALREADY_EXISTS, 0);
                     return;
                 }
             }
             // Check if sensor partition is full
             if (storage_sensor_count() >= STORAGE_PART2_MAX_ENTRIES) {
                 LOG_WRN("Sensor storage full, rejecting pair request from %d", dst_id);
-                send_pair_response(0, dst_id, STATUS_STORAGE_FULL, 0);
+                send_pair_response(0, dst_id, pkt->tracking_id, STATUS_STORAGE_FULL, 0);
                 return;
             }
             break;
@@ -138,5 +142,5 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
 
     uint32_t hash = compute_pair_hash(dst_id, pkt->random_num);
 
-    send_pair_response(0, dst_id, STATUS_SUCCESS, hash);
+    send_pair_response(0, dst_id, pkt->tracking_id, STATUS_SUCCESS, hash);
 }
