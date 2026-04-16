@@ -24,6 +24,22 @@
 	};
 };
 
+/* SPI3: Add PSRAM (APS6404L) sharing the bus with GD25WB256 flash.
+ * SCK=P0.13, MOSI=P0.11, MISO=P0.12 (same as flash).
+ * PSRAM CS=P0.10 (added as third CS on SPI3). */
+&spi3 {
+	cs-gpios = <&arduino_header 16 GPIO_ACTIVE_LOW>,  /* D10 */
+		   <&gpio0 20 GPIO_ACTIVE_LOW>,            /* flash CS */
+		   <&gpio0 10 GPIO_ACTIVE_LOW>;            /* PSRAM CS */
+
+	psram: aps6404l@2 {
+		compatible = "vnd,spi-device";
+		reg = <2>;
+		spi-max-frequency = <8000000>;
+		status = "okay";
+	};
+};
+
 /* I2C2: P0.30 = SDA, P0.31 = SCL (pinctrl already defined in board DTS). */
 &i2c2 {
 	status = "okay";

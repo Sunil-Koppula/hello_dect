@@ -15,6 +15,8 @@
 #include "gateway.h"
 #include "anchor.h"
 #include "sensor.h"
+#include "psram.h"
+#include "queue.h"
 #include "testing/factory_reset.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
@@ -38,6 +40,13 @@ int main(void)
 		LOG_ERR("storage_init failed, err %d", err);
 		return err;
 	}
+
+	err = psram_init();
+	if (err) {
+		LOG_WRN("PSRAM init failed, err %d (overflow disabled)", err);
+	}
+
+	queue_init();
 
 	/* Check for factory reset (hold Button 1 for 3s at boot). */
 	factory_reset_init();

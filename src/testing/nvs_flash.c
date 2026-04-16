@@ -22,6 +22,7 @@
 #include <zephyr/fs/nvs.h>
 #include <zephyr/logging/log.h>
 #include "../storage.h"
+#include "../spi_bus.h"
 
 LOG_MODULE_REGISTER(nvs_storage, CONFIG_MAIN_LOG_LEVEL);
 
@@ -45,7 +46,9 @@ static uint16_t mesh_count;
 
 static int read_count(uint16_t nvs_id, uint16_t *count)
 {
+	spi_bus_lock();
 	int rc = nvs_read(&nvs, nvs_id, count, sizeof(*count));
+	spi_bus_unlock();
 
 	if (rc < 0) {
 		*count = 0;
@@ -57,7 +60,9 @@ static int read_count(uint16_t nvs_id, uint16_t *count)
 
 static int write_count(uint16_t nvs_id, uint16_t count)
 {
+	spi_bus_lock();
 	int rc = nvs_write(&nvs, nvs_id, &count, sizeof(count));
+	spi_bus_unlock();
 
 	return (rc < 0) ? rc : 0;
 }
@@ -111,8 +116,11 @@ int storage_infra_add(const infra_entry_t *entry)
 		return -ENOMEM;
 	}
 
+	spi_bus_lock();
 	int rc = nvs_write(&nvs, NVS_ID_INFRA_BASE + infra_count,
 			   entry, sizeof(*entry));
+	spi_bus_unlock();
+
 	if (rc < 0) {
 		return rc;
 	}
@@ -127,8 +135,11 @@ int storage_infra_get(uint16_t index, infra_entry_t *entry)
 		return -EINVAL;
 	}
 
+	spi_bus_lock();
 	int rc = nvs_read(&nvs, NVS_ID_INFRA_BASE + index,
 			  entry, sizeof(*entry));
+	spi_bus_unlock();
+
 	return (rc < 0) ? rc : 0;
 }
 
@@ -139,9 +150,11 @@ int storage_infra_count(void)
 
 int storage_infra_clear(void)
 {
+	spi_bus_lock();
 	for (int i = 0; i < infra_count; i++) {
 		nvs_delete(&nvs, NVS_ID_INFRA_BASE + i);
 	}
+	spi_bus_unlock();
 
 	infra_count = 0;
 	return write_count(NVS_ID_INFRA_COUNT, 0);
@@ -156,8 +169,11 @@ int storage_sensor_add(const sensor_entry_t *entry)
 		return -ENOMEM;
 	}
 
+	spi_bus_lock();
 	int rc = nvs_write(&nvs, NVS_ID_SENSOR_BASE + sensor_count,
 			   entry, sizeof(*entry));
+	spi_bus_unlock();
+
 	if (rc < 0) {
 		return rc;
 	}
@@ -172,8 +188,11 @@ int storage_sensor_get(uint16_t index, sensor_entry_t *entry)
 		return -EINVAL;
 	}
 
+	spi_bus_lock();
 	int rc = nvs_read(&nvs, NVS_ID_SENSOR_BASE + index,
 			  entry, sizeof(*entry));
+	spi_bus_unlock();
+
 	return (rc < 0) ? rc : 0;
 }
 
@@ -184,9 +203,11 @@ int storage_sensor_count(void)
 
 int storage_sensor_clear(void)
 {
+	spi_bus_lock();
 	for (int i = 0; i < sensor_count; i++) {
 		nvs_delete(&nvs, NVS_ID_SENSOR_BASE + i);
 	}
+	spi_bus_unlock();
 
 	sensor_count = 0;
 	return write_count(NVS_ID_SENSOR_COUNT, 0);
@@ -201,8 +222,11 @@ int storage_mesh_add(const mesh_entry_t *entry)
 		return -ENOMEM;
 	}
 
+	spi_bus_lock();
 	int rc = nvs_write(&nvs, NVS_ID_MESH_BASE + mesh_count,
 			   entry, sizeof(*entry));
+	spi_bus_unlock();
+
 	if (rc < 0) {
 		return rc;
 	}
@@ -217,8 +241,11 @@ int storage_mesh_get(uint16_t index, mesh_entry_t *entry)
 		return -EINVAL;
 	}
 
+	spi_bus_lock();
 	int rc = nvs_read(&nvs, NVS_ID_MESH_BASE + index,
 			  entry, sizeof(*entry));
+	spi_bus_unlock();
+
 	return (rc < 0) ? rc : 0;
 }
 
@@ -229,9 +256,11 @@ int storage_mesh_count(void)
 
 int storage_mesh_clear(void)
 {
+	spi_bus_lock();
 	for (int i = 0; i < mesh_count; i++) {
 		nvs_delete(&nvs, NVS_ID_MESH_BASE + i);
 	}
+	spi_bus_unlock();
 
 	mesh_count = 0;
 	return write_count(NVS_ID_MESH_COUNT, 0);

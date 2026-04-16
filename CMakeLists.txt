@@ -21,6 +21,9 @@ target_sources(app PRIVATE
   src/timeout.c
   src/tracker.c
   src/fragment.c
+  src/psram.c
+  src/psram_queue.c
+  src/spi_bus.c
 )
 
 # Testing utilities

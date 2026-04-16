@@ -64,6 +64,12 @@ config MESH_LOG_LEVEL
 	help
 	   Choose the log level for the mesh module.
 
+config PSRAM_QUEUE_LOG_LEVEL
+	int "PSRAM queue log level"
+	default 4
+	help
+	   Choose the log level for the PSRAM queue module.
+
 config USE_NVS_STORAGE
 	bool "Use NVS flash instead of EEPROM for storage"
 	default n

@@ -43,6 +43,10 @@ void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 
 		LOG_INF("Pair Confirm from device %d: status 0x%02x",
 			sender_id, conf->status);
+		if(conf->device_type != DEVICE_TYPE_SENSOR) {
+			LOG_WRN("Pair Confirm from non-sensor device %d, ignoring", sender_id);
+			break;
+		}
 
 		if (conf->status == STATUS_SUCCESS) {
 			/* Store the sensor in partition 2. */
@@ -53,7 +57,7 @@ void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 
 			if (err) {
 				LOG_ERR("Failed to store sensor, err %d", err);
-				send_pair_ack(0, sender_id, STATUS_STORAGE_FULL);
+				send_pair_ack(0, sender_id, conf->tracking_id, STATUS_STORAGE_FULL);
 				break;
 			}
 
@@ -61,7 +65,7 @@ void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 				sender_id, storage_sensor_count());
 		}
 
-		send_pair_ack(0, sender_id,
+		send_pair_ack(0, sender_id, conf->tracking_id,
 			      conf->status == STATUS_SUCCESS ? STATUS_SUCCESS : STATUS_FAILURE);
 		break;
 	}
@@ -79,7 +83,7 @@ void gateway_main(void)
 
 	while (1) {
 		/* RX window. */
-		err = receive(1, 30);
+		err = receive(1, 15);
 		if (err) {
 			LOG_ERR("Reception failed, err %d", err);
 			return;
@@ -103,7 +107,7 @@ void gateway_main(void)
 
 		while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
 		       tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
-			err = transmit(0, tx_item.data, tx_item.data_len);
+			err = transmit(0, tx_item.data, tx_item.data_len, 1);
 			if (err) {
 				LOG_ERR("TX failed, err %d", err);
 				break;

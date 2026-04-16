@@ -6,14 +6,15 @@
 #include <zephyr/kernel.h>
 #include "product_info.h"
 
-#define QUEUE_DATA_MAX 30
-#define QUEUE_DEPTH (MAX_SENSORS + MAX_ANCHORS)
+#define QUEUE_DATA_MAX 210  /* 15 subslots × 14 bytes/subslot at MCS 2 */
+#define QUEUE_DEPTH 32
 #define MAX_QUEUE_PROCESS_PER_CYCLE 4
 
-/* Priority levels. */
+/* Priority levels (drained in order: HIGH → MEDIUM → LOW). */
 enum queue_priority {
-	QUEUE_PRIO_HIGH = 0,
-	QUEUE_PRIO_LOW  = 1,
+	QUEUE_PRIO_HIGH   = 0,
+	QUEUE_PRIO_MEDIUM = 1,
+	QUEUE_PRIO_LOW    = 2,
 	QUEUE_PRIO_COUNT,
 };
 
@@ -30,6 +31,9 @@ struct tx_data_item {
 	uint16_t data_len;
 	uint8_t data[QUEUE_DATA_MAX];
 };
+
+/* Initialize queues (call once at boot, after psram_init). */
+int queue_init(void);
 
 /* RX queue operations. */
 int rx_queue_put(const struct rx_data_item *item, enum queue_priority prio);
