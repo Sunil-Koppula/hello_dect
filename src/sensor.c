@@ -1,12 +1,13 @@
 /*
  * Sensor pairing state machine for DECT NR+ mesh network.
  *
- * 4-step pairing flow with best-RSSI selection:
+ * 4-step pairing flow:
  *   1. Sensor broadcasts PAIR_REQUEST
- *   2. Collects PAIR_RESPONSE from all responders for ~1 second
- *   3. Picks the responder with best RSSI, sends PAIR_CONFIRM
+ *   2. Waits for PAIR_RESPONSE (with tracking + timeout)
+ *   3. Sends PAIR_CONFIRM to responder
  *   4. Waits for PAIR_ACK, stores pairing to EEPROM
  *
+ * Tracking IDs are looked up from the tracker pool — no static TID variables.
  * A sensor can only pair with one gateway or anchor.
  */
 
@@ -19,14 +20,20 @@
 #include "radio.h"
 #include "storage.h"
 #include "queue.h"
+#include "tracker.h"
 
 LOG_MODULE_REGISTER(sensor, CONFIG_MAIN_LOG_LEVEL);
+
+#define PAIR_TIMEOUT_MS   500
+#define PAIR_MAX_RETRIES  5
 
 static uint16_t paired_device_id;
 static uint8_t  paired_device_type;
 
 int sensor_init(void)
 {
+	tracker_init();
+
 	/* Check EEPROM partition 1 — sensor can pair with only one device. */
 	if (storage_infra_count() > 0) {
 		infra_entry_t entry;
@@ -43,16 +50,98 @@ int sensor_init(void)
 	}
 
 	/* Not paired — start pairing. */
-	LOG_INF("Sensor not paired, starting pairing");
+	LOG_INF("Sensor not paired, sending PAIR_REQUEST");
 
-	send_pair_request(0, 0);
+	uint8_t tid = tracker_next_id();
+
+	tracker_add(0, tid, PACKET_PAIR_REQUEST, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
+	send_pair_request(0, tid);
 
 	return 0;
 }
 
 void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 {
-	// uint8_t pkt_type = data[0];
+	switch (data[0]) {
+	case PACKET_PAIR_RESPONSE: {
+		const pair_response_t *resp = (const pair_response_t *)data;
+
+		if (resp->device_id != radio_get_device_id()) {
+			break;
+		}
+
+		LOG_INF("PAIR_RESPONSE from %s ID:%d: status 0x%02x, hop %d",
+			device_type_str(resp->device_type), sender_id,
+			resp->status, resp->hop_num);
+
+		/* Find and remove the request tracker by its tracking ID. */
+		int idx = tracker_find_by_tracking_id(resp->tracking_id);
+		if (idx >= 0) {
+			tracker_remove(idx);
+		}
+
+		if (resp->status != STATUS_SUCCESS) {
+			LOG_WRN("PAIR_RESPONSE failed: status 0x%02x", resp->status);
+			break;
+		}
+
+		paired_device_id = sender_id;
+		paired_device_type = resp->device_type;
+
+		/* Send confirm with a new tracking ID. */
+		uint8_t tid = tracker_next_id();
+
+		tracker_add(sender_id, tid, PACKET_PAIR_CONFIRM, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
+		send_pair_confirm(0, sender_id, tid, STATUS_SUCCESS);
+
+		LOG_INF("Sending PAIR_CONFIRM to %s ID:%d (tid: %d)",
+			device_type_str(resp->device_type), sender_id, tid);
+		break;
+	}
+
+	case PACKET_PAIR_ACK: {
+		const pair_ack_t *ack = (const pair_ack_t *)data;
+
+		if (ack->device_id != radio_get_device_id()) {
+			break;
+		}
+
+		LOG_INF("PAIR_ACK from %s ID:%d: status 0x%02x",
+			device_type_str(ack->device_type), sender_id, ack->status);
+
+		/* Find and remove the confirm tracker. */
+		int idx = tracker_find_by_tracking_id(ack->tracking_id);
+		if (idx >= 0) {
+			tracker_remove(idx);
+		}
+
+		if (ack->status != STATUS_SUCCESS) {
+			LOG_WRN("PAIR_ACK failed: status 0x%02x", ack->status);
+			break;
+		}
+
+		/* Store to EEPROM partition 1. */
+		storage_infra_clear();
+		infra_entry_t entry = {
+			.device_type = paired_device_type,
+			.device_id = paired_device_id,
+			.hop_num = 1,
+			.rssi_2 = rssi_2,
+		};
+		int err = storage_infra_add(&entry);
+
+		if (err) {
+			LOG_ERR("Failed to store pairing, err %d", err);
+		} else {
+			LOG_INF("Paired with %s ID:%d and stored",
+				device_type_str(paired_device_type), paired_device_id);
+		}
+		break;
+	}
+
+	default:
+		break;
+	}
 }
 
 void sensor_main(void)
@@ -93,5 +182,6 @@ void sensor_main(void)
 			tx_count++;
 		}
 
+		tracker_tick(tracker_default_expired_cb);
 	}
 }

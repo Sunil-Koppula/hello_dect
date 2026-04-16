@@ -12,6 +12,7 @@
 struct data_tracker {
 	uint16_t device_id;
 	uint8_t tracking_id;
+	uint8_t packet_type;    /* packet_type_t — what was sent */
 	struct nbtimeout timeout;
 	bool active;
 };
@@ -20,7 +21,7 @@ struct data_tracker {
 void tracker_init(void);
 
 /* Add a new tracked entry. Returns index on success, -1 if pool full. */
-int tracker_add(uint16_t device_id, uint8_t tracking_id,
+int tracker_add(uint16_t device_id, uint8_t tracking_id, uint8_t packet_type,
 		uint32_t timeout_ms, uint8_t max_retries);
 
 /* Find entry by device ID. Returns index, or -1 if not found. */
@@ -46,5 +47,12 @@ void tracker_tick(tracker_expired_cb cb);
 
 /* Get number of active entries. */
 int tracker_active_count(void);
+
+/* Get next tracking ID (1–254, auto-incrementing, circular). */
+uint8_t tracker_next_id(void);
+
+/* Default expired callback — retries the packet based on entry->packet_type.
+ * Can be passed directly to tracker_tick(). */
+void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exhausted);
 
 #endif /* TRACKER_H */

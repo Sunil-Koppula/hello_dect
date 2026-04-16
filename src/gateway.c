@@ -15,11 +15,14 @@
 #include "radio.h"
 #include "storage.h"
 #include "queue.h"
+#include "tracker.h"
 
 LOG_MODULE_REGISTER(gateway, CONFIG_MAIN_LOG_LEVEL);
 
 int gateway_init(void)
 {
+	tracker_init();
+
 	LOG_INF("Gateway init: infra=%d sensors=%d mesh=%d",
 		storage_infra_count(), storage_sensor_count(), storage_mesh_count());
 
@@ -35,38 +38,7 @@ void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 
 	case PACKET_PAIR_CONFIRM:
 	{
-		const pair_confirm_t *conf = (const pair_confirm_t *)data;
-
-		if (conf->device_id != radio_get_device_id()) {
-			break;
-		}
-
-		LOG_INF("Pair Confirm from device %d: status 0x%02x",
-			sender_id, conf->status);
-		if(conf->device_type != DEVICE_TYPE_SENSOR) {
-			LOG_WRN("Pair Confirm from non-sensor device %d, ignoring", sender_id);
-			break;
-		}
-
-		if (conf->status == STATUS_SUCCESS) {
-			/* Store the sensor in partition 2. */
-			sensor_entry_t entry = {
-				.device_id = sender_id,
-			};
-			int err = storage_sensor_add(&entry);
-
-			if (err) {
-				LOG_ERR("Failed to store sensor, err %d", err);
-				send_pair_ack(0, sender_id, conf->tracking_id, STATUS_STORAGE_FULL);
-				break;
-			}
-
-			LOG_INF("Sensor %d paired and stored (%d total)",
-				sender_id, storage_sensor_count());
-		}
-
-		send_pair_ack(0, sender_id, conf->tracking_id,
-			      conf->status == STATUS_SUCCESS ? STATUS_SUCCESS : STATUS_FAILURE);
+		handle_pair_confirm((const pair_confirm_t *)data, sender_id, rssi_2);
 		break;
 	}
 
