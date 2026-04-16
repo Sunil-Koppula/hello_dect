@@ -22,6 +22,10 @@ typedef enum {
 	PACKET_PAIR_RESPONSE 		= 0x02,
 	PACKET_PAIR_CONFIRM  		= 0x03,
 	PACKET_PAIR_ACK       		= 0x04,
+	PACKET_JOINED_NETWORK       = 0x05,
+	PACKET_JOINED_NETWORK_ACK  	= 0x06,
+	PACKET_PING_DEVICE			= 0x07,
+	PACKET_PING_ACK				= 0x08,
 } packet_type_t;
 
 /* Packet Priority Levels */
@@ -44,14 +48,25 @@ typedef enum {
 #define STATUS_STORAGE_FULL             0x0D
 #define STATUS_VENDOR_SPECIFIC          0x1F
 
+/********** Common Packet Header **********/
+
+/* Common header — first 7 bytes of every packet. */
+typedef struct {
+	uint8_t packet_type;        /* packet_type_t */
+	uint8_t device_type;        /* device_type_t */
+	uint8_t priority;           /* PACKET_PRIORITY_HIGH / LOW */
+	uint8_t tracking_id;        /* Tracking ID (1–254) */
+	uint16_t device_id;         /* sender or target device ID */
+	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
+} __attribute__((packed)) packet_header_t;
+
+#define PACKET_HEADER_SIZE sizeof(packet_header_t)
+
 /********** Packet Structures **********/
 
 /* Pairing Request Packet */
 typedef struct {
-	uint8_t packet_type;        /* packet_type_t */
-	uint8_t device_type;        /* device_type_t */
-	uint8_t priority;     		/* packet_priority_t */
-	uint8_t tracking_id;	   	/* Tracking ID */
+	packet_header_t hdr;
 	uint32_t random_num;
 } __attribute__((packed)) pair_request_t;
 
@@ -59,24 +74,14 @@ typedef struct {
 
 /* Pairing Response Packet — unicast to requester */
 typedef struct {
-	uint8_t packet_type;        /* packet_type_t */
-	uint8_t device_type;        /* device_type_t */
-	uint8_t priority;     		/* packet_priority_t */
-	uint8_t tracking_id;	   	/* Tracking ID */
-	uint16_t device_id;     	/* requester's ID (unicast target) */
-	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
+	packet_header_t hdr;
 	uint32_t hash;
 	uint8_t hop_num;
 } __attribute__((packed)) pair_response_t;
 
 /* Pairing Confirm Packet — unicast to responder */
 typedef struct {
-	uint8_t packet_type;        /* packet_type_t */
-	uint8_t device_type;        /* device_type_t */
-	uint8_t priority;     		/* packet_priority_t */
-	uint8_t tracking_id;	   	/* Tracking ID */
-	uint16_t device_id;     	/* responder's ID (unicast target) */
-	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
+	packet_header_t hdr;
 	uint16_t version;
 } __attribute__((packed)) pair_confirm_t;
 
@@ -84,12 +89,7 @@ typedef struct {
 
 /* Pairing Acknowledgment Packet — unicast to confirmer */
 typedef struct {
-	uint8_t packet_type;        /* packet_type_t */
-	uint8_t device_type;        /* device_type_t */
-	uint8_t priority;     		/* packet_priority_t */
-	uint8_t tracking_id;	   	/* Tracking ID */
-	uint16_t device_id;     	/* responder's ID (unicast target) */
-	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
+	packet_header_t hdr;
 	uint16_t version;
 	uint8_t hop_num;
 } __attribute__((packed)) pair_ack_t;

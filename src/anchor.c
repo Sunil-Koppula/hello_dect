@@ -67,21 +67,21 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 	case PACKET_PAIR_RESPONSE: {
 		const pair_response_t *resp = (const pair_response_t *)data;
 
-		if (resp->device_id != radio_get_device_id()) {
+		if (resp->hdr.device_id != radio_get_device_id()) {
 			break;
 		}
 
 		LOG_INF("PAIR_RESPONSE from %s ID:%d: status 0x%02x, hop %d",
-			device_type_str(resp->device_type), sender_id,
-			resp->status, resp->hop_num);
+			device_type_str(resp->hdr.device_type), sender_id,
+			resp->hdr.status, resp->hop_num);
 
 		/* Find and remove the request tracker by tracking ID from the packet. */
-		int idx = tracker_find_by_tracking_id(resp->tracking_id);
+		int idx = tracker_find_by_tracking_id(resp->hdr.tracking_id);
 		if (idx >= 0) {
 			tracker_remove(idx);
 		}
 
-		if (resp->status == STATUS_SUCCESS) {
+		if (resp->hdr.status == STATUS_SUCCESS) {
 			/* Check if already stored. */
 			infra_entry_t entry;
 
@@ -103,11 +103,11 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 			uint8_t tid = tracker_next_id();
 
 			LOG_INF("Sending PAIR_CONFIRM to %s ID:%d (tid: %d)",
-				device_type_str(resp->device_type), sender_id, tid);
+				device_type_str(resp->hdr.device_type), sender_id, tid);
 			tracker_add(sender_id, tid, PACKET_PAIR_CONFIRM, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
 			send_pair_confirm(0, sender_id, tid, STATUS_SUCCESS);
 		} else {
-			LOG_WRN("PAIR_RESPONSE failed: status 0x%02x", resp->status);
+			LOG_WRN("PAIR_RESPONSE failed: status 0x%02x", resp->hdr.status);
 		}
 		break;
 	}
@@ -115,20 +115,20 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 	case PACKET_PAIR_ACK: {
 		const pair_ack_t *ack = (const pair_ack_t *)data;
 
-		if (ack->device_id != radio_get_device_id()) {
+		if (ack->hdr.device_id != radio_get_device_id()) {
 			break;
 		}
 
 		LOG_INF("PAIR_ACK from %s ID:%d: status 0x%02x",
-			device_type_str(ack->device_type), sender_id, ack->status);
+			device_type_str(ack->hdr.device_type), sender_id, ack->hdr.status);
 
 		/* Find and remove the confirm tracker. */
-		int idx = tracker_find_by_tracking_id(ack->tracking_id);
+		int idx = tracker_find_by_tracking_id(ack->hdr.tracking_id);
 		if (idx >= 0) {
 			tracker_remove(idx);
 		}
 
-		if (ack->status == STATUS_SUCCESS) {
+		if (ack->hdr.status == STATUS_SUCCESS) {
 			/* Check if already stored. */
 			infra_entry_t entry;
 
@@ -147,7 +147,7 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 			}
 
 			entry.device_id = sender_id;
-			entry.device_type = ack->device_type;
+			entry.device_type = ack->hdr.device_type;
 			entry.hop_num = 0;
 			entry.rssi_2 = rssi_2;
 			int err = storage_infra_add(&entry);
@@ -160,7 +160,7 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 			LOG_INF("Device %d paired and stored in infra (total %d)",
 				sender_id, storage_infra_count());
 		} else {
-			LOG_WRN("PAIR_ACK failed: status 0x%02x", ack->status);
+			LOG_WRN("PAIR_ACK failed: status 0x%02x", ack->hdr.status);
 		}
 		break;
 	}
