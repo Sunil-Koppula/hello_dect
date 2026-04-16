@@ -64,6 +64,13 @@ config MESH_LOG_LEVEL
 	help
 	   Choose the log level for the mesh module.
 
+config USE_NVS_STORAGE
+	bool "Use NVS flash instead of EEPROM for storage"
+	default n
+	help
+	   Use NVS on external flash as storage backend instead of I2C EEPROM.
+	   For testing without EEPROM hardware. In production, keep this disabled.
+
 module = DECT_PHY_HELLO
 module-str = DECT NR+ PHY Hello
 source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"

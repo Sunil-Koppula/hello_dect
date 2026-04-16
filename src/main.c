@@ -15,6 +15,7 @@
 #include "gateway.h"
 #include "anchor.h"
 #include "sensor.h"
+#include "testing/factory_reset.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 
@@ -37,6 +38,9 @@ int main(void)
 		LOG_ERR("storage_init failed, err %d", err);
 		return err;
 	}
+
+	/* Check for factory reset (hold Button 1 for 3s at boot). */
+	factory_reset_init();
 
 	err = nrf_modem_lib_init();
 	if (err) {
@@ -94,11 +98,6 @@ int main(void)
 	if (err) {
 		LOG_ERR("nrf_modem_dect_phy_capability_get failed, err %d", err);
 	}
-
-	//Testing Purpose Only, to be removed
-	storage_infra_clear();
-	storage_sensor_clear();
-	storage_mesh_clear();
 
 	switch (PRODUCT_DEVICE_TYPE) {
 	case DEVICE_TYPE_GATEWAY:

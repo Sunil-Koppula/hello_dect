@@ -1,9 +1,11 @@
-# Usage: ./build.ps1 (EEPROM storage)
+# Usage: ./build_ext_flash.ps1 (NVS on external flash — testing without EEPROM)
 
 $venvPath = "c:/ncs/.venv3.2.4"
 $activateScript = "$venvPath/Scripts/Activate.ps1"
 $CurrentDirectory = (Get-Location).Path.Replace('\', '/')
 $BuildDir = "$CurrentDirectory/build"
+$NvsConf = "$CurrentDirectory/src/testing/overlay-nvs.conf"
+$NvsOverlay = "$CurrentDirectory/src/testing/overlay-nvs.overlay"
 
 # Activate virtual environment if not already active
 if (-not $env:VIRTUAL_ENV) {
@@ -22,15 +24,15 @@ $env:ZEPHYR_BASE = "c:/ncs/v3.2.4/zephyr"
 Remove-Item Env:\CONF_FILE -ErrorAction SilentlyContinue
 Remove-Item Env:\BOARD_ROOT -ErrorAction SilentlyContinue
 
-Write-Output "Storage backend: EEPROM (I2C)"
+Write-Output "Storage backend: NVS on external flash (testing)"
 
 # Check if build directory exists for incremental build
 if (Test-Path "$BuildDir/build.ninja") {
     Write-Output "Incremental build..."
-    west build -d $BuildDir
+    west build -d $BuildDir -- "-DEXTRA_CONF_FILE=$NvsConf" "-DEXTRA_DTC_OVERLAY_FILE=$NvsOverlay"
 } else {
     Write-Output "Full build..."
-    west build -d $BuildDir --board nrf9151dk/nrf9151/ns --sysbuild $CurrentDirectory
+    west build -d $BuildDir --board nrf9151dk/nrf9151/ns --sysbuild $CurrentDirectory -- "-DEXTRA_CONF_FILE=$NvsConf" "-DEXTRA_DTC_OVERLAY_FILE=$NvsOverlay"
 }
 
 # Return to original directory

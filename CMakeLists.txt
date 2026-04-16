@@ -15,7 +15,6 @@ target_sources(app PRIVATE
   src/queue.c
   src/product_info.c
   src/mesh.c
-  src/storage.c
   src/sensor.c
   src/gateway.c
   src/anchor.c
@@ -23,3 +22,13 @@ target_sources(app PRIVATE
   src/tracker.c
   src/fragment.c
 )
+
+# Testing utilities
+target_sources(app PRIVATE src/testing/factory_reset.c)
+
+# Storage backend: NVS flash or EEPROM
+if(CONFIG_USE_NVS_STORAGE)
+  target_sources(app PRIVATE src/testing/nvs_flash.c)
+else()
+  target_sources(app PRIVATE src/storage.c)
+endif()

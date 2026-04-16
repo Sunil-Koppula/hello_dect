@@ -1,0 +1,29 @@
+/*
+ * NVS storage on external flash (testing without EEPROM).
+ * Removes the internal flash storage_partition label and
+ * creates a new one on the external GD25WB256 SPI flash.
+ */
+
+/* Remove storage_partition label from internal flash. */
+/delete-node/ &storage_partition;
+
+/* Enable external flash and add NVS partition. */
+&gd25wb256 {
+	status = "okay";
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		storage_partition: partition@0 {
+			label = "storage";
+			reg = <0x0 0x40000>;  /* 256KB for NVS */
+		};
+	};
+};
+
+/* Disable I2C EEPROM since we're not using it. */
+&i2c2 {
+	status = "disabled";
+};
