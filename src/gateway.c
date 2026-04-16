@@ -8,7 +8,8 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include "gateway.h"
+#include <zephyr/sys/reboot.h>
+#include "main_sub.h"
 #include "protocol.h"
 #include "product_info.h"
 #include "mesh.h"
@@ -17,9 +18,9 @@
 #include "queue.h"
 #include "tracker.h"
 
-LOG_MODULE_REGISTER(gateway, CONFIG_MAIN_LOG_LEVEL);
+LOG_MODULE_REGISTER(gateway, CONFIG_GATEWAY_LOG_LEVEL);
 
-int gateway_init(void)
+static int gateway_init(void)
 {
 	tracker_init();
 
@@ -29,7 +30,7 @@ int gateway_init(void)
 	return 0;
 }
 
-void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
+static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 {
 	switch (data[0]) {
 	case PACKET_PAIR_REQUEST:
@@ -50,42 +51,78 @@ void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 void gateway_main(void)
 {
 	int err;
-
-	gateway_init();
+	main_sub_state_t state = MAIN_SUB_INIT;
 
 	while (1) {
-		/* RX window. */
-		err = receive(1, 15);
-		if (err) {
-			LOG_ERR("Reception failed, err %d", err);
-			return;
-		}
-
-		k_sem_take(&operation_sem, K_FOREVER);
-
-		/* Process received messages. */
-		struct rx_data_item rx_item;
-		int rx_count = 0;
-
-		while (rx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-		       rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
-			gateway_process_rx(rx_item.data, rx_item.sender_id, rx_item.rssi_2);
-			rx_count++;
-		}
-
-		/* Transmit queued packets. */
-		struct tx_data_item tx_item;
-		int tx_count = 0;
-
-		while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-		       tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
-			err = transmit(0, tx_item.data, tx_item.data_len, 1);
+		switch (state) {
+		case MAIN_SUB_INIT:
+			err = gateway_init();
 			if (err) {
-				LOG_ERR("TX failed, err %d", err);
+				LOG_ERR("Gateway init failed, err %d", err);
+				state = MAIN_SUB_ERROR;
+				break;
+			}
+			state = MAIN_SUB_RX_WINDOW;
+			break;
+
+		case MAIN_SUB_RX_WINDOW:
+			err = receive(1, 15);
+			if (err) {
+				LOG_ERR("Reception failed, err %d", err);
+				state = MAIN_SUB_ERROR;
 				break;
 			}
 			k_sem_take(&operation_sem, K_FOREVER);
-			tx_count++;
+			state = MAIN_SUB_RX_PROCESS;
+			break;
+
+		case MAIN_SUB_RX_PROCESS: {
+			struct rx_data_item rx_item;
+			int rx_count = 0;
+
+			while (rx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
+			       rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
+				gateway_process_rx(rx_item.data, rx_item.sender_id, rx_item.rssi_2);
+				rx_count++;
+			}
+			state = MAIN_SUB_TX_PROCESS;
+			break;
+		}
+
+		case MAIN_SUB_TX_PROCESS: {
+			struct tx_data_item tx_item;
+			int tx_count = 0;
+
+			while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
+			       tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
+				err = transmit(0, tx_item.data, tx_item.data_len, 1);
+				if (err) {
+					LOG_ERR("TX failed, err %d", err);
+					break;
+				}
+				k_sem_take(&operation_sem, K_FOREVER);
+				tx_count++;
+			}
+			state = MAIN_SUB_TRACKER;
+			break;
+		}
+
+		case MAIN_SUB_TRACKER:
+			tracker_tick(tracker_default_expired_cb);
+			state = MAIN_SUB_RX_WINDOW;
+			break;
+
+		case MAIN_SUB_ERROR:
+			LOG_ERR("Gateway in error state, waiting 10s before retry");
+			k_msleep(10000);
+			state = MAIN_SUB_INIT;
+			break;
+
+		default:
+			LOG_ERR("Gateway in unknown state %d", state);
+			// Reset the device to recover from unknown state
+			sys_reboot(SYS_REBOOT_COLD);
+			break;
 		}
 	}
 }

@@ -16,7 +16,7 @@
 #include "psram.h"
 #include "spi_bus.h"
 
-LOG_MODULE_REGISTER(psram, CONFIG_MAIN_LOG_LEVEL);
+LOG_MODULE_REGISTER(psram, CONFIG_PSRAM_LOG_LEVEL);
 
 #define PSRAM_CMD_READ   0x03
 #define PSRAM_CMD_WRITE  0x02

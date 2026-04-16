@@ -14,7 +14,7 @@
 #include "queue.h"
 #include "psram_queue.h"
 
-LOG_MODULE_REGISTER(queue, CONFIG_RADIO_LOG_LEVEL);
+LOG_MODULE_REGISTER(queue, CONFIG_QUEUE_LOG_LEVEL);
 
 /* Internal RAM queues (fast, depth 32 each). */
 K_MSGQ_DEFINE(rx_msgq_hi,  sizeof(struct rx_data_item), QUEUE_DEPTH, 4);

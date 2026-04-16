@@ -16,7 +16,7 @@
 #include <zephyr/logging/log.h>
 #include "product_info.h"
 
-LOG_MODULE_REGISTER(product_info, CONFIG_MAIN_LOG_LEVEL);
+LOG_MODULE_REGISTER(product_info, CONFIG_PRODUCT_INFO_LOG_LEVEL);
 
 #define DEVTYPE_PIN0_NODE DT_NODELABEL(devtype_pin0)
 #define DEVTYPE_PIN1_NODE DT_NODELABEL(devtype_pin1)

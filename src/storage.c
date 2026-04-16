@@ -12,7 +12,7 @@
 #include <zephyr/logging/log.h>
 #include "storage.h"
 
-LOG_MODULE_REGISTER(storage, CONFIG_MAIN_LOG_LEVEL);
+LOG_MODULE_REGISTER(storage, CONFIG_STORAGE_LOG_LEVEL);
 
 static const struct device *eeprom_dev = DEVICE_DT_GET(DT_NODELABEL(eeprom));
 

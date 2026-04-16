@@ -52,6 +52,24 @@ config MAIN_LOG_LEVEL
 	help
 	   Choose the log level for the main module.
 
+config GATEWAY_LOG_LEVEL
+	int "Gateway log level"
+	default 4
+	help
+	   Choose the log level for the gateway module.
+
+config ANCHOR_LOG_LEVEL
+	int "Anchor log level"
+	default 4
+	help
+	   Choose the log level for the anchor module.
+
+config SENSOR_LOG_LEVEL
+	int "Sensor log level"
+	default 4
+	help
+	   Choose the log level for the sensor module.
+
 config RADIO_LOG_LEVEL
 	int "Radio log level"
 	default 4
@@ -69,6 +87,42 @@ config PSRAM_QUEUE_LOG_LEVEL
 	default 4
 	help
 	   Choose the log level for the PSRAM queue module.
+
+config FRAGMENT_LOG_LEVEL
+	int "Fragment log level"
+	default 4
+	help
+	   Choose the log level for the fragment module.
+
+config PRODUCT_INFO_LOG_LEVEL
+	int "Product info log level"
+	default 4
+	help
+	   Choose the log level for the product info module.
+
+config PSRAM_LOG_LEVEL
+	int "PSRAM log level"
+	default 4
+	help
+	   Choose the log level for the PSRAM module.
+
+config QUEUE_LOG_LEVEL
+	int "Queue log level"
+	default 4
+	help
+	   Choose the log level for the queue module.
+
+config STORAGE_LOG_LEVEL
+	int "Storage log level"
+	default 4
+	help
+	   Choose the log level for the storage module.
+
+config TRACKER_LOG_LEVEL
+	int "Tracker log level"
+	default 4
+	help
+	   Choose the log level for the tracker module.
 
 config USE_NVS_STORAGE
 	bool "Use NVS flash instead of EEPROM for storage"

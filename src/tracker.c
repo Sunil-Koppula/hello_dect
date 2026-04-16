@@ -11,7 +11,7 @@
 #include "protocol.h"
 #include "mesh.h"
 
-LOG_MODULE_REGISTER(tracker, CONFIG_MAIN_LOG_LEVEL);
+LOG_MODULE_REGISTER(tracker, CONFIG_TRACKER_LOG_LEVEL);
 
 static struct data_tracker pool[TRACKER_MAX_ENTRIES];
 static uint8_t next_tracking_id = 1;

@@ -11,7 +11,7 @@
 #include "fragment.h"
 #include "queue.h"
 
-LOG_MODULE_REGISTER(fragment, CONFIG_MAIN_LOG_LEVEL);
+LOG_MODULE_REGISTER(fragment, CONFIG_FRAGMENT_LOG_LEVEL);
 
 static uint8_t next_frag_id;
 static struct frag_reassembly reassembly[FRAG_REASSEMBLY_SLOTS];
