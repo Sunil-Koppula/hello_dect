@@ -16,9 +16,9 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 
-		storage_partition: partition@0 {
+		storage_partition: partition@1FC0000 {
 			label = "storage";
-			reg = <0x0 0x40000>;  /* 256KB for NVS */
+			reg = <0x1FC0000 0x40000>;  /* 256KB for NVS at end of 32MB flash */
 		};
 	};
 };
