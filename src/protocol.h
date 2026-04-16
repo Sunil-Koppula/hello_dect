@@ -91,6 +91,7 @@ typedef struct {
 	uint16_t device_id;     	/* responder's ID (unicast target) */
 	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
 	uint16_t version;
+	uint8_t hop_num;
 } __attribute__((packed)) pair_ack_t;
 
 #define PAIR_ACK_PACKET_SIZE sizeof(pair_ack_t)

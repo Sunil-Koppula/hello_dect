@@ -163,13 +163,13 @@ void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exha
 		send_pair_request(0, entry->tracking_id);
 		break;
 	case PACKET_PAIR_RESPONSE:
-		send_pair_response(0, entry->device_id, entry->tracking_id, STATUS_SUCCESS, 0);
+		send_pair_response(0, entry->device_id, entry->tracking_id, STATUS_SUCCESS, 0, 0);
 		break;
 	case PACKET_PAIR_CONFIRM:
 		send_pair_confirm(0, entry->device_id, entry->tracking_id, STATUS_SUCCESS);
 		break;
 	case PACKET_PAIR_ACK:
-		send_pair_ack(0, entry->device_id, entry->tracking_id, STATUS_SUCCESS);
+		send_pair_ack(0, entry->device_id, entry->tracking_id, STATUS_SUCCESS, 0);
 		break;
 	default:
 		LOG_WRN("Unknown packet type 0x%02x in tracker retry", entry->packet_type);

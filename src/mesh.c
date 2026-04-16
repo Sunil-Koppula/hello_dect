@@ -87,7 +87,7 @@ int send_pair_request(uint32_t handle, uint8_t tracking_id)
 }
 
 /* Send pairing response packet. */
-int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status, uint32_t hash)
+int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status, uint32_t hash, uint8_t hop_num)
 {
     pair_response_t packet = {
         .packet_type = PACKET_PAIR_RESPONSE,
@@ -97,6 +97,7 @@ int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, ui
         .device_id = dst_id,
         .status = status,
         .hash = hash,
+        .hop_num = hop_num,
     };
 
     return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
@@ -118,7 +119,7 @@ int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uin
 }
 
 /* Send pairing acknowledgment packet. */
-int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
+int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status, uint8_t hop_num)
 {
     pair_ack_t packet = {
         .packet_type = PACKET_PAIR_ACK,
@@ -127,6 +128,7 @@ int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t
         .tracking_id = tracking_id,
         .device_id = dst_id,
         .status = status,
+        .hop_num = hop_num,
     };
 
     return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
@@ -158,7 +160,7 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
 
     uint32_t hash = compute_pair_hash(dst_id, pkt->random_num);
 
-    send_pair_response(0, dst_id, pkt->tracking_id, status, hash);
+    send_pair_response(0, dst_id, pkt->tracking_id, status, hash, 0);
 }
 
 /* Handle received pairing confirm packet. */
@@ -189,7 +191,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
                 infra_entry_t entry;
                 entry.device_id = dst_id;
                 entry.device_type = conf->device_type;
-                entry.hop_num = 0;
+                entry.hop_num = 0xFF;
                 entry.rssi_2 = rssi_2;
                 int err = storage_infra_add(&entry);
                 if (err) {
@@ -218,7 +220,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
             return;
     }
 
-    send_pair_ack(0, dst_id, conf->tracking_id, status);
+    send_pair_ack(0, dst_id, conf->tracking_id, status, 0);
     return;
 
 }
