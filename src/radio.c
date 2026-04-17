@@ -10,6 +10,8 @@
 #include <zephyr/drivers/hwinfo.h>
 #include "radio.h"
 #include "queue.h"
+#include "protocol.h"
+#include "storage.h"
 
 LOG_MODULE_REGISTER(radio, CONFIG_RADIO_LOG_LEVEL);
 
@@ -167,10 +169,51 @@ static void on_pcc_crc_err(const struct nrf_modem_dect_phy_pcc_crc_failure_event
 	LOG_WRN("pcc_crc_err cb time %"PRIu64"", modem_time);
 }
 
+/* Check if a packet should be enqueued.
+ * Pairing packets are always accepted.
+ * Other packets only accepted from known devices (stored in infra or sensor partition). */
+static bool should_enqueue(uint8_t packet_type, uint16_t sender_id)
+{
+	/* Pairing packets — always accept. */
+	if (packet_type >= PACKET_PAIR_REQUEST && packet_type <= PACKET_PAIR_ACK) {
+		return true;
+	}
+
+	/* For other packets, check if sender is a known device. */
+	infra_entry_t infra;
+
+	for (int i = 0; i < storage_infra_count(); i++) {
+		if (storage_infra_get(i, &infra) == 0 && infra.device_id == sender_id) {
+			return true;
+		}
+	}
+
+	sensor_entry_t sensor;
+
+	for (int i = 0; i < storage_sensor_count(); i++) {
+		if (storage_sensor_get(i, &sensor) == 0 && sensor.device_id == sender_id) {
+			return true;
+		}
+	}
+
+	LOG_DBG("Dropping packet type 0x%02x from unknown device %d", packet_type, sender_id);
+	return false;
+}
+
 /* Physical Data Channel reception notification. */
 static void on_pdc(const struct nrf_modem_dect_phy_pdc_event *evt)
 {
 	LOG_DBG("PDC received, len %d, rssi_2 %d", evt->len, evt->rssi_2);
+
+	if (evt->len < 1) {
+		return;
+	}
+
+	uint8_t packet_type = ((const uint8_t *)evt->data)[0];
+
+	if (!should_enqueue(packet_type, last_sender_id)) {
+		return;
+	}
 
 	struct rx_data_item item = {
 		.sender_id = last_sender_id,

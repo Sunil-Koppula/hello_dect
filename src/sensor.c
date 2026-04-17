@@ -52,7 +52,7 @@ static int sensor_init(void)
 
 	uint8_t tid = tracker_next_id();
 
-	tracker_add(0, tid, PACKET_PAIR_REQUEST, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
+	tracker_add(0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
 	send_pair_request(0, tid);
 
 	return 0;
@@ -61,81 +61,13 @@ static int sensor_init(void)
 static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 {
 	switch (data[0]) {
-	case PACKET_PAIR_RESPONSE: {
-		const pair_response_t *resp = (const pair_response_t *)data;
-
-		if (resp->hdr.device_id != radio_get_device_id()) {
-			break;
-		}
-
-		LOG_INF("PAIR_RESPONSE from %s ID:%d: status 0x%02x, hop %d",
-			device_type_str(resp->hdr.device_type), sender_id,
-			resp->hdr.status, resp->hop_num);
-
-		/* Find and remove the request tracker by its tracking ID. */
-		int idx = tracker_find_by_tracking_id(resp->hdr.tracking_id);
-		if (idx >= 0) {
-			tracker_remove(idx);
-		}
-
-		if (resp->hdr.status != STATUS_SUCCESS) {
-			LOG_WRN("PAIR_RESPONSE failed: status 0x%02x", resp->hdr.status);
-			break;
-		}
-
-		paired_device_id = sender_id;
-		paired_device_type = resp->hdr.device_type;
-
-		/* Send confirm with a new tracking ID. */
-		uint8_t tid = tracker_next_id();
-
-		tracker_add(sender_id, tid, PACKET_PAIR_CONFIRM, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
-		send_pair_confirm(0, sender_id, tid, STATUS_SUCCESS);
-
-		LOG_INF("Sending PAIR_CONFIRM to %s ID:%d (tid: %d)",
-			device_type_str(resp->hdr.device_type), sender_id, tid);
+	case PACKET_PAIR_RESPONSE:
+		handle_pair_response((const pair_response_t *)data, sender_id, rssi_2);
 		break;
-	}
 
-	case PACKET_PAIR_ACK: {
-		const pair_ack_t *ack = (const pair_ack_t *)data;
-
-		if (ack->hdr.device_id != radio_get_device_id()) {
-			break;
-		}
-
-		LOG_INF("PAIR_ACK from %s ID:%d: status 0x%02x",
-			device_type_str(ack->hdr.device_type), sender_id, ack->hdr.status);
-
-		/* Find and remove the confirm tracker. */
-		int idx = tracker_find_by_tracking_id(ack->hdr.tracking_id);
-		if (idx >= 0) {
-			tracker_remove(idx);
-		}
-
-		if (ack->hdr.status != STATUS_SUCCESS) {
-			LOG_WRN("PAIR_ACK failed: status 0x%02x", ack->hdr.status);
-			break;
-		}
-
-		/* Store to EEPROM partition 1. */
-		storage_infra_clear();
-		infra_entry_t entry = {
-			.device_type = paired_device_type,
-			.device_id = paired_device_id,
-			.hop_num = 1,
-			.rssi_2 = rssi_2,
-		};
-		int err = storage_infra_add(&entry);
-
-		if (err) {
-			LOG_ERR("Failed to store pairing, err %d", err);
-		} else {
-			LOG_INF("Paired with %s ID:%d and stored",
-				device_type_str(paired_device_type), paired_device_id);
-		}
+	case PACKET_PAIR_ACK:
+		handle_pair_ack((const pair_ack_t *)data, sender_id, rssi_2);
 		break;
-	}
 
 	default:
 		break;
@@ -202,6 +134,7 @@ void sensor_main(void)
 		}
 
 		case MAIN_SUB_TRACKER:
+			mesh_tick();
 			tracker_tick(tracker_default_expired_cb);
 			state = MAIN_SUB_RX_WINDOW;
 			break;

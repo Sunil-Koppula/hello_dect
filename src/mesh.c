@@ -17,6 +17,26 @@
 
 LOG_MODULE_REGISTER(mesh, CONFIG_MESH_LOG_LEVEL);
 
+#include "timeout.h"
+
+#define COLLECT_WINDOW_MS     2000
+#define MAX_RESPONSE_CANDIDATES 16
+
+/* Candidate from a PAIR_RESPONSE during collection. */
+struct response_candidate {
+    uint16_t sender_id;
+    uint8_t  device_type;
+    uint8_t  hop_num;
+    int16_t  rssi_2;
+    uint32_t hash;
+    uint8_t  tracking_id;
+};
+
+static struct response_candidate resp_candidates[MAX_RESPONSE_CANDIDATES];
+static int resp_candidate_count;
+static struct nbtimeout collect_timer;
+static bool collecting;
+
 /* Generate random number for pairing. */
 static uint32_t generate_random_number(void)
 {
@@ -164,7 +184,7 @@ int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t
 /* Handle received pairing request packet. */
 void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
-    LOG_INF("Pair Request from %s ID:%d and RSSI:%d", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2));
+    LOG_INF("PAIR_REQUEST from %s ID:%d and RSSI:%d", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2));
 
     uint8_t status;
 
@@ -187,10 +207,12 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
 
     uint32_t hash = compute_pair_hash(dst_id, pkt->random_num);
 
+    LOG_INF("Sending PAIR_RESPONSE to %d: status 0x%02x, hash 0x%08x", dst_id, status, hash);
     send_pair_response(0, dst_id, pkt->hdr.tracking_id, status, hash, 0);
 }
 
-/* Handle received pairing response packet. */
+/* Handle received pairing response packet.
+ * Collects candidates for 3 seconds, then mesh_tick() selects the best ones. */
 void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     const pair_response_t *resp = (const pair_response_t *)pkt;
@@ -199,67 +221,54 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
         return;
     }
 
-    LOG_INF("PAIR_RESPONSE from %s ID:%d: status 0x%02x, hop %d", device_type_str(resp->hdr.device_type), dst_id, resp->hdr.status, resp->hop_num);
+    LOG_INF("PAIR_RESPONSE from %s ID:%d: status 0x%02x, hop %d, RSSI %d.%d",
+        device_type_str(resp->hdr.device_type), dst_id, resp->hdr.status,
+        resp->hop_num, (rssi_2 / 2), (rssi_2 & 0b1) * 5);
 
-    /* Find and remove the request tracker by tracking ID from the packet. */
+    /* Stop the request tracker — we got a response. */
     int idx = tracker_find_by_tracking_id(resp->hdr.tracking_id);
     if (idx >= 0) {
         tracker_remove(idx);
     }
 
-    uint8_t status;
-
-    if (resp->hdr.status == STATUS_SUCCESS) {
-        switch (resp->hdr.device_type) {
-            case DEVICE_TYPE_GATEWAY:
-            case DEVICE_TYPE_ANCHOR:
-            {
-                switch(PRODUCT_DEVICE_TYPE) {
-                    case DEVICE_TYPE_GATEWAY:
-                        LOG_WRN("Gateway will never receive PAIR_RESPONSE, ignoring");
-                        return;
-                    
-                    case DEVICE_TYPE_ANCHOR:
-                        // Check if device is already paired with this anchor
-                        status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
-                        break;
-
-                    case DEVICE_TYPE_SENSOR:
-                        // Check if device is already paired with this gateway/anchor
-                        status = check_infra_storage(dst_id, pkt->hdr.device_type, false);
-                        break;
-
-                    default:
-                        LOG_WRN("Unknown device type 0x%02x in pair response from %d, ignoring", pkt->hdr.device_type, dst_id);
-                        return;
-                }
-                break;
-            }
-            case DEVICE_TYPE_SENSOR:
-                LOG_WRN("Received PAIR_RESPONSE from sensor device %d, ignoring", dst_id);
-                return;
-            default:
-                LOG_WRN("Unknown device type 0x%02x in pair response from %d, rejecting", resp->hdr.device_type, dst_id);
-                return;
-        }
-    } else {
+    if (resp->hdr.status != STATUS_SUCCESS) {
         LOG_WRN("PAIR_RESPONSE failed: status 0x%02x", resp->hdr.status);
         return;
     }
 
-    if (status == STATUS_SUCCESS) {
-        // Send confirm with a new tracking ID.
-        uint8_t tid = tracker_next_id();
-        LOG_INF("Sending PAIR_CONFIRM to %s ID:%d (tid: %d)", device_type_str(resp->hdr.device_type), dst_id, tid);
-        tracker_add(dst_id, tid, PACKET_PAIR_CONFIRM, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
-        send_pair_confirm(0, dst_id, tid, STATUS_SUCCESS);
-    } else if (status == STATUS_ALREADY_EXISTS) {
-        LOG_INF("%s %d already paired, sending PAIR_CONFIRM with success", device_type_str(resp->hdr.device_type), dst_id);
-    } else if (status == STATUS_STORAGE_FULL) {
-        LOG_WRN("Storage full, cannot pair with %s %d, sending PAIR_CONFIRM with failure", device_type_str(resp->hdr.device_type), dst_id);
+    /* Validate responder type. */
+    if (resp->hdr.device_type != DEVICE_TYPE_GATEWAY &&
+        resp->hdr.device_type != DEVICE_TYPE_ANCHOR) {
+        LOG_WRN("PAIR_RESPONSE from unexpected %s, ignoring",
+            device_type_str(resp->hdr.device_type));
+        return;
     }
 
-    return;
+    /* Start collection window on first response. */
+    if (!collecting) {
+        collecting = true;
+        resp_candidate_count = 0;
+        nbtimeout_init(&collect_timer, COLLECT_WINDOW_MS, 0);
+        nbtimeout_start(&collect_timer);
+        LOG_INF("Collection started - gathering responses for %d ms", COLLECT_WINDOW_MS);
+    }
+
+    /* Add to candidates if there's room. */
+    if (resp_candidate_count < MAX_RESPONSE_CANDIDATES) {
+        resp_candidates[resp_candidate_count++] = (struct response_candidate){
+            .sender_id = dst_id,
+            .device_type = resp->hdr.device_type,
+            .hop_num = resp->hop_num,
+            .rssi_2 = rssi_2,
+            .hash = resp->hash,
+            .tracking_id = resp->hdr.tracking_id,
+        };
+        LOG_INF("Candidate %d: %s ID:%d hop:%d RSSI:%d.%d",
+            resp_candidate_count, device_type_str(resp->hdr.device_type),
+            dst_id, resp->hop_num, (rssi_2 / 2), (rssi_2 & 0b1) * 5);
+    } else {
+        LOG_WRN("Candidate buffer full, ignoring response from %d", dst_id);
+    }
 }
 
 /* Handle received pairing confirm packet. */
@@ -298,6 +307,8 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
                     return;
                 }
                 LOG_INF("Anchor %d paired and stored in infra (total %d)", dst_id, storage_infra_count());
+            } else if (status == STATUS_ALREADY_EXISTS) {
+                LOG_INF("Anchor %d already paired, received PAIR_CONFIRM with success", dst_id);
             }
             break;
         case DEVICE_TYPE_SENSOR:
@@ -312,6 +323,8 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
                     return;
                 }
                 LOG_INF("Sensor %d paired and stored (total %d)", dst_id, storage_sensor_count());
+            } else if (status == STATUS_ALREADY_EXISTS) {
+                LOG_INF("Sensor %d already paired, received PAIR_CONFIRM with success", dst_id);
             }
             break;
         default:
@@ -319,6 +332,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
             return;
     }
 
+    LOG_INF("Sending PAIR_ACK to %d: status 0x%02x", dst_id, status);
     send_pair_ack(0, dst_id, conf->hdr.tracking_id, status, 0);
     return;
 
@@ -392,7 +406,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
             LOG_ERR("Failed to store paired device, err %d", err);
             return;
         }
-        LOG_INF("Device %d paired and stored in infra (total %d)", dst_id, storage_infra_count());
+        LOG_INF("%s %d paired and stored in infra (total %d)", device_type_str(ack->hdr.device_type), dst_id, storage_infra_count());
     } else if (status == STATUS_ALREADY_EXISTS) {
         LOG_INF("%s %d already paired, received PAIR_ACK with success", device_type_str(ack->hdr.device_type), dst_id);
     } else if (status == STATUS_STORAGE_FULL) {
@@ -400,4 +414,99 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
     }
     
     return;
+}
+
+/* Simple bubble sort candidates by hop (ascending), then RSSI (descending). */
+static void sort_candidates(void)
+{
+    for (int i = 0; i < resp_candidate_count - 1; i++) {
+        for (int j = 0; j < resp_candidate_count - i - 1; j++) {
+            bool swap = false;
+
+            if (resp_candidates[j].hop_num > resp_candidates[j + 1].hop_num) {
+                swap = true;
+            } else if (resp_candidates[j].hop_num == resp_candidates[j + 1].hop_num &&
+                       resp_candidates[j].rssi_2 < resp_candidates[j + 1].rssi_2) {
+                /* Same hop — prefer better (higher) RSSI. */
+                swap = true;
+            }
+
+            if (swap) {
+                struct response_candidate tmp = resp_candidates[j];
+                resp_candidates[j] = resp_candidates[j + 1];
+                resp_candidates[j + 1] = tmp;
+            }
+        }
+    }
+}
+
+/* Select best candidates and send PAIR_CONFIRM to each. */
+static void select_and_confirm(void)
+{
+    if (resp_candidate_count == 0) {
+        LOG_WRN("No candidates collected during window");
+        return;
+    }
+
+    sort_candidates();
+
+    /* How many slots available?
+     * Sensor: only 1 upstream connection allowed.
+     * Anchor: up to STORAGE_PART1_MAX_ENTRIES. */
+    int max_slots = (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) ? 1 : STORAGE_PART1_MAX_ENTRIES;
+    int available = max_slots - storage_infra_count();
+
+    if (available <= 0) {
+        LOG_WRN("Infra storage full, cannot pair with any candidates");
+        return;
+    }
+
+    int to_confirm = (resp_candidate_count < available) ? resp_candidate_count : available;
+
+    LOG_INF("Selecting %d of %d candidates (sorted by hop then RSSI)", to_confirm, resp_candidate_count);
+
+    for (int i = 0; i < to_confirm; i++) {
+        struct response_candidate *c = &resp_candidates[i];
+
+        /* Skip if already stored. */
+        uint8_t status = check_infra_storage(c->sender_id, c->device_type, true);
+
+        if (status == STATUS_ALREADY_EXISTS) {
+            LOG_INF("Candidate %s ID:%d already paired, skipping", device_type_str(c->device_type), c->sender_id);
+            continue;
+        }
+
+        if (status == STATUS_STORAGE_FULL) {
+            LOG_WRN("Infra storage full, stopping selection");
+            break;
+        }
+
+        uint8_t tid = tracker_next_id();
+
+        LOG_INF("Sending PAIR_CONFIRM to %s ID:%d (hop:%d, RSSI:%d.%d, tid:%d)",
+            device_type_str(c->device_type), c->sender_id,
+            c->hop_num, (c->rssi_2 / 2), (c->rssi_2 & 0b1) * 5, tid);
+
+        tracker_add(c->sender_id, tid, PACKET_PAIR_CONFIRM, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
+        send_pair_confirm(0, c->sender_id, tid, STATUS_SUCCESS);
+    }
+}
+
+bool mesh_is_collecting(void)
+{
+    return collecting;
+}
+
+void mesh_tick(void)
+{
+    if (!collecting) {
+        return;
+    }
+
+    if (nbtimeout_expired(&collect_timer)) {
+        LOG_INF("Collection window expired — %d candidates", resp_candidate_count);
+        collecting = false;
+        nbtimeout_stop(&collect_timer);
+        select_and_confirm();
+    }
 }

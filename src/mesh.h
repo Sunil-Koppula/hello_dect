@@ -21,4 +21,10 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
 void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 
+/* Call each main loop cycle to check response collection timer. */
+void mesh_tick(void);
+
+/* Returns true if response collection is in progress. */
+bool mesh_is_collecting(void);
+
 #endif /* MESH_H */

@@ -27,6 +27,21 @@ static int gateway_init(void)
 	LOG_INF("Gateway init: infra=%d sensors=%d mesh=%d",
 		storage_infra_count(), storage_sensor_count(), storage_mesh_count());
 
+	if (storage_infra_count() > 0) {
+		LOG_INF("Already paired with: ");
+
+		for (int i = 0; i < storage_infra_count(); i++) {
+			infra_entry_t entry;
+			int err = storage_infra_get(i, &entry);
+			if (err) {
+				LOG_ERR("Failed to read infra entry %d, err %d", i, err);
+				continue;
+			}
+			LOG_INF("Infra entry %d: %s ID:%d (hop:%d)", i,
+				device_type_str(entry.device_type),
+				entry.device_id, entry.hop_num);
+		}
+	}
 	return 0;
 }
 

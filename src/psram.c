@@ -22,6 +22,11 @@ LOG_MODULE_REGISTER(psram, CONFIG_PSRAM_LOG_LEVEL);
 #define PSRAM_CMD_WRITE  0x02
 #define PSRAM_CMD_RSTEN  0x66
 #define PSRAM_CMD_RST    0x99
+#define PSRAM_CMD_RDID   0x9F
+
+/* APS6404L Known ID: Manufacturer 0x0D, KGD 0x5D */
+#define PSRAM_MFG_ID     0x0D
+#define PSRAM_KGD_ID     0x5D
 
 static const struct spi_dt_spec psram_spi = SPI_DT_SPEC_GET(
 	DT_NODELABEL(psram),
@@ -50,6 +55,36 @@ int psram_init(void)
 	spi_bus_unlock();
 
 	k_usleep(100);  /* tRST = 50us max */
+
+	/* Read ID to verify PSRAM is present.
+	 * APS6404L RDID: cmd(1) + addr(3) = 4 bytes TX, then 2 bytes RX (MFG + KGD). */
+	uint8_t id_cmd[4] = { PSRAM_CMD_RDID, 0x00, 0x00, 0x00 };
+	uint8_t id_rx[6] = { 0 };  /* 4 dummy + 2 ID bytes */
+
+	struct spi_buf id_tx_buf = { .buf = id_cmd, .len = sizeof(id_cmd) };
+	struct spi_buf id_rx_bufs[] = {
+		{ .buf = NULL, .len = sizeof(id_cmd) },  /* skip cmd bytes */
+		{ .buf = id_rx, .len = sizeof(id_rx) },
+	};
+	struct spi_buf_set id_tx_set = { .buffers = &id_tx_buf, .count = 1 };
+	struct spi_buf_set id_rx_set = { .buffers = id_rx_bufs, .count = 2 };
+
+	spi_bus_lock();
+	int err = spi_transceive_dt(&psram_spi, &id_tx_set, &id_rx_set);
+	spi_bus_unlock();
+
+	if (err) {
+		LOG_ERR("PSRAM Read ID failed, err %d", err);
+		return -ENODEV;
+	}
+
+	uint8_t mfg_id = id_rx[0];
+	uint8_t kgd_id = id_rx[1];
+
+	if (mfg_id != PSRAM_MFG_ID || kgd_id != PSRAM_KGD_ID) {
+		LOG_ERR("PSRAM not detected (MFG: 0x%02x, KGD: 0x%02x)", mfg_id, kgd_id);
+		return -ENODEV;
+	}
 
 	LOG_INF("PSRAM initialized (APS6404L, %d KB)", PSRAM_SIZE / 1024);
 
