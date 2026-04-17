@@ -208,7 +208,7 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
     uint32_t hash = compute_pair_hash(dst_id, pkt->random_num);
 
     LOG_INF("Sending PAIR_RESPONSE to %d: status 0x%02x, hash 0x%08x", dst_id, status, hash);
-    send_pair_response(0, dst_id, pkt->hdr.tracking_id, status, hash, 0);
+    send_pair_response(0, dst_id, pkt->hdr.tracking_id, status, hash, PRODUCT_HOP_NUMBER);
 }
 
 /* Handle received pairing response packet.
@@ -333,7 +333,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
     }
 
     LOG_INF("Sending PAIR_ACK to %d: status 0x%02x", dst_id, status);
-    send_pair_ack(0, dst_id, conf->hdr.tracking_id, status, 0);
+    send_pair_ack(0, dst_id, conf->hdr.tracking_id, status, PRODUCT_HOP_NUMBER);
     return;
 
 }
@@ -357,7 +357,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
     uint8_t status;
 
-    if (ack->hdr.status == STATUS_SUCCESS) {
+    if (ack->hdr.status == STATUS_SUCCESS || ack->hdr.status == STATUS_ALREADY_EXISTS) {
         switch (ack->hdr.device_type) {
             case DEVICE_TYPE_GATEWAY:
             case DEVICE_TYPE_ANCHOR:
@@ -399,7 +399,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
         infra_entry_t entry;
         entry.device_id = dst_id;
         entry.device_type = ack->hdr.device_type;
-        entry.hop_num = 0xFF;
+        entry.hop_num = ack->hop_num;
         entry.rssi_2 = rssi_2;
         int err = storage_infra_add(&entry);
         if (err) {
@@ -407,6 +407,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
             return;
         }
         LOG_INF("%s %d paired and stored in infra (total %d)", device_type_str(ack->hdr.device_type), dst_id, storage_infra_count());
+        product_info_update_hop();
     } else if (status == STATUS_ALREADY_EXISTS) {
         LOG_INF("%s %d already paired, received PAIR_ACK with success", device_type_str(ack->hdr.device_type), dst_id);
     } else if (status == STATUS_STORAGE_FULL) {

@@ -46,6 +46,8 @@ static int anchor_init(void)
 				entry.device_id, entry.hop_num);
 		}
 
+		product_info_update_hop();
+
 		if (infra >= STORAGE_PART1_MAX_ENTRIES) {
 			return 0;
 		}

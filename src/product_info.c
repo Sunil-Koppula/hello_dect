@@ -15,6 +15,7 @@
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/logging/log.h>
 #include "product_info.h"
+#include "storage.h"
 
 LOG_MODULE_REGISTER(product_info, CONFIG_PRODUCT_INFO_LOG_LEVEL);
 
@@ -25,6 +26,8 @@ static const struct gpio_dt_spec pin0 = GPIO_DT_SPEC_GET(DEVTYPE_PIN0_NODE, gpio
 static const struct gpio_dt_spec pin1 = GPIO_DT_SPEC_GET(DEVTYPE_PIN1_NODE, gpios);
 
 device_type_t PRODUCT_DEVICE_TYPE;
+uint64_t PRODUCT_SERIAL_NUMBER;
+uint8_t PRODUCT_HOP_NUMBER;
 
 int product_info_init(void)
 {
@@ -75,7 +78,57 @@ int product_info_init(void)
 		break;
 	}
 
-	LOG_INF("Device type: %s", device_type_str(PRODUCT_DEVICE_TYPE));
+	/* Build serial number: 0x00{device_id_16}00DEADBEEF */
+	uint16_t hw_id;
+
+	hwinfo_get_device_id((void *)&hw_id, sizeof(hw_id));
+	PRODUCT_SERIAL_NUMBER = ((uint64_t)hw_id << 40) | 0x00DEADBEEFULL;
+
+	/* Set initial hop number based on device type. */
+	switch (PRODUCT_DEVICE_TYPE) {
+	case DEVICE_TYPE_GATEWAY:
+		PRODUCT_HOP_NUMBER = 0;
+		break;
+	case DEVICE_TYPE_SENSOR:
+		PRODUCT_HOP_NUMBER = 0xFF;  /* sensors don't have hop */
+		break;
+	default:
+		PRODUCT_HOP_NUMBER = 0xFF;  /* anchor: updated after pairing */
+		break;
+	}
+
+	LOG_INF("Device type: %s, SN: 0x%016llx, Hop: %d",
+		device_type_str(PRODUCT_DEVICE_TYPE),
+		PRODUCT_SERIAL_NUMBER, PRODUCT_HOP_NUMBER);
 
 	return 0;
+}
+
+void product_info_update_hop(void)
+{
+	if (PRODUCT_DEVICE_TYPE != DEVICE_TYPE_ANCHOR) {
+		return;
+	}
+
+	int infra = storage_infra_count();
+
+	if (infra == 0) {
+		PRODUCT_HOP_NUMBER = 0xFF;
+		return;
+	}
+
+	/* Find minimum hop among infra entries. */
+	uint8_t min_hop = 0xFF;
+
+	for (int i = 0; i < infra; i++) {
+		infra_entry_t entry;
+
+		if (storage_infra_get(i, &entry) == 0 && entry.hop_num < min_hop) {
+			min_hop = entry.hop_num;
+		}
+	}
+
+	PRODUCT_HOP_NUMBER = (min_hop < 0xFE) ? min_hop + 1 : 0xFF;
+
+	LOG_INF("Anchor hop updated: %d (min infra hop: %d)", PRODUCT_HOP_NUMBER, min_hop);
 }
