@@ -95,7 +95,7 @@ void gateway_main(void)
 
 			while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
 			       tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
-				err = transmit(0, tx_item.data, tx_item.data_len, 1);
+				err = transmit(0, tx_item.data, tx_item.data_len, 0);
 				if (err) {
 					LOG_ERR("TX failed, err %d", err);
 					break;

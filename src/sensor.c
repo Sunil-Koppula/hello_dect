@@ -25,9 +25,6 @@
 
 LOG_MODULE_REGISTER(sensor, CONFIG_SENSOR_LOG_LEVEL);
 
-#define PAIR_TIMEOUT_MS   500
-#define PAIR_MAX_RETRIES  5
-
 static uint16_t paired_device_id;
 static uint8_t  paired_device_type;
 
@@ -192,7 +189,7 @@ void sensor_main(void)
 
 			while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
 			       tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
-				err = transmit(0, tx_item.data, tx_item.data_len, 1);
+				err = transmit(0, tx_item.data, tx_item.data_len, 0);
 				if (err) {
 					LOG_ERR("TX failed, err %d", err);
 					break;

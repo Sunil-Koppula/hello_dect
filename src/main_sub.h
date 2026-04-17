@@ -13,6 +13,9 @@ typedef enum
     MAIN_SUB_ERROR
 } main_sub_state_t;
 
+#define PAIR_TIMEOUT_MS     500
+#define PAIR_MAX_RETRIES    5
+
 /* Gateway main loop (RX → process → TX, runs forever). */
 void gateway_main(void);
 

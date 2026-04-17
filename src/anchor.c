@@ -24,9 +24,6 @@
 
 LOG_MODULE_REGISTER(anchor, CONFIG_ANCHOR_LOG_LEVEL);
 
-#define PAIR_TIMEOUT_MS     500
-#define PAIR_MAX_RETRIES    5
-
 static uint16_t paired_device_id;
 static uint8_t  paired_device_type;
 
@@ -64,110 +61,27 @@ static int anchor_init(void)
 static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 {
 	switch (data[0]) {
-	case PACKET_PAIR_RESPONSE: {
-		const pair_response_t *resp = (const pair_response_t *)data;
-
-		if (resp->hdr.device_id != radio_get_device_id()) {
-			break;
-		}
-
-		LOG_INF("PAIR_RESPONSE from %s ID:%d: status 0x%02x, hop %d",
-			device_type_str(resp->hdr.device_type), sender_id,
-			resp->hdr.status, resp->hop_num);
-
-		/* Find and remove the request tracker by tracking ID from the packet. */
-		int idx = tracker_find_by_tracking_id(resp->hdr.tracking_id);
-		if (idx >= 0) {
-			tracker_remove(idx);
-		}
-
-		if (resp->hdr.status == STATUS_SUCCESS) {
-			/* Check if already stored. */
-			infra_entry_t entry;
-
-			for (int i = 0; i < storage_infra_count(); i++) {
-				if (storage_infra_get(i, &entry) == 0 &&
-				    entry.device_id == sender_id) {
-					LOG_INF("Device %d already stored in infra, skipping",
-						sender_id);
-					return;
-				}
-			}
-
-			if (storage_infra_count() >= STORAGE_PART1_MAX_ENTRIES) {
-				LOG_WRN("Infra storage full, cannot add device %d", sender_id);
-				return;
-			}
-
-			/* Send confirm with a new tracking ID. */
-			uint8_t tid = tracker_next_id();
-
-			LOG_INF("Sending PAIR_CONFIRM to %s ID:%d (tid: %d)",
-				device_type_str(resp->hdr.device_type), sender_id, tid);
-			tracker_add(sender_id, tid, PACKET_PAIR_CONFIRM, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
-			send_pair_confirm(0, sender_id, tid, STATUS_SUCCESS);
-		} else {
-			LOG_WRN("PAIR_RESPONSE failed: status 0x%02x", resp->hdr.status);
-		}
+	case PACKET_PAIR_REQUEST:
+		handle_pair_request((const pair_request_t *)data, sender_id, rssi_2);
 		break;
-	}
-
-	case PACKET_PAIR_ACK: {
-		const pair_ack_t *ack = (const pair_ack_t *)data;
-
-		if (ack->hdr.device_id != radio_get_device_id()) {
-			break;
-		}
-
-		LOG_INF("PAIR_ACK from %s ID:%d: status 0x%02x",
-			device_type_str(ack->hdr.device_type), sender_id, ack->hdr.status);
-
-		/* Find and remove the confirm tracker. */
-		int idx = tracker_find_by_tracking_id(ack->hdr.tracking_id);
-		if (idx >= 0) {
-			tracker_remove(idx);
-		}
-
-		if (ack->hdr.status == STATUS_SUCCESS) {
-			/* Check if already stored. */
-			infra_entry_t entry;
-
-			for (int i = 0; i < storage_infra_count(); i++) {
-				if (storage_infra_get(i, &entry) == 0 &&
-				    entry.device_id == sender_id) {
-					LOG_INF("Device %d already stored in infra, skipping",
-						sender_id);
-					return;
-				}
-			}
-
-			if (storage_infra_count() >= STORAGE_PART1_MAX_ENTRIES) {
-				LOG_WRN("Infra storage full, cannot add device %d", sender_id);
-				return;
-			}
-
-			entry.device_id = sender_id;
-			entry.device_type = ack->hdr.device_type;
-			entry.hop_num = 0;
-			entry.rssi_2 = rssi_2;
-			int err = storage_infra_add(&entry);
-
-			if (err) {
-				LOG_ERR("Failed to store paired device, err %d", err);
-				return;
-			}
-
-			LOG_INF("Device %d paired and stored in infra (total %d)",
-				sender_id, storage_infra_count());
-		} else {
-			LOG_WRN("PAIR_ACK failed: status 0x%02x", ack->hdr.status);
-		}
+	
+	case PACKET_PAIR_RESPONSE:
+		handle_pair_response((const pair_response_t *)data, sender_id, rssi_2);
 		break;
-	}
 
+	case PACKET_PAIR_CONFIRM:
+		handle_pair_confirm((const pair_confirm_t *)data, sender_id, rssi_2);
+		break;
+	
+	case PACKET_PAIR_ACK:
+		handle_pair_ack((const pair_ack_t *)data, sender_id, rssi_2);
+		break;
+	
 	default:
 		break;
 	}
+
+	return;
 }
 
 void anchor_main(void)
@@ -217,7 +131,7 @@ void anchor_main(void)
 
 			while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
 			       tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
-				err = transmit(0, tx_item.data, tx_item.data_len, 1);
+				err = transmit(0, tx_item.data, tx_item.data_len, 0);
 				if (err) {
 					LOG_ERR("TX failed, err %d", err);
 					break;

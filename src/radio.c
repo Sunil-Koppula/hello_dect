@@ -287,8 +287,16 @@ int transmit(uint32_t handle, void *data, size_t data_len, uint8_t packet_length
 {
 	int err;
 
-	if (packet_length == 0 || packet_length > 15) {
-		packet_length = 1;
+	if (packet_length == 0) {
+		/* Auto-calculate subslots needed.
+		 * ~14 bytes per subslot at MCS 2 (QPSK 3/4). */
+		packet_length = (data_len + 13) / 14;
+		if (packet_length == 0) {
+			packet_length = 1;
+		}
+	}
+	if (packet_length > 15) {
+		packet_length = 15;
 	}
 
 	struct phy_ctrl_field_common header = {

@@ -54,7 +54,7 @@ typedef enum {
 typedef struct {
 	uint8_t packet_type;        /* packet_type_t */
 	uint8_t device_type;        /* device_type_t */
-	uint8_t priority;           /* PACKET_PRIORITY_HIGH / LOW */
+	uint8_t priority;           /* PACKET_PRIORITY_HIGH / MEDIUM / LOW */
 	uint8_t tracking_id;        /* Tracking ID (1–254) */
 	uint16_t device_id;         /* sender or target device ID */
 	uint8_t status;             /* STATUS_SUCCESS / STATUS_FAILURE */
@@ -95,6 +95,14 @@ typedef struct {
 } __attribute__((packed)) pair_ack_t;
 
 #define PAIR_ACK_PACKET_SIZE sizeof(pair_ack_t)
+
+/* JOINED NETWORK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint8_t hop_num;
+} __attribute__((packed)) joined_network_t;
+
+#define JOINED_NETWORK_PACKET_SIZE sizeof(joined_network_t)
 
 /* Get device type as string */
 static inline const char *device_type_str(device_type_t type)
