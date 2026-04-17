@@ -33,8 +33,11 @@ static const struct spi_dt_spec psram_spi = SPI_DT_SPEC_GET(
 	SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER,
 	0);
 
+static bool psram_ready;
+
 int psram_init(void)
 {
+	psram_ready = false;
 	if (!spi_is_ready_dt(&psram_spi)) {
 		LOG_ERR("PSRAM SPI device not ready");
 		return -ENODEV;
@@ -86,13 +89,24 @@ int psram_init(void)
 		return -ENODEV;
 	}
 
-	LOG_INF("PSRAM initialized (APS6404L, %d KB)", PSRAM_SIZE / 1024);
+	psram_ready = true;
+	LOG_INF("PSRAM initialized (APS6404L, %d KB) (MFG: 0x%02x, KGD: 0x%02x)", PSRAM_SIZE / 1024, mfg_id, kgd_id);
 
 	return 0;
 }
 
+bool is_psram_initialized(void)
+{
+	return psram_ready;
+}
+
 int psram_read(uint32_t addr, void *buf, size_t len)
 {
+	if (!psram_ready) {
+		LOG_ERR("PSRAM not Initialized");
+		return -ENODEV;
+	}
+
 	if (addr + len > PSRAM_SIZE) {
 		LOG_ERR("PSRAM read out of bounds: addr=0x%06x len=%d", addr, len);
 		return -EINVAL;
@@ -125,6 +139,11 @@ int psram_read(uint32_t addr, void *buf, size_t len)
 
 int psram_write(uint32_t addr, const void *buf, size_t len)
 {
+	if (!psram_ready) {
+		LOG_ERR("PSRAM not Initialized");
+		return -ENODEV;
+	}
+
 	if (addr + len > PSRAM_SIZE) {
 		LOG_ERR("PSRAM write out of bounds: addr=0x%06x len=%d", addr, len);
 		return -EINVAL;
@@ -153,12 +172,22 @@ int psram_write(uint32_t addr, const void *buf, size_t len)
 
 int psram_erase(uint32_t addr, size_t len)
 {
+	if (!psram_ready) {
+		LOG_ERR("PSRAM not Initialized");
+		return -ENODEV;
+	}
+
 	/* PSRAM doesn't need erase — just zero-fill. */
 	return psram_clear(addr, len);
 }
 
 int psram_clear(uint32_t addr, size_t len)
 {
+	if (!psram_ready) {
+		LOG_ERR("PSRAM not Initialized");
+		return -ENODEV;
+	}
+
 	if (addr + len > PSRAM_SIZE) {
 		LOG_ERR("PSRAM clear out of bounds: addr=0x%06x len=%d", addr, len);
 		return -EINVAL;

@@ -15,9 +15,17 @@
 
 LOG_MODULE_REGISTER(psram_queue, CONFIG_PSRAM_QUEUE_LOG_LEVEL);
 
+static bool psram_queue_ready;
+
 int psram_queue_init(struct psram_queue *q, uint32_t base_addr,
 		     uint32_t region_size, uint16_t item_size)
 {
+	psram_queue_ready = false;
+	if (!is_psram_initialized()) {
+		LOG_ERR("PSRAM not initialized, cannot init queue");
+		return -ENODEV;
+	}
+
 	if (item_size == 0 || region_size < item_size) {
 		LOG_ERR("Invalid psram_queue params: region=%d item=%d",
 			region_size, item_size);
@@ -40,11 +48,17 @@ int psram_queue_init(struct psram_queue *q, uint32_t base_addr,
 	LOG_DBG("PSRAM queue init: addr=0x%06x size=%d item=%d cap=%d",
 		base_addr, region_size, item_size, q->capacity);
 
+	psram_queue_ready = true;
 	return 0;
 }
 
 int psram_queue_put(struct psram_queue *q, const void *item)
 {
+	if (!psram_queue_ready) {
+		LOG_ERR("PSRAM queue not initialized");
+		return -ENODEV;
+	}
+
 	if (q->count >= q->capacity) {
 		return -ENOMEM;
 	}
@@ -66,6 +80,11 @@ int psram_queue_put(struct psram_queue *q, const void *item)
 
 int psram_queue_get(struct psram_queue *q, void *item)
 {
+	if (!psram_queue_ready) {
+		LOG_ERR("PSRAM queue not initialized");
+		return -ENODEV;
+	}
+
 	if (q->count == 0) {
 		return -ENODATA;
 	}
@@ -87,6 +106,11 @@ int psram_queue_get(struct psram_queue *q, void *item)
 
 int psram_queue_peek(struct psram_queue *q, void *item)
 {
+	if (!psram_queue_ready) {
+		LOG_ERR("PSRAM queue not initialized");
+		return -ENODEV;
+	}
+
 	if (q->count == 0) {
 		return -ENODATA;
 	}
@@ -113,6 +137,10 @@ bool psram_queue_is_full(const struct psram_queue *q)
 
 void psram_queue_reset(struct psram_queue *q)
 {
+	if (!psram_queue_ready) {
+		LOG_ERR("PSRAM queue not initialized");
+		return;
+	}
 	q->head = 0;
 	q->tail = 0;
 	q->count = 0;
