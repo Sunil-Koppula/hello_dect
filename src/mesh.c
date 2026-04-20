@@ -19,7 +19,7 @@ LOG_MODULE_REGISTER(mesh, CONFIG_MESH_LOG_LEVEL);
 
 #include "timeout.h"
 
-#define COLLECT_WINDOW_MS     2000
+#define COLLECT_WINDOW_MS     5000
 #define MAX_RESPONSE_CANDIDATES 16
 
 /* Candidate from a PAIR_RESPONSE during collection. */
@@ -226,7 +226,7 @@ int send_joined_network(uint32_t handle,const joined_network_t *pkt, uint16_t ds
 }
 
 /* Send joined network acknowledgment packet. */
-int send_joined_network_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
+int send_joined_network_ack(uint32_t handle, uint16_t dst_device_id, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
 {
     joined_network_ack_t packet = {
         .hdr = {
@@ -237,6 +237,7 @@ int send_joined_network_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_i
             .device_id = dst_id,
             .status = status,
         },
+        .dst_device_id = dst_device_id,
     };
 
     return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
@@ -260,6 +261,10 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
         case DEVICE_TYPE_SENSOR:
             // Check if device is already paired with this gateway/anchor
             status = check_sensor_storage(dst_id);
+            // Testing only
+            if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
+                return;
+            }
             break;
         default:
             LOG_WRN("Unknown device type 0x%02x in pair request from %d, rejecting", pkt->hdr.device_type, dst_id);
@@ -286,8 +291,8 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
         device_type_str(resp->hdr.device_type), dst_id, resp->hdr.status,
         resp->hop_num, (rssi_2 / 2), (rssi_2 & 0b1) * 5);
 
-    /* Stop the request tracker — we got a response. */
-    int idx = tracker_find_by_tracking_id(resp->hdr.tracking_id);
+    /* Stop the request tracker — pair request was broadcast (device_id = 0). */
+    int idx = tracker_find(0, PACKET_PAIR_REQUEST);
     if (idx >= 0) {
         tracker_remove(idx);
     }
@@ -413,7 +418,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
     LOG_INF("PAIR_ACK from %s ID:%d: status 0x%02x", device_type_str(ack->hdr.device_type), dst_id, ack->hdr.status);
 
     /* Find and remove the confirm tracker by tracking ID from the packet. */
-    int idx = tracker_find_by_tracking_id(ack->hdr.tracking_id);
+    int idx = tracker_find(dst_id, PACKET_PAIR_CONFIRM);
     if (idx >= 0) {
         tracker_remove(idx);
     }
@@ -492,12 +497,13 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
             jn_pkt.sensor_count = 0xFF;
         }
 
-        uint8_t tid = tracker_next_id();
-        tracker_add(dst_id, tid, PACKET_JOINED_NETWORK,
-            (ack->hop_num + 1) * 500, 5, &jn_pkt, sizeof(jn_pkt));
+        if (storage_infra_count() == 1) {
+            uint8_t tid = tracker_next_id();
+            tracker_add(radio_get_device_id(), radio_get_device_id(), tid, PACKET_JOINED_NETWORK, (ack->hop_num + 1) * 500, 5, &jn_pkt, sizeof(jn_pkt));
 
-        LOG_INF("Sending JOINED_NETWORK to %d for %s: hop %d", dst_id, device_type_str(ack->hdr.device_type), jn_pkt.hop_num);
-        send_joined_network(0, &jn_pkt, dst_id, tid, STATUS_SUCCESS);
+            LOG_INF("Sending JOINED_NETWORK to %d for %s: hop %d", dst_id, device_type_str(ack->hdr.device_type), jn_pkt.hop_num);
+            send_joined_network(0, &jn_pkt, dst_id, tid, STATUS_SUCCESS);
+        }
     } else if (status == STATUS_ALREADY_EXISTS) {
         LOG_INF("%s %d already paired, received PAIR_ACK with success", device_type_str(ack->hdr.device_type), dst_id);
     } else if (status == STATUS_STORAGE_FULL) {
@@ -525,16 +531,19 @@ void handle_joined_network(const joined_network_t *pkt, uint16_t dst_id, int16_t
                 break;
 
             case DEVICE_TYPE_ANCHOR:
+            case DEVICE_TYPE_SENSOR:
                 // Upstream the Packet to Gateway if Anchor receives the JOINED_NETWORK packet from Sensor
                 if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
                     LOG_INF("Forwarding JOINED_NETWORK from %s %d upstream", device_type_str(jn->device_type), dst_id);
+                    infra_entry_t entry;
+                    storage_infra_get(0, &entry);
                     uint8_t tid = tracker_next_id();
-                    tracker_add(dst_id, tid, PACKET_JOINED_NETWORK,
-                        5000, 5, jn, sizeof(*jn));
-                    send_joined_network(0, jn, PRODUCT_CONNECTED_DEVICE_ID, tid, STATUS_SUCCESS);
+                    tracker_add(jn->device_id, dst_id, tid, PACKET_JOINED_NETWORK, PRODUCT_HOP_NUMBER * 500, 5, jn, sizeof(*jn));
+                    send_joined_network(0, jn, entry.device_id, tid, STATUS_SUCCESS);
                     return;
                 } else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
-                    if (check_mesh_storage(dst_id) == STATUS_SUCCESS) {
+                    int status = check_mesh_storage(jn->device_id);
+                    if (status == STATUS_SUCCESS) {
                         mesh_entry_t entry;
                         entry.device_type = jn->device_type;
                         entry.device_id = jn->device_id;
@@ -546,20 +555,17 @@ void handle_joined_network(const joined_network_t *pkt, uint16_t dst_id, int16_t
                         int err = storage_mesh_add(&entry);
                         if (err) {
                             LOG_ERR("Failed to store joined mesh device, err %d", err);
-                            send_joined_network_ack(0, dst_id, jn->hdr.tracking_id, STATUS_FAILURE);
+                            send_joined_network_ack(0, jn->device_id, dst_id, jn->hdr.tracking_id, STATUS_FAILURE);
                             return;
                         }
-                        LOG_INF("Gateway %d successfully joined network", dst_id);
-                        LOG_INF("Sending JOINED_NETWORK_ACK to %d: status 0x%02x", dst_id, STATUS_SUCCESS);
-                        send_joined_network_ack(0, dst_id, jn->hdr.tracking_id, STATUS_SUCCESS);
+                        LOG_INF("%s %d successfully joined network", device_type_str(jn->device_type), jn->device_id);
+                        LOG_INF("Sending JOINED_NETWORK_ACK to %d for device %d", dst_id, jn->device_id);
                     }
+                    send_joined_network_ack(0, jn->device_id, dst_id, jn->hdr.tracking_id, status);
                 } else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
                     LOG_WRN("Sensor will never receive JOINED_NETWORK from anchor, ignoring");
                     return;
                 }
-                break;
-            case DEVICE_TYPE_SENSOR:
-                LOG_INF("Sensor %d successfully joined network", dst_id);
                 break;
             default:
                 LOG_WRN("Unknown device type 0x%02x in JOINED_NETWORK from %d, ignoring", jn->hdr.device_type, dst_id);
@@ -582,15 +588,34 @@ void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id,
     LOG_INF("JOINED_NETWORK_ACK from %s ID:%d: status 0x%02x", device_type_str(ack->hdr.device_type), dst_id, ack->hdr.status);
 
     /* Find and remove the tracker by tracking ID from the packet. */
-    int idx = tracker_find_by_tracking_id(ack->hdr.tracking_id);
+    int idx = tracker_find(ack->dst_device_id, PACKET_JOINED_NETWORK);
+    uint16_t src_id = tracker_get_src_id(ack->dst_device_id, PACKET_JOINED_NETWORK);
     if (idx >= 0) {
         tracker_remove(idx);
     }
 
-    if (ack->hdr.status == STATUS_SUCCESS) {
-        LOG_INF("%s %d successfully acknowledged joined network", device_type_str(ack->hdr.device_type), dst_id);
-    } else {
-        LOG_WRN("%s %d failed to join network: status 0x%02x", device_type_str(ack->hdr.device_type), dst_id, ack->hdr.status);
+    switch (PRODUCT_DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+            LOG_WRN("Gateway will never receive JOINED_NETWORK_ACK, ignoring");
+            return;
+        
+        case DEVICE_TYPE_ANCHOR:
+            if (ack->dst_device_id == radio_get_device_id()) {
+                LOG_INF("Received JOINED_NETWORK_ACK from GATEWAY: status 0x%02x", ack->hdr.status);
+                return;
+            } else {
+                LOG_INF("Forwarding JOINED_NETWORK_ACK to device %d: status 0x%02x", ack->dst_device_id, ack->hdr.status);
+                send_joined_network_ack(0, ack->dst_device_id, src_id, ack->hdr.tracking_id, ack->hdr.status);
+            }
+            return;
+
+        case DEVICE_TYPE_SENSOR:
+            LOG_INF("Received JOINED_NETWORK_ACK from %d for device %d: status 0x%02x", dst_id, ack->dst_device_id, ack->hdr.status);
+            return;
+
+        default:
+            LOG_WRN("Unknown device type 0x%02x in JOINED_NETWORK_ACK from %d, ignoring", ack->hdr.device_type, dst_id);
+            return;
     }
 }
 
@@ -665,7 +690,7 @@ static void select_and_confirm(void)
             device_type_str(c->device_type), c->sender_id,
             c->hop_num, (c->rssi_2 / 2), (c->rssi_2 & 0b1) * 5, tid);
 
-        tracker_add(c->sender_id, tid, PACKET_PAIR_CONFIRM, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
+        tracker_add(c->sender_id, 0, tid, PACKET_PAIR_CONFIRM, 1000, PAIR_MAX_RETRIES, NULL, 0);
         send_pair_confirm(0, c->sender_id, tid, STATUS_SUCCESS);
     }
 }

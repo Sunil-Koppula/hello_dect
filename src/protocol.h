@@ -113,6 +113,7 @@ typedef struct {
 /* JOINED NETWORK ACK Packet */
 typedef struct {
 	packet_header_t hdr;
+	uint16_t dst_device_id;			/* short device ID of the device that sent the JOINED_NETWORK packet being acknowledged */
 } __attribute__((packed)) joined_network_ack_t;
 
 #define JOINED_NETWORK_ACK_PACKET_SIZE sizeof(joined_network_ack_t)

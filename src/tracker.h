@@ -12,7 +12,8 @@
 
 /* Tracked device entry. */
 struct data_tracker {
-	uint16_t device_id;
+	uint16_t device_id;     /* who we sent the packet TO (upstream target) */
+	uint16_t src_id;        /* who sent the packet TO US (downstream source, for backtracking) */
 	uint8_t tracking_id;
 	uint8_t packet_type;    /* packet_type_t — what was sent */
 	struct nbtimeout timeout;
@@ -25,9 +26,11 @@ struct data_tracker {
 void tracker_init(void);
 
 /* Add a new tracked entry with payload for retry.
+ * device_id: who we sent the packet to (upstream).
+ * src_id: who sent it to us (downstream, for backtracking ACK route). Use 0 if N/A.
  * payload/payload_len: the full packet data to resend on timeout. */
-int tracker_add(uint16_t device_id, uint8_t tracking_id, uint8_t packet_type,
-		uint32_t timeout_ms, uint8_t max_retries,
+int tracker_add(uint16_t device_id, uint16_t src_id, uint8_t tracking_id,
+		uint8_t packet_type, uint32_t timeout_ms, uint8_t max_retries,
 		const void *payload, uint16_t payload_len);
 
 /* Find entry by device ID. Returns index, or -1 if not found. */
@@ -35,6 +38,12 @@ int tracker_find_by_device(uint16_t device_id);
 
 /* Find entry by tracking ID. Returns index, or -1 if not found. */
 int tracker_find_by_tracking_id(uint8_t tracking_id);
+
+/* Find entry by device ID and packet type. Returns index, or -1 if not found. */
+int tracker_find(uint16_t device_id, uint8_t packet_type);
+
+/* Get src_id (downstream source) by device_id and packet_type. Returns 0 if not found. */
+uint16_t tracker_get_src_id(uint16_t device_id, uint8_t packet_type);
 
 /* Get entry by index. Returns NULL if index invalid or inactive. */
 struct data_tracker *tracker_get(int index);

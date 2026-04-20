@@ -52,13 +52,15 @@ static int anchor_init(void)
 			return 0;
 		}
 	}
+	storage_infra_clear();
+	storage_sensor_clear();
 
 	LOG_INF("Sending PAIR REQUEST!");
 
 	tracker_init();
 	uint8_t tid = tracker_next_id();
 
-	tracker_add(0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
+	tracker_add(0, 0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
 	send_pair_request(0, tid);
 
 	return 0;
@@ -116,7 +118,7 @@ void anchor_main(void)
 			break;
 
 		case MAIN_SUB_RX_WINDOW:
-			err = receive(1, 15);
+			err = receive(1, 25);
 			if (err) {
 				LOG_ERR("Reception failed, err %d", err);
 				state = MAIN_SUB_ERROR;

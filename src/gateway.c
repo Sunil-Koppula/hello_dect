@@ -26,9 +26,10 @@ static int gateway_init(void)
 
 	LOG_INF("Gateway init: infra=%d sensors=%d mesh=%d",
 		storage_infra_count(), storage_sensor_count(), storage_mesh_count());
+	LOG_INF("-----------------------------------------------------");
 
 	if (storage_infra_count() > 0) {
-		LOG_INF("Already paired with: ");
+		LOG_INF("------------DEVICES IN INFRA STORAGE------------");
 
 		for (int i = 0; i < storage_infra_count(); i++) {
 			infra_entry_t entry;
@@ -37,11 +38,47 @@ static int gateway_init(void)
 				LOG_ERR("Failed to read infra entry %d, err %d", i, err);
 				continue;
 			}
-			LOG_INF("Infra entry %d: %s ID:%d (hop:%d)", i,
+			LOG_INF("%d: %s ID:%d (hop:%d and RSSI:%d.%d)", i,
 				device_type_str(entry.device_type),
-				entry.device_id, entry.hop_num);
+				entry.device_id, entry.hop_num, entry.rssi_2 / 2, (entry.rssi_2 & 0b1) * 5);
 		}
 	}
+
+	if (storage_sensor_count() > 0) {
+		LOG_INF("------------DEVICES IN SENSOR STORAGE------------");
+
+		for (int i = 0; i < storage_sensor_count(); i++) {
+			sensor_entry_t entry;
+			int err = storage_sensor_get(i, &entry);
+			if (err) {
+				LOG_ERR("Failed to read sensor entry %d, err %d", i, err);
+				continue;
+			}
+			LOG_INF("%d: %s ID:%d", i, device_type_str(3), entry.device_id);
+		}
+	}
+
+	if (storage_mesh_count() > 0) {
+		LOG_INF("------------DEVICES IN MESH STORAGE------------");
+
+		for (int i = 0; i < storage_mesh_count(); i++) {
+			mesh_entry_t entry;
+			int err = storage_mesh_get(i, &entry);
+			if (err) {
+				LOG_ERR("Failed to read mesh entry %d, err %d", i, err);
+				continue;
+			}
+			LOG_INF("%d: %s ID:%d SN:%lld V:%d CID:%d hop:%d SEN_CNT:%d", i,
+				device_type_str(entry.device_type), entry.device_id, entry.serial_num, entry.version,
+				entry.connected_device_id, entry.hop_num, entry.sensor_count);
+		}
+	}
+	LOG_INF("-----------------------------------------------------");
+
+	storage_infra_clear();
+	storage_sensor_clear();
+	storage_mesh_clear();
+
 	return 0;
 }
 
@@ -95,7 +132,7 @@ void gateway_main(void)
 			break;
 
 		case MAIN_SUB_RX_WINDOW:
-			err = receive(1, 15);
+			err = receive(1, 20);
 			if (err) {
 				LOG_ERR("Reception failed, err %d", err);
 				state = MAIN_SUB_ERROR;

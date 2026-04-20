@@ -16,7 +16,7 @@ int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, ui
 int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
 int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status, uint8_t hop_num);
 int send_joined_network(uint32_t handle,const joined_network_t *pkt, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
-int send_joined_network_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
+int send_joined_network_ack(uint32_t handle, uint16_t dst_device_id, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
 
 void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t rssi_2);

@@ -27,13 +27,14 @@ void tracker_init(void)
 	next_tracking_id = 1;
 }
 
-int tracker_add(uint16_t device_id, uint8_t tracking_id, uint8_t packet_type,
-		uint32_t timeout_ms, uint8_t max_retries,
+int tracker_add(uint16_t device_id, uint16_t src_id, uint8_t tracking_id,
+		uint8_t packet_type, uint32_t timeout_ms, uint8_t max_retries,
 		const void *payload, uint16_t payload_len)
 {
 	for (int i = 0; i < TRACKER_MAX_ENTRIES; i++) {
 		if (!pool[i].active) {
 			pool[i].device_id = device_id;
+			pool[i].src_id = src_id;
 			pool[i].tracking_id = tracking_id;
 			pool[i].packet_type = packet_type;
 			pool[i].active = true;
@@ -77,6 +78,30 @@ int tracker_find_by_tracking_id(uint8_t tracking_id)
 	}
 
 	return -1;
+}
+
+int tracker_find(uint16_t device_id, uint8_t packet_type)
+{
+	for (int i = 0; i < TRACKER_MAX_ENTRIES; i++) {
+		if (pool[i].active &&
+		    pool[i].device_id == device_id &&
+		    pool[i].packet_type == packet_type) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+uint16_t tracker_get_src_id(uint16_t device_id, uint8_t packet_type)
+{
+	int idx = tracker_find(device_id, packet_type);
+
+	if (idx >= 0) {
+		return pool[idx].src_id;
+	}
+
+	return 0;
 }
 
 struct data_tracker *tracker_get(int index)
@@ -176,6 +201,7 @@ void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exha
 		tx_queue_put(entry->payload, entry->payload_len, QUEUE_PRIO_HIGH);
 	} else {
 		/* No payload stored — rebuild from tracker fields. */
+		LOG_WRN("No payload for retry, rebuilding packet for type 0x%02x", entry->packet_type);
 		switch (entry->packet_type) {
 		case PACKET_PAIR_REQUEST:
 			send_pair_request(0, entry->tracking_id);
