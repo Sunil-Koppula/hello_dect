@@ -48,18 +48,32 @@ static int gateway_init(void)
 static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 {
 	switch (data[0]) {
-	case PACKET_PAIR_REQUEST:
-		handle_pair_request((const pair_request_t *)data, sender_id, rssi_2);
-		break;
+		case PACKET_PAIR_REQUEST:
+			handle_pair_request((const pair_request_t *)data, sender_id, rssi_2);
+			break;
 
-	case PACKET_PAIR_CONFIRM:
-	{
-		handle_pair_confirm((const pair_confirm_t *)data, sender_id, rssi_2);
-		break;
-	}
+		case PACKET_PAIR_RESPONSE:
+			/* Gateway should never receive PAIR_RESPONSE, ignore. */
+			break;
 
-	default:
-		break;
+		case PACKET_PAIR_CONFIRM:
+			handle_pair_confirm((const pair_confirm_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_PAIR_ACK:
+			/* Gateway should never receive PAIR_ACK, ignore. */
+			break;
+
+		case PACKET_JOINED_NETWORK:
+			handle_joined_network((const joined_network_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_JOINED_NETWORK_ACK:
+			/* Gateway should never receive JOINED_NETWORK_ACK, ignore. */
+			break;
+
+		default:
+			break;
 	}
 }
 

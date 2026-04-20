@@ -52,7 +52,7 @@ static int sensor_init(void)
 
 	uint8_t tid = tracker_next_id();
 
-	tracker_add(0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
+	tracker_add(0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
 	send_pair_request(0, tid);
 
 	return 0;
@@ -61,16 +61,24 @@ static int sensor_init(void)
 static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 {
 	switch (data[0]) {
-	case PACKET_PAIR_RESPONSE:
-		handle_pair_response((const pair_response_t *)data, sender_id, rssi_2);
-		break;
+		case PACKET_PAIR_REQUEST:
+			/* Sensor should never receive PAIR_REQUEST, ignore. */
+			break;
 
-	case PACKET_PAIR_ACK:
-		handle_pair_ack((const pair_ack_t *)data, sender_id, rssi_2);
-		break;
+		case PACKET_PAIR_RESPONSE:
+			handle_pair_response((const pair_response_t *)data, sender_id, rssi_2);
+			break;
 
-	default:
-		break;
+		case PACKET_PAIR_CONFIRM:
+			/* Sensor should never receive PAIR_CONFIRM, ignore. */
+			break;
+
+		case PACKET_PAIR_ACK:
+			handle_pair_ack((const pair_ack_t *)data, sender_id, rssi_2);
+			break;
+
+		default:
+			break;
 	}
 }
 

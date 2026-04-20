@@ -169,29 +169,47 @@ static void on_pcc_crc_err(const struct nrf_modem_dect_phy_pcc_crc_failure_event
 	LOG_WRN("pcc_crc_err cb time %"PRIu64"", modem_time);
 }
 
-/* Check if a packet should be enqueued.
- * Pairing packets are always accepted.
- * Other packets only accepted from known devices (stored in infra or sensor partition). */
-static bool should_enqueue(uint8_t packet_type, uint16_t sender_id)
+/*
+ * Known device cache — ISR-safe (RAM only, no EEPROM access).
+ * Updated from main thread via radio_update_known_devices().
+ */
+#define MAX_KNOWN_DEVICES (MAX_SENSORS + MAX_ANCHORS)
+
+static uint16_t known_devices[MAX_KNOWN_DEVICES];
+static int known_device_count;
+
+void radio_update_known_devices(void)
 {
-	/* Pairing packets — always accept. */
-	if (packet_type >= PACKET_PAIR_REQUEST && packet_type <= PACKET_PAIR_ACK) {
-		return true;
-	}
+	int count = 0;
 
-	/* For other packets, check if sender is a known device. */
-	infra_entry_t infra;
-
-	for (int i = 0; i < storage_infra_count(); i++) {
-		if (storage_infra_get(i, &infra) == 0 && infra.device_id == sender_id) {
-			return true;
+	for (int i = 0; i < storage_infra_count() && count < MAX_KNOWN_DEVICES; i++) {
+		infra_entry_t entry;
+		if (storage_infra_get(i, &entry) == 0) {
+			known_devices[count++] = entry.device_id;
 		}
 	}
 
-	sensor_entry_t sensor;
+	for (int i = 0; i < storage_sensor_count() && count < MAX_KNOWN_DEVICES; i++) {
+		sensor_entry_t entry;
+		if (storage_sensor_get(i, &entry) == 0) {
+			known_devices[count++] = entry.device_id;
+		}
+	}
 
-	for (int i = 0; i < storage_sensor_count(); i++) {
-		if (storage_sensor_get(i, &sensor) == 0 && sensor.device_id == sender_id) {
+	known_device_count = count;
+}
+
+/* Check if a packet should be enqueued (ISR-safe — no EEPROM access). */
+static bool should_enqueue(uint8_t packet_type, uint16_t sender_id)
+{
+	/* Control packets (pairing + mesh join) — always accept. */
+	if (packet_type >= PACKET_PAIR_REQUEST && packet_type <= PACKET_JOINED_NETWORK_ACK) {
+		return true;
+	}
+
+	/* Check cached known devices. */
+	for (int i = 0; i < known_device_count; i++) {
+		if (known_devices[i] == sender_id) {
 			return true;
 		}
 	}

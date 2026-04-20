@@ -99,10 +99,23 @@ typedef struct {
 /* JOINED NETWORK Packet */
 typedef struct {
 	packet_header_t hdr;
-	uint8_t hop_num;
+	uint8_t device_type;			/* device_type_t */
+	uint16_t device_id;				/* short device ID */
+	uint64_t serial_num;			/* 64-bit serial number */
+	uint16_t version;				/* device firmware version */
+	uint16_t connected_device_id;	/* parent/connected device ID */
+	uint8_t hop_num; 				/* hop count from gateway */
+	uint8_t sensor_count; 			/* number of sensors connected to this device (for gateway/anchor) */
 } __attribute__((packed)) joined_network_t;
 
 #define JOINED_NETWORK_PACKET_SIZE sizeof(joined_network_t)
+
+/* JOINED NETWORK ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+} __attribute__((packed)) joined_network_ack_t;
+
+#define JOINED_NETWORK_ACK_PACKET_SIZE sizeof(joined_network_ack_t)
 
 /* Get device type as string */
 static inline const char *device_type_str(device_type_t type)

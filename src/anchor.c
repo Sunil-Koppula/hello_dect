@@ -58,7 +58,7 @@ static int anchor_init(void)
 	tracker_init();
 	uint8_t tid = tracker_next_id();
 
-	tracker_add(0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES);
+	tracker_add(0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
 	send_pair_request(0, tid);
 
 	return 0;
@@ -81,6 +81,14 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 	
 	case PACKET_PAIR_ACK:
 		handle_pair_ack((const pair_ack_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_JOINED_NETWORK:
+		handle_joined_network((const joined_network_t *)data, sender_id, rssi_2);
+		break;
+	
+	case PACKET_JOINED_NETWORK_ACK:
+		handle_joined_network_ack((const joined_network_ack_t *)data, sender_id, rssi_2);
 		break;
 	
 	default:

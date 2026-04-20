@@ -5,9 +5,11 @@
  * outstanding operations (data sends, pair handshakes, etc.).
  */
 
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include "tracker.h"
+#include "queue.h"
 #include "protocol.h"
 #include "mesh.h"
 
@@ -26,7 +28,8 @@ void tracker_init(void)
 }
 
 int tracker_add(uint16_t device_id, uint8_t tracking_id, uint8_t packet_type,
-		uint32_t timeout_ms, uint8_t max_retries)
+		uint32_t timeout_ms, uint8_t max_retries,
+		const void *payload, uint16_t payload_len)
 {
 	for (int i = 0; i < TRACKER_MAX_ENTRIES; i++) {
 		if (!pool[i].active) {
@@ -34,6 +37,16 @@ int tracker_add(uint16_t device_id, uint8_t tracking_id, uint8_t packet_type,
 			pool[i].tracking_id = tracking_id;
 			pool[i].packet_type = packet_type;
 			pool[i].active = true;
+			pool[i].payload_len = 0;
+
+			if (payload && payload_len > 0) {
+				if (payload_len > TRACKER_PAYLOAD_MAX) {
+					payload_len = TRACKER_PAYLOAD_MAX;
+				}
+				memcpy(pool[i].payload, payload, payload_len);
+				pool[i].payload_len = payload_len;
+			}
+
 			nbtimeout_init(&pool[i].timeout, timeout_ms, max_retries);
 			nbtimeout_start(&pool[i].timeout);
 			return i;
@@ -158,21 +171,22 @@ void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exha
 		nbtimeout_retries(&entry->timeout),
 		nbtimeout_max_retries(&entry->timeout));
 
-	switch (entry->packet_type) {
-	case PACKET_PAIR_REQUEST:
-		send_pair_request(0, entry->tracking_id);
-		break;
-	case PACKET_PAIR_RESPONSE:
-		send_pair_response(0, entry->device_id, entry->tracking_id, STATUS_SUCCESS, 0, 0);
-		break;
-	case PACKET_PAIR_CONFIRM:
-		send_pair_confirm(0, entry->device_id, entry->tracking_id, STATUS_SUCCESS);
-		break;
-	case PACKET_PAIR_ACK:
-		send_pair_ack(0, entry->device_id, entry->tracking_id, STATUS_SUCCESS, 0);
-		break;
-	default:
-		LOG_WRN("Unknown packet type 0x%02x in tracker retry", entry->packet_type);
-		break;
+	if (entry->payload_len > 0) {
+		/* Resend stored payload directly. */
+		tx_queue_put(entry->payload, entry->payload_len, QUEUE_PRIO_HIGH);
+	} else {
+		/* No payload stored — rebuild from tracker fields. */
+		switch (entry->packet_type) {
+		case PACKET_PAIR_REQUEST:
+			send_pair_request(0, entry->tracking_id);
+			break;
+		case PACKET_PAIR_CONFIRM:
+			send_pair_confirm(0, entry->device_id, entry->tracking_id, STATUS_SUCCESS);
+			break;
+		default:
+			LOG_WRN("No payload for packet type 0x%02x retry, cannot resend",
+				entry->packet_type);
+			break;
+		}
 	}
 }

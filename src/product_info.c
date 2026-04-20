@@ -28,6 +28,7 @@ static const struct gpio_dt_spec pin1 = GPIO_DT_SPEC_GET(DEVTYPE_PIN1_NODE, gpio
 device_type_t PRODUCT_DEVICE_TYPE;
 uint64_t PRODUCT_SERIAL_NUMBER;
 uint8_t PRODUCT_HOP_NUMBER;
+uint16_t PRODUCT_CONNECTED_DEVICE_ID;
 
 int product_info_init(void)
 {
@@ -84,7 +85,9 @@ int product_info_init(void)
 	hwinfo_get_device_id((void *)&hw_id, sizeof(hw_id));
 	PRODUCT_SERIAL_NUMBER = ((uint64_t)hw_id << 40) | 0x00DEADBEEFULL;
 
-	/* Set initial hop number based on device type. */
+	/* Set initial hop and connected device based on device type. */
+	PRODUCT_CONNECTED_DEVICE_ID = 0xFFFF;  /* invalid ID by default */
+
 	switch (PRODUCT_DEVICE_TYPE) {
 	case DEVICE_TYPE_GATEWAY:
 		PRODUCT_HOP_NUMBER = 0;
@@ -114,21 +117,54 @@ void product_info_update_hop(void)
 
 	if (infra == 0) {
 		PRODUCT_HOP_NUMBER = 0xFF;
+		PRODUCT_CONNECTED_DEVICE_ID = 0;
 		return;
 	}
 
-	/* Find minimum hop among infra entries. */
-	uint8_t min_hop = 0xFF;
+	/* Read all infra entries into a local array. */
+	infra_entry_t entries[STORAGE_PART1_MAX_ENTRIES];
+	int count = 0;
 
-	for (int i = 0; i < infra; i++) {
-		infra_entry_t entry;
-
-		if (storage_infra_get(i, &entry) == 0 && entry.hop_num < min_hop) {
-			min_hop = entry.hop_num;
+	for (int i = 0; i < infra && i < STORAGE_PART1_MAX_ENTRIES; i++) {
+		if (storage_infra_get(i, &entries[count]) == 0) {
+			count++;
 		}
 	}
 
-	PRODUCT_HOP_NUMBER = (min_hop < 0xFE) ? min_hop + 1 : 0xFF;
+	/* Sort by hop ascending, then RSSI descending (better signal). */
+	for (int i = 0; i < count - 1; i++) {
+		for (int j = 0; j < count - i - 1; j++) {
+			bool swap = false;
 
-	LOG_INF("Anchor hop updated: %d (min infra hop: %d)", PRODUCT_HOP_NUMBER, min_hop);
+			if (entries[j].hop_num > entries[j + 1].hop_num) {
+				swap = true;
+			} else if (entries[j].hop_num == entries[j + 1].hop_num &&
+				   entries[j].rssi_2 < entries[j + 1].rssi_2) {
+				swap = true;
+			}
+
+			if (swap) {
+				infra_entry_t tmp = entries[j];
+				entries[j] = entries[j + 1];
+				entries[j + 1] = tmp;
+			}
+		}
+	}
+
+	/* Write sorted entries back to storage. */
+	storage_infra_clear();
+
+	for (int i = 0; i < count; i++) {
+		storage_infra_add(&entries[i]);
+	}
+
+	/* Best entry is now at index 0. */
+	PRODUCT_HOP_NUMBER = (entries[0].hop_num < 0xFE) ? entries[0].hop_num + 1 : 0xFF;
+	PRODUCT_CONNECTED_DEVICE_ID = entries[0].device_id;
+
+	LOG_INF("Anchor hop updated: %d, connected to %s ID:%d (hop: %d), infra sorted",
+		PRODUCT_HOP_NUMBER,
+		device_type_str(entries[0].device_type),
+		PRODUCT_CONNECTED_DEVICE_ID,
+		entries[0].hop_num);
 }

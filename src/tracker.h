@@ -5,8 +5,10 @@
 #include <stdbool.h>
 #include "timeout.h"
 #include "product_info.h"
+#include "queue.h"
 
 #define TRACKER_MAX_ENTRIES (MAX_SENSORS + MAX_ANCHORS)
+#define TRACKER_PAYLOAD_MAX QUEUE_DATA_MAX
 
 /* Tracked device entry. */
 struct data_tracker {
@@ -15,14 +17,18 @@ struct data_tracker {
 	uint8_t packet_type;    /* packet_type_t — what was sent */
 	struct nbtimeout timeout;
 	bool active;
+	uint16_t payload_len;   /* 0 = no payload stored */
+	uint8_t payload[TRACKER_PAYLOAD_MAX];
 };
 
 /* Initialize tracker pool (call once at boot). */
 void tracker_init(void);
 
-/* Add a new tracked entry. Returns index on success, -1 if pool full. */
+/* Add a new tracked entry with payload for retry.
+ * payload/payload_len: the full packet data to resend on timeout. */
 int tracker_add(uint16_t device_id, uint8_t tracking_id, uint8_t packet_type,
-		uint32_t timeout_ms, uint8_t max_retries);
+		uint32_t timeout_ms, uint8_t max_retries,
+		const void *payload, uint16_t payload_len);
 
 /* Find entry by device ID. Returns index, or -1 if not found. */
 int tracker_find_by_device(uint16_t device_id);

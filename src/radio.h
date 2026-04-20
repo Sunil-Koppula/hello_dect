@@ -28,4 +28,8 @@ uint16_t radio_get_device_id(void);
 int transmit(uint32_t handle, void *data, size_t data_len, uint8_t packet_length);
 int receive(uint32_t handle, uint32_t duration_ms);
 
+/* Refresh the ISR-safe known device cache from EEPROM storage.
+ * Call from main thread after pairing changes. */
+void radio_update_known_devices(void);
+
 #endif /* RADIO_H */

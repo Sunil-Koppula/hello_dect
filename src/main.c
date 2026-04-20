@@ -39,6 +39,8 @@ int main(void)
 		return err;
 	}
 
+	radio_update_known_devices();
+
 	err = psram_init();
 	if (err) {
 		LOG_WRN("PSRAM init failed, err %d (overflow disabled)", err);

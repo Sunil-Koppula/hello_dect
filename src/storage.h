@@ -65,12 +65,13 @@ typedef struct {
  * Stored by: Gateway only.
  */
 typedef struct {
-	uint8_t  device_type;      /* device_type_t */
-	uint16_t device_id;        /* short device ID */
-	uint64_t serial_num;       /* 64-bit serial number */
-	uint16_t connect_device_id;/* parent/connected device ID */
-	uint8_t  hop_num;          /* hop count from gateway */
-	uint8_t  sensor_count;     /* number of sensors connected to this device */
+	uint8_t  device_type;      		/* device_type_t */
+	uint16_t device_id;        		/* short device ID */
+	uint64_t serial_num;       		/* 64-bit serial number */
+	uint16_t version;          		/* device firmware version */
+	uint16_t connected_device_id;	/* parent/connected device ID */
+	uint8_t  hop_num;          		/* hop count from gateway */
+	uint8_t  sensor_count;     		/* number of sensors connected to this device */
 } __attribute__((packed)) mesh_entry_t;
 
 /* Initialize storage (must be called once at boot). */
