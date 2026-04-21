@@ -2,12 +2,17 @@
  * Device data tracker for DECT NR+ mesh network.
  *
  * Index (metadata + timeout) in internal RAM for fast tick/find.
- * Payload data stored in PSRAM to save RAM.
+ * Payload data stored in PSRAM with CRC16 for integrity checking.
+ *
+ * PSRAM slot layout per entry:
+ *   [payload (up to 210 bytes)] [CRC16 (2 bytes)]
+ *   Slot size = TRACKER_PAYLOAD_MAX + 2 = 212 bytes
  */
 
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/crc.h>
 #include "tracker.h"
 #include "queue.h"
 #include "protocol.h"
@@ -15,6 +20,9 @@
 #include "psram.h"
 
 LOG_MODULE_REGISTER(tracker, CONFIG_TRACKER_LOG_LEVEL);
+
+/* Each PSRAM slot: payload + 2-byte CRC16. */
+#define TRACKER_SLOT_SIZE (TRACKER_PAYLOAD_MAX + sizeof(uint16_t))
 
 /* RAM index — everything except payload. */
 struct tracker_index {
@@ -30,14 +38,14 @@ struct tracker_index {
 static struct tracker_index index_pool[TRACKER_MAX_ENTRIES];
 static uint8_t next_tracking_id = 1;
 
-/* PSRAM layout: one payload buffer per slot. */
-static inline uint32_t psram_payload_addr(int idx)
+/* PSRAM address for a given slot. */
+static inline uint32_t psram_slot_addr(int idx)
 {
-	return TRACKER_PSRAM_BASE + (idx * TRACKER_PAYLOAD_MAX);
+	return TRACKER_PSRAM_BASE + (idx * TRACKER_SLOT_SIZE);
 }
 
-/* Temp buffer for reading payload from PSRAM. */
-static uint8_t payload_buf[TRACKER_PAYLOAD_MAX];
+/* Temp buffer for PSRAM read (payload + CRC). */
+static uint8_t psram_buf[TRACKER_SLOT_SIZE];
 
 /* Fill a data_tracker from the RAM index (no payload). */
 static struct data_tracker temp_entry;
@@ -54,6 +62,57 @@ static struct data_tracker *fill_from_index(int idx)
 	return &temp_entry;
 }
 
+/* Write payload + CRC16 to PSRAM. */
+static int psram_payload_write(int idx, const void *payload, uint16_t len)
+{
+	if (!is_psram_initialized()) {
+		return -ENODEV;
+	}
+
+	uint16_t crc = crc16_ccitt(0xFFFF, payload, len);
+
+	/* Write payload. */
+	int err = psram_write(psram_slot_addr(idx), payload, len);
+	if (err) {
+		return err;
+	}
+
+	/* Write CRC16 right after payload. */
+	return psram_write(psram_slot_addr(idx) + len, &crc, sizeof(crc));
+}
+
+/* Read payload from PSRAM and verify CRC16.
+ * Returns 0 on success, -EILSEQ on CRC mismatch, or negative errno. */
+static int psram_payload_read(int idx, uint8_t *out, uint16_t len)
+{
+	if (!is_psram_initialized()) {
+		return -ENODEV;
+	}
+
+	/* Read payload + CRC in one go. */
+	uint16_t read_len = len + sizeof(uint16_t);
+
+	int err = psram_read(psram_slot_addr(idx), psram_buf, read_len);
+	if (err) {
+		return err;
+	}
+
+	/* Verify CRC16. */
+	uint16_t stored_crc;
+	memcpy(&stored_crc, &psram_buf[len], sizeof(stored_crc));
+
+	uint16_t computed_crc = crc16_ccitt(0xFFFF, psram_buf, len);
+
+	if (stored_crc != computed_crc) {
+		LOG_ERR("PSRAM CRC mismatch idx %d: stored=0x%04x computed=0x%04x",
+			idx, stored_crc, computed_crc);
+		return -EILSEQ;
+	}
+
+	memcpy(out, psram_buf, len);
+	return 0;
+}
+
 void tracker_init(void)
 {
 	for (int i = 0; i < TRACKER_MAX_ENTRIES; i++) {
@@ -62,9 +121,10 @@ void tracker_init(void)
 
 	next_tracking_id = 1;
 
-	LOG_INF("Tracker init: %d entries, payload in PSRAM 0x%06x–0x%06x (%d bytes)",
+	LOG_INF("Tracker init: %d entries, PSRAM payload 0x%06x–0x%06x (%d bytes, slot=%d)",
 		TRACKER_MAX_ENTRIES, TRACKER_PSRAM_BASE,
-		TRACKER_PSRAM_BASE + TRACKER_PSRAM_SIZE - 1, TRACKER_PSRAM_SIZE);
+		TRACKER_PSRAM_BASE + TRACKER_PSRAM_SIZE - 1, TRACKER_PSRAM_SIZE,
+		TRACKER_SLOT_SIZE);
 }
 
 int tracker_add(uint16_t dst_id, uint16_t prev_id, uint8_t tracking_id,
@@ -87,10 +147,7 @@ int tracker_add(uint16_t dst_id, uint16_t prev_id, uint8_t tracking_id,
 					payload_len = TRACKER_PAYLOAD_MAX;
 				}
 				index_pool[i].payload_len = payload_len;
-
-				if (is_psram_initialized()) {
-					psram_write(psram_payload_addr(i), payload, payload_len);
-				}
+				psram_payload_write(i, payload, payload_len);
 			}
 
 			return i;
@@ -167,12 +224,7 @@ int tracker_update_payload(uint8_t tracking_id, const void *payload, uint16_t pa
 				payload_len = TRACKER_PAYLOAD_MAX;
 			}
 			index_pool[i].payload_len = payload_len;
-
-			if (is_psram_initialized()) {
-				return psram_write(psram_payload_addr(i), payload, payload_len);
-			}
-
-			return 0;
+			return psram_payload_write(i, payload, payload_len);
 		}
 	}
 
@@ -200,12 +252,12 @@ void tracker_tick(tracker_expired_cb cb)
 		if (cb) {
 			struct data_tracker *entry = fill_from_index(i);
 
-			/* Load payload from PSRAM if available. */
-			if (entry->payload_len > 0 && is_psram_initialized()) {
-				if (psram_read(psram_payload_addr(i), payload_buf, entry->payload_len) == 0) {
-					memcpy(temp_entry.payload, payload_buf, entry->payload_len);
-				} else {
-					LOG_ERR("Failed to read payload from PSRAM for idx %d", i);
+			/* Load payload from PSRAM with CRC verification. */
+			if (entry->payload_len > 0) {
+				int err = psram_payload_read(i, temp_entry.payload, entry->payload_len);
+				if (err) {
+					LOG_ERR("Payload read failed for idx %d (err %d), skipping retry",
+						i, err);
 					temp_entry.payload_len = 0;
 				}
 			}
