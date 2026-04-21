@@ -46,6 +46,7 @@ typedef enum {
 #define STATUS_BUSY                     0x0A
 #define STATUS_VERSION_MISMATCH         0x0B
 #define STATUS_STORAGE_FULL             0x0D
+#define STATUS_AUTH_FAILED              0x0E
 #define STATUS_VENDOR_SPECIFIC          0x1F
 
 /********** Common Packet Header **********/
@@ -68,6 +69,7 @@ typedef struct {
 typedef struct {
 	packet_header_t hdr;
 	uint32_t random_num;
+	uint32_t hash;
 } __attribute__((packed)) pair_request_t;
 
 #define PAIR_REQUEST_PACKET_SIZE sizeof(pair_request_t)
@@ -75,7 +77,6 @@ typedef struct {
 /* Pairing Response Packet — unicast to requester */
 typedef struct {
 	packet_header_t hdr;
-	uint32_t hash;
 	uint8_t hop_num;
 } __attribute__((packed)) pair_response_t;
 

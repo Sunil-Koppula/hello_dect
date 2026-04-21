@@ -28,7 +28,6 @@ struct response_candidate {
     uint8_t  device_type;
     uint8_t  hop_num;
     int16_t  rssi_2;
-    uint32_t hash;
     uint8_t  tracking_id;
 };
 
@@ -132,6 +131,8 @@ static uint8_t check_mesh_storage(uint16_t device_id)
 int send_pair_request(uint32_t handle, uint8_t tracking_id)
 {
     uint32_t random_num = generate_random_number();
+    uint32_t hash = compute_pair_hash(radio_get_device_id(), random_num);
+
     pair_request_t packet = {
         .hdr = {
             .packet_type = PACKET_PAIR_REQUEST,
@@ -142,13 +143,14 @@ int send_pair_request(uint32_t handle, uint8_t tracking_id)
             .status = STATUS_SUCCESS,
         },
         .random_num = random_num,
+        .hash = hash,
     };
 
     return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
 }
 
 /* Send pairing response packet. */
-int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status, uint32_t hash, uint8_t hop_num)
+int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status, uint8_t hop_num)
 {
     pair_response_t packet = {
         .hdr = {
@@ -159,7 +161,6 @@ int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, ui
             .device_id = dst_id,
             .status = status,
         },
-        .hash = hash,
         .hop_num = hop_num,
     };
 
@@ -178,6 +179,7 @@ int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uin
             .device_id = dst_id,
             .status = status,
         },
+        .version = FIRMWARE_VERSION,
     };
 
     return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
@@ -248,6 +250,16 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
 {
     LOG_INF("PAIR_REQUEST from %s ID:%d and RSSI:%d", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2));
 
+    /* Verify hash: hash should equal compute_pair_hash(sender_id, random_num). */
+    uint32_t expected_hash = compute_pair_hash(dst_id, pkt->random_num);
+
+    if (pkt->hash != expected_hash) {
+        LOG_WRN("PAIR_REQUEST hash mismatch from %d (got 0x%08x, expected 0x%08x)",
+            dst_id, pkt->hash, expected_hash);
+        send_pair_response(0, dst_id, pkt->hdr.tracking_id, STATUS_AUTH_FAILED, 0);
+        return;
+    }
+
     uint8_t status;
 
     switch(pkt->hdr.device_type) {
@@ -271,10 +283,8 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
             return;
     }
 
-    uint32_t hash = compute_pair_hash(dst_id, pkt->random_num);
-
-    LOG_INF("Sending PAIR_RESPONSE to %d: status 0x%02x, hash 0x%08x", dst_id, status, hash);
-    send_pair_response(0, dst_id, pkt->hdr.tracking_id, status, hash, PRODUCT_HOP_NUMBER);
+    LOG_INF("Sending PAIR_RESPONSE to %d: status 0x%02x", dst_id, status);
+    send_pair_response(0, dst_id, pkt->hdr.tracking_id, status, PRODUCT_HOP_NUMBER);
 }
 
 /* Handle received pairing response packet.
@@ -326,7 +336,6 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
             .device_type = resp->hdr.device_type,
             .hop_num = resp->hop_num,
             .rssi_2 = rssi_2,
-            .hash = resp->hash,
             .tracking_id = resp->hdr.tracking_id,
         };
         LOG_INF("Candidate %d: %s ID:%d hop:%d RSSI:%d.%d",
@@ -347,8 +356,11 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
     }
 
     LOG_INF("PAIR_CONFIRM from device %s ID:%d: status 0x%02x", device_type_str(conf->hdr.device_type), dst_id, conf->hdr.status);
-    if(((conf->hdr.device_type != DEVICE_TYPE_SENSOR) && (conf->hdr.device_type != DEVICE_TYPE_ANCHOR)) || (conf->hdr.status != STATUS_SUCCESS)) {
+    if((conf->hdr.device_type != DEVICE_TYPE_SENSOR) && (conf->hdr.device_type != DEVICE_TYPE_ANCHOR)) {
         LOG_WRN("PAIR_CONFIRM from unsupported device %s ID:%d: OR status 0x%02x", device_type_str(conf->hdr.device_type), dst_id, conf->hdr.status);
+        return;
+    } else if (conf->hdr.status != STATUS_SUCCESS) {
+        LOG_WRN("PAIR_CONFIRM failed from device %s ID:%d: status 0x%02x", device_type_str(conf->hdr.device_type), dst_id, conf->hdr.status);
         return;
     }
 
