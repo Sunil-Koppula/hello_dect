@@ -13,6 +13,7 @@
 #include "product_info.h"
 #include "storage.h"
 #include "main_sub.h"
+#include "psram.h"
 #include "testing/factory_reset.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
@@ -38,6 +39,11 @@ int main(void)
 	}
 
 	radio_update_known_devices();
+
+	err = psram_init();
+	if (err) {
+		LOG_WRN("PSRAM init failed, err %d (tracker will not work)", err);
+	}
 
 	/* Check for factory reset (hold Button 1 for 3s at boot). */
 	factory_reset_init();

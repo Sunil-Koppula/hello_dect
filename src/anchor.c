@@ -60,7 +60,7 @@ static int anchor_init(void)
 	tracker_init();
 	uint8_t tid = tracker_next_id();
 
-	tracker_add(0, 0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
+	tracker_add(radio_get_device_id(), 0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
 	send_pair_request(0, tid);
 
 	return 0;

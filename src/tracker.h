@@ -10,10 +10,14 @@
 #define TRACKER_MAX_ENTRIES (MAX_SENSORS + MAX_ANCHORS)
 #define TRACKER_PAYLOAD_MAX QUEUE_DATA_MAX
 
+/* PSRAM partition for tracker storage: 50KB starting at 0x200000 */
+#define TRACKER_PSRAM_BASE   0x200000
+#define TRACKER_PSRAM_SIZE   0x00C800  /* 50KB */
+
 /* Tracked device entry. */
 struct data_tracker {
-	uint16_t device_id;     /* who we sent the packet TO (upstream target) */
-	uint16_t src_id;        /* who sent the packet TO US (downstream source, for backtracking) */
+	uint16_t dst_id;
+	uint16_t prev_id;
 	uint8_t tracking_id;
 	uint8_t packet_type;    /* packet_type_t — what was sent */
 	struct nbtimeout timeout;
@@ -26,33 +30,30 @@ struct data_tracker {
 void tracker_init(void);
 
 /* Add a new tracked entry with payload for retry.
- * device_id: who we sent the packet to (upstream).
- * src_id: who sent it to us (downstream, for backtracking ACK route). Use 0 if N/A.
+ * dst_id: who we sent the packet to (upstream).
+ * prev_id: who sent it to us (downstream, for backtracking ACK route). Use 0 if N/A.
  * payload/payload_len: the full packet data to resend on timeout. */
-int tracker_add(uint16_t device_id, uint16_t src_id, uint8_t tracking_id,
+int tracker_add(uint16_t dst_id, uint16_t prev_id, uint8_t tracking_id,
 		uint8_t packet_type, uint32_t timeout_ms, uint8_t max_retries,
 		const void *payload, uint16_t payload_len);
 
-/* Find entry by device ID. Returns index, or -1 if not found. */
-int tracker_find_by_device(uint16_t device_id);
+/* Get entry by tracking ID. Returns pointer to entry (without payload), or NULL. */
+struct data_tracker *tracker_get_by_tracking_id(uint8_t tracking_id);
 
-/* Find entry by tracking ID. Returns index, or -1 if not found. */
-int tracker_find_by_tracking_id(uint8_t tracking_id);
+/* Get entry by dst_id and packet type. Returns pointer to entry (without payload), or NULL. */
+struct data_tracker *tracker_get_by_dst(uint16_t dst_id, uint8_t packet_type);
 
-/* Find entry by device ID and packet type. Returns index, or -1 if not found. */
-int tracker_find(uint16_t device_id, uint8_t packet_type);
+/* Remove entry by tracking ID. */
+void tracker_remove_by_tracking_id(uint8_t tracking_id);
 
-/* Get src_id (downstream source) by device_id and packet_type. Returns 0 if not found. */
-uint16_t tracker_get_src_id(uint16_t device_id, uint8_t packet_type);
+/* Remove entry by dst_id and packet type. */
+void tracker_remove_by_dst(uint16_t dst_id, uint8_t packet_type);
 
-/* Get entry by index. Returns NULL if index invalid or inactive. */
-struct data_tracker *tracker_get(int index);
+/* Remove all entries matching a dst_id. */
+void tracker_remove_by_device(uint16_t dst_id);
 
-/* Remove (deactivate) entry by index. */
-void tracker_remove(int index);
-
-/* Remove all entries matching a device ID. */
-void tracker_remove_by_device(uint16_t device_id);
+/* Update payload for an existing tracker entry (by tracking_id). */
+int tracker_update_payload(uint8_t tracking_id, const void *payload, uint16_t payload_len);
 
 /* Check all active entries for expiry. For each expired entry, calls
  * the callback with the entry index. If retry is exhausted, the entry
