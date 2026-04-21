@@ -10,9 +10,16 @@
 #define TRACKER_MAX_ENTRIES (MAX_SENSORS + MAX_ANCHORS)
 #define TRACKER_PAYLOAD_MAX QUEUE_DATA_MAX
 
-/* PSRAM partition for tracker storage: 50KB starting at 0x200000 */
+/* PSRAM partition for tracker payload storage.
+ * Layout: TRACKER_MAX_ENTRIES × TRACKER_PAYLOAD_MAX bytes
+ *   TRACKER_MAX_ENTRIES = MAX_SENSORS + MAX_ANCHORS = 136
+ *   TRACKER_PAYLOAD_MAX = QUEUE_DATA_MAX = 210 bytes
+ *   Used: 136 × 210 = 28,560 bytes (~28KB)
+ *   Allocated: 32KB (0x8000)
+ *   Address range: 0x200000 – 0x207FFF
+ */
 #define TRACKER_PSRAM_BASE   0x200000
-#define TRACKER_PSRAM_SIZE   0x00C800  /* 50KB */
+#define TRACKER_PSRAM_SIZE   0x8000  /* 32KB */
 
 /* Tracked device entry. */
 struct data_tracker {

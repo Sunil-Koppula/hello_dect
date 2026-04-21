@@ -26,7 +26,6 @@ static int gateway_init(void)
 
 	LOG_INF("Gateway init: infra=%d sensors=%d mesh=%d",
 		storage_infra_count(), storage_sensor_count(), storage_mesh_count());
-	LOG_INF("-----------------------------------------------------");
 
 	if (storage_infra_count() > 0) {
 		LOG_INF("------------DEVICES IN INFRA STORAGE------------");
@@ -68,12 +67,17 @@ static int gateway_init(void)
 				LOG_ERR("Failed to read mesh entry %d, err %d", i, err);
 				continue;
 			}
-			LOG_INF("%d: %s ID:%d SN:%lld V:%d CID:%d hop:%d SEN_CNT:%d", i,
-				device_type_str(entry.device_type), entry.device_id, entry.serial_num, entry.version,
-				entry.connected_device_id, entry.hop_num, entry.sensor_count);
+			if (entry.device_type == DEVICE_TYPE_SENSOR) {
+				LOG_INF("%d: %s ID:%d SN:%lld V:%d CID:%d", i,
+					device_type_str(entry.device_type), entry.device_id, entry.serial_num, entry.version,
+					entry.connected_device_id);
+			} else {
+				LOG_INF("%d: %s ID:%d SN:%lld V:%d hop:%d SEN_CNT:%d", i,
+					device_type_str(entry.device_type), entry.device_id, entry.serial_num, entry.version,
+					entry.hop_num, entry.sensor_count);
+			}
 		}
 	}
-	LOG_INF("-----------------------------------------------------");
 
 	storage_infra_clear();
 	storage_sensor_clear();
