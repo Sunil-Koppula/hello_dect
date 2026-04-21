@@ -22,7 +22,6 @@ target_sources(app PRIVATE
   src/tracker.c
   src/fragment.c
   src/psram.c
-  src/psram_queue.c
   src/spi_bus.c
 )
 

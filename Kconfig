@@ -82,12 +82,6 @@ config MESH_LOG_LEVEL
 	help
 	   Choose the log level for the mesh module.
 
-config PSRAM_QUEUE_LOG_LEVEL
-	int "PSRAM queue log level"
-	default 4
-	help
-	   Choose the log level for the PSRAM queue module.
-
 config FRAGMENT_LOG_LEVEL
 	int "Fragment log level"
 	default 4

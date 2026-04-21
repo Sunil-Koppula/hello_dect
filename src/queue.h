@@ -32,9 +32,6 @@ struct tx_data_item {
 	uint8_t data[QUEUE_DATA_MAX];
 };
 
-/* Initialize queues (call once at boot, after psram_init). */
-int queue_init(void);
-
 /* RX queue operations. */
 int rx_queue_put(const struct rx_data_item *item, enum queue_priority prio);
 int rx_queue_get(struct rx_data_item *item, k_timeout_t timeout);
