@@ -203,7 +203,7 @@ void radio_update_known_devices(void)
 static bool should_enqueue(uint8_t packet_type, uint16_t sender_id)
 {
 	/* Control packets (pairing + mesh join) — always accept. */
-	if (packet_type >= PACKET_PAIR_REQUEST && packet_type <= PACKET_JOINED_NETWORK_ACK) {
+	if (packet_type >= PACKET_PAIR_REQUEST && packet_type <= PACKET_PAIR_ACK) {
 		return true;
 	}
 

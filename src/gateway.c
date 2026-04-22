@@ -113,6 +113,14 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			/* Gateway should never receive JOINED_NETWORK_ACK, ignore. */
 			break;
 
+		case PACKET_PING_DEVICE:
+			handle_ping_device((const ping_device_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_PING_ACK:
+			handle_ping_ack((const ping_ack_t *)data, sender_id, rssi_2);
+			break;
+
 		default:
 			break;
 	}

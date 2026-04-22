@@ -26,6 +26,8 @@ typedef enum {
 	PACKET_JOINED_NETWORK_ACK  	= 0x06,
 	PACKET_PING_DEVICE			= 0x07,
 	PACKET_PING_ACK				= 0x08,
+	PACKET_DEVICE_UPDATED		= 0x09,
+	PACKET_DEVICE_UPDATED_ACK	= 0x0A,
 } packet_type_t;
 
 /* Packet Priority Levels */
@@ -118,6 +120,45 @@ typedef struct {
 } __attribute__((packed)) joined_network_ack_t;
 
 #define JOINED_NETWORK_ACK_PACKET_SIZE sizeof(joined_network_ack_t)
+
+/* PING DEVICE Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint8_t hop_num; 				/* hop count from gateway */
+	uint16_t version;				/* device firmware version */
+} __attribute__((packed)) ping_device_t;
+
+#define PING_DEVICE_PACKET_SIZE sizeof(ping_device_t)
+
+/* PING ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint8_t hop_num; 				/* hop count from gateway */
+	uint16_t version;				/* device firmware version */
+} __attribute__((packed)) ping_ack_t;
+
+#define PING_ACK_PACKET_SIZE sizeof(ping_ack_t)
+
+/* DEVICE UPDATED Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t device_id;				/* short device ID of the device that was updated */
+	uint64_t serial_num;			/* 64-bit serial number */
+	uint16_t version;				/* device firmware version */
+	uint16_t connected_device_id;	/* parent/connected device ID */
+	uint8_t hop_num; 				/* hop count from gateway */
+	uint8_t sensor_count; 			/* number of sensors connected to this device (for gateway/anchor) */
+} __attribute__((packed)) device_updated_t;
+
+#define DEVICE_UPDATED_PACKET_SIZE sizeof(device_updated_t)
+
+/* DEVICE UPDATED ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t dst_device_id;			/* short device ID of the device that sent the DEVICE_UPDATED packet being acknowledged */
+} __attribute__((packed)) device_updated_ack_t;
+
+#define DEVICE_UPDATED_ACK_PACKET_SIZE sizeof(device_updated_ack_t)
 
 /* Get device type as string */
 static inline const char *device_type_str(device_type_t type)

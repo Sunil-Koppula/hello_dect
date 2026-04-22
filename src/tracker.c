@@ -62,7 +62,7 @@ static struct data_tracker *fill_from_index(int idx)
 	return &temp_entry;
 }
 
-/* Write payload + CRC16 to PSRAM. */
+/* Write payload + CRC16 to PSRAM in a single SPI transaction. */
 static int psram_payload_write(int idx, const void *payload, uint16_t len)
 {
 	if (!is_psram_initialized()) {
@@ -71,14 +71,11 @@ static int psram_payload_write(int idx, const void *payload, uint16_t len)
 
 	uint16_t crc = crc16_ccitt(0xFFFF, payload, len);
 
-	/* Write payload. */
-	int err = psram_write(psram_slot_addr(idx), payload, len);
-	if (err) {
-		return err;
-	}
+	/* Combine payload + CRC into psram_buf for a single write. */
+	memcpy(psram_buf, payload, len);
+	memcpy(&psram_buf[len], &crc, sizeof(crc));
 
-	/* Write CRC16 right after payload. */
-	return psram_write(psram_slot_addr(idx) + len, &crc, sizeof(crc));
+	return psram_write(psram_slot_addr(idx), psram_buf, len + sizeof(crc));
 }
 
 /* Read payload from PSRAM and verify CRC16.

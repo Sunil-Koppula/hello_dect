@@ -122,6 +122,15 @@ int storage_infra_add(const infra_entry_t *entry)
 	return write_header(STORAGE_PART1_OFFSET, infra_count);
 }
 
+int storage_infra_update(uint16_t index, const infra_entry_t *entry)
+{
+	if (index >= infra_count) {
+		return -EINVAL;
+	}
+
+	return write_entry(STORAGE_PART1_OFFSET, index, entry, sizeof(*entry));
+}
+
 int storage_infra_get(uint16_t index, infra_entry_t *entry)
 {
 	if (index >= infra_count) {
@@ -161,6 +170,15 @@ int storage_sensor_add(const sensor_entry_t *entry)
 	return write_header(STORAGE_PART2_OFFSET, sensor_count);
 }
 
+int storage_sensor_update(uint16_t index, const sensor_entry_t *entry)
+{
+	if (index >= sensor_count) {
+		return -EINVAL;
+	}
+
+	return write_entry(STORAGE_PART2_OFFSET, index, entry, sizeof(*entry));
+}
+
 int storage_sensor_get(uint16_t index, sensor_entry_t *entry)
 {
 	if (index >= sensor_count) {
@@ -198,6 +216,15 @@ int storage_mesh_add(const mesh_entry_t *entry)
 
 	mesh_count++;
 	return write_header(STORAGE_PART3_OFFSET, mesh_count);
+}
+
+int storage_mesh_update(uint16_t index, const mesh_entry_t *entry)
+{
+	if (index >= mesh_count) {
+		return -EINVAL;
+	}
+
+	return write_entry(STORAGE_PART3_OFFSET, index, entry, sizeof(*entry));
 }
 
 int storage_mesh_get(uint16_t index, mesh_entry_t *entry)

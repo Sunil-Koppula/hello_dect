@@ -93,6 +93,14 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 		handle_joined_network_ack((const joined_network_ack_t *)data, sender_id, rssi_2);
 		break;
 	
+	case PACKET_PING_DEVICE:
+		handle_ping_device((const ping_device_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_PING_ACK:
+		handle_ping_ack((const ping_ack_t *)data, sender_id, rssi_2);
+		break;
+	
 	default:
 		break;
 	}

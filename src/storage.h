@@ -49,6 +49,7 @@ typedef struct {
 	uint8_t  device_type;      /* device_type_t */
 	uint16_t device_id;        /* short device ID */
 	uint8_t  hop_num;          /* hop count from gateway */
+	uint16_t version;          /* firmware version */
 	uint16_t rssi_2;           /* RSSI */
 } __attribute__((packed)) infra_entry_t;
 
@@ -58,6 +59,7 @@ typedef struct {
  */
 typedef struct {
 	uint16_t device_id;        /* sensor short device ID */
+	uint16_t version;          /* sensor firmware version */
 } __attribute__((packed)) sensor_entry_t;
 
 /*
@@ -79,18 +81,21 @@ int storage_init(void);
 
 /* Partition 1: Infrastructure devices (Gateway + Anchor). */
 int storage_infra_add(const infra_entry_t *entry);
+int storage_infra_update(uint16_t index, const infra_entry_t *entry);
 int storage_infra_get(uint16_t index, infra_entry_t *entry);
 int storage_infra_count(void);
 int storage_infra_clear(void);
 
 /* Partition 2: Connected sensors (Gateway + Anchor). */
 int storage_sensor_add(const sensor_entry_t *entry);
+int storage_sensor_update(uint16_t index, const sensor_entry_t *entry);
 int storage_sensor_get(uint16_t index, sensor_entry_t *entry);
 int storage_sensor_count(void);
 int storage_sensor_clear(void);
 
 /* Partition 3: Mesh network table (Gateway only). */
 int storage_mesh_add(const mesh_entry_t *entry);
+int storage_mesh_update(uint16_t index, const mesh_entry_t *entry);
 int storage_mesh_get(uint16_t index, mesh_entry_t *entry);
 int storage_mesh_count(void);
 int storage_mesh_clear(void);

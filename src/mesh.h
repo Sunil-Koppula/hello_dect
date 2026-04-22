@@ -17,6 +17,8 @@ int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uin
 int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status, uint8_t hop_num);
 int send_joined_network(uint32_t handle,const joined_network_t *pkt, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
 int send_joined_network_ack(uint32_t handle, uint16_t dst_device_id, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
+int send_ping_device(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
+int send_ping_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
 
 void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t rssi_2);
@@ -24,6 +26,8 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
 void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_joined_network(const joined_network_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 
 /* Call each main loop cycle to check response collection timer. */
 void mesh_tick(void);

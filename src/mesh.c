@@ -86,6 +86,35 @@ static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool
     return STATUS_SUCCESS;
 }
 
+/* Update Infra Storage */
+static bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rssi_2)
+{
+    uint8_t current_hop_num = PRODUCT_HOP_NUMBER;
+    infra_entry_t entry;
+    for (int i = 0; i < storage_infra_count(); i++) {
+        if (storage_infra_get(i, &entry) == 0 && entry.device_id == device_id) {
+            entry.rssi_2 = rssi_2;
+            if (hop_num != 0xFF && entry.hop_num != hop_num) {
+                entry.hop_num = hop_num;
+            }
+            if (entry.version != FIRMWARE_VERSION) {
+                entry.version = FIRMWARE_VERSION;
+            }
+            int err = storage_infra_update(i, &entry);
+            if (err) {
+                LOG_ERR("Failed to update infra entry for device %d, err %d", device_id, err);
+                return false;
+            }
+            product_info_update_hop();
+            break;
+        }
+    }
+    if (current_hop_num != PRODUCT_HOP_NUMBER) {
+        return true;
+    }
+    return false;
+}
+
 /* Check Sensor Storage */
 static uint8_t check_sensor_storage(uint16_t device_id)
 {
@@ -106,6 +135,25 @@ static uint8_t check_sensor_storage(uint16_t device_id)
     return STATUS_SUCCESS;
 }
 
+/* Update Sensor Storage */
+static void update_sensor_storage(uint16_t device_id, uint16_t version)
+{
+    sensor_entry_t entry;
+    for (int i = 0; i < storage_sensor_count(); i++) {
+        if (storage_sensor_get(i, &entry) == 0 && entry.device_id == device_id) {
+            if (entry.version == version) {
+                return;
+            }
+            entry.version = version;
+            int err = storage_sensor_update(i, &entry);
+            if (err) {
+                LOG_ERR("Failed to update sensor entry for device %d, err %d", device_id, err);
+            }
+            break;
+        }
+    }
+}
+
 /* Check Mesh Storage */
 static uint8_t check_mesh_storage(uint16_t device_id)
 {
@@ -124,6 +172,33 @@ static uint8_t check_mesh_storage(uint16_t device_id)
     }
 
     return STATUS_SUCCESS;
+}
+
+/* Update Mesh Storage */
+static void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, uint16_t connected_device_id, uint8_t sensor_count)
+{
+    mesh_entry_t entry;
+    for (int i = 0; i < storage_mesh_count(); i++) {
+        if (storage_mesh_get(i, &entry) == 0 && entry.device_id == device_id) {
+            if (entry.hop_num != hop_num && hop_num != 0xFF) {
+                entry.hop_num = hop_num;
+            }
+            if (entry.version != version) {
+                entry.version = version;
+            }
+            if (entry.connected_device_id != connected_device_id && connected_device_id != 0xFFFF) {
+                entry.connected_device_id = connected_device_id;
+            }
+            if (entry.sensor_count != sensor_count && sensor_count != 0xFF) {
+                entry.sensor_count = sensor_count;
+            }
+            int err = storage_mesh_update(i, &entry);
+            if (err) {
+                LOG_ERR("Failed to update mesh entry for device %d, err %d", device_id, err);
+            }
+            break;
+        }
+    }
 }
 
 /* Send pairing request packet. */
@@ -248,6 +323,46 @@ int send_joined_network_ack(uint32_t handle, uint16_t dst_device_id, uint16_t ds
             .status = status,
         },
         .dst_device_id = dst_device_id,
+    };
+
+    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+}
+
+/* Send ping device packet. */
+int send_ping_device(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
+{
+    ping_device_t packet = {
+        .hdr = {
+            .packet_type = PACKET_PING_DEVICE,
+            .device_type = PRODUCT_DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_HIGH,
+            .tracking_id = tracking_id,
+            .device_id = dst_id,
+            .status = status,
+        },
+        .hop_num = PRODUCT_HOP_NUMBER,
+        .version = FIRMWARE_VERSION,
+    };
+
+    // Update tracker payload for retries in case of mesh packet loss
+    tracker_update_payload(tracking_id, &packet, sizeof(packet));
+
+    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+}
+
+int send_ping_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
+{
+    ping_ack_t packet = {
+        .hdr = {
+            .packet_type = PACKET_PING_ACK,
+            .device_type = PRODUCT_DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_HIGH,
+            .tracking_id = tracking_id,
+            .device_id = dst_id,
+            .status = status,
+        },
+        .hop_num = PRODUCT_HOP_NUMBER,
+        .version = FIRMWARE_VERSION,
     };
 
     return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
@@ -383,6 +498,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
                 entry.device_type = conf->hdr.device_type;
                 entry.hop_num = 0xFF;
                 entry.rssi_2 = rssi_2;
+                entry.version = conf->version;
                 int err = storage_infra_add(&entry);
                 if (err) {
                     LOG_ERR("Failed to store paired anchor, err %d", err);
@@ -400,6 +516,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
             if (status == STATUS_SUCCESS) {
                 sensor_entry_t entry;
                 entry.device_id = dst_id;
+                entry.version = conf->version;
                 int err = storage_sensor_add(&entry);
                 if (err) {
                     LOG_ERR("Failed to store paired sensor, err %d", err);
@@ -482,6 +599,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
         entry.device_type = ack->hdr.device_type;
         entry.hop_num = ack->hop_num;
         entry.rssi_2 = rssi_2;
+        entry.version = ack->version;
         int err = storage_infra_add(&entry);
         if (err) {
             LOG_ERR("Failed to store paired device, err %d", err);
@@ -614,7 +732,6 @@ void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id,
         case DEVICE_TYPE_ANCHOR:
             if (ack->dst_device_id == radio_get_device_id()) {
                 LOG_INF("Received JOINED_NETWORK_ACK from GATEWAY: status 0x%02x", ack->hdr.status);
-                return;
             } else {
                 LOG_INF("Forwarding JOINED_NETWORK_ACK to device %d: status 0x%02x", ack->dst_device_id, ack->hdr.status);
                 send_joined_network_ack(0, ack->dst_device_id, prev_id, ack->hdr.tracking_id, ack->hdr.status);
@@ -628,6 +745,64 @@ void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id,
         default:
             LOG_WRN("Unknown device type 0x%02x in JOINED_NETWORK_ACK from %d, ignoring", ack->hdr.device_type, dst_id);
             return;
+    }
+}
+
+/* Handle ping device packet */
+void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    const ping_device_t *ping = (const ping_device_t *)pkt;
+
+    if (ping->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF("PING_DEVICE from %s ID:%d: status 0x%02x", device_type_str(ping->hdr.device_type), dst_id, ping->hdr.status);
+
+    if (ping->hdr.device_type != DEVICE_TYPE_GATEWAY &&
+        ping->hdr.device_type != DEVICE_TYPE_ANCHOR &&
+        ping->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("PING_DEVICE from unknown device type 0x%02x, ignoring", ping->hdr.device_type);
+        return;
+    }
+
+    if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY || PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+        // Respond with PING_ACK
+        LOG_INF("Sending PING_ACK to %d: status 0x%02x", dst_id, STATUS_SUCCESS);
+        send_ping_ack(0, dst_id, ping->hdr.tracking_id, STATUS_SUCCESS);
+        if (update_infra_storage(dst_id, ping->hop_num, rssi_2)) {
+            LOG_INF("Updated hop number for device %d to %d based on PING_DEVICE", dst_id, PRODUCT_HOP_NUMBER);
+        }
+        return;
+    }
+}
+
+/* Handle ping ack packet */
+void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    const ping_ack_t *ping = (const ping_ack_t *)pkt;
+
+    if (ping->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    // Remove the ping tracker
+    tracker_remove_by_dst(radio_get_device_id(), PACKET_PING_DEVICE);
+
+    LOG_INF("PING_ACK from %s ID:%d: status 0x%02x", device_type_str(ping->hdr.device_type), dst_id, ping->hdr.status);
+
+    if (ping->hdr.device_type != DEVICE_TYPE_GATEWAY &&
+        ping->hdr.device_type != DEVICE_TYPE_ANCHOR &&
+        ping->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("PING_ACK from unknown device type 0x%02x, ignoring", ping->hdr.device_type);
+        return;
+    }
+
+    if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY || PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+        if (update_infra_storage(dst_id, ping->hop_num, rssi_2)) {
+            LOG_INF("Updated hop number for device %d to %d based on PING_ACK", dst_id, PRODUCT_HOP_NUMBER);
+        }
+        return;
     }
 }
 
