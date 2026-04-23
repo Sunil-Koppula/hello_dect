@@ -223,7 +223,7 @@ int send_pair_request(uint32_t handle, uint8_t tracking_id)
     /* Store packet as tracker payload for retries. */
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send pairing response packet. */
@@ -241,7 +241,7 @@ int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, ui
         .hop_num = hop_num,
     };
 
-    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send pairing confirm packet. */
@@ -262,7 +262,7 @@ int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uin
     /* Store packet as tracker payload for retries. */
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send pairing acknowledgment packet. */
@@ -280,7 +280,7 @@ int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t
         .hop_num = hop_num,
     };
 
-    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send joined network packet. */
@@ -307,7 +307,7 @@ int send_joined_network(uint32_t handle,const joined_network_t *pkt, uint16_t ds
     // Update tracker payload for retries in case of mesh packet loss
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send joined network acknowledgment packet. */
@@ -325,7 +325,7 @@ int send_joined_network_ack(uint32_t handle, uint16_t dst_device_id, uint16_t ds
         .dst_device_id = dst_device_id,
     };
 
-    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send ping device packet. */
@@ -335,7 +335,7 @@ int send_ping_device(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint
         .hdr = {
             .packet_type = PACKET_PING_DEVICE,
             .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
+            .priority = PACKET_PRIORITY_LOW,
             .tracking_id = tracking_id,
             .device_id = dst_id,
             .status = status,
@@ -347,16 +347,17 @@ int send_ping_device(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint
     // Update tracker payload for retries in case of mesh packet loss
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
+/* Send ping acknowledgment packet. */
 int send_ping_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
 {
     ping_ack_t packet = {
         .hdr = {
             .packet_type = PACKET_PING_ACK,
             .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
+            .priority = PACKET_PRIORITY_LOW,
             .tracking_id = tracking_id,
             .device_id = dst_id,
             .status = status,
@@ -365,7 +366,52 @@ int send_ping_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t
         .version = FIRMWARE_VERSION,
     };
 
-    return tx_queue_put(&packet, sizeof(packet), QUEUE_PRIO_HIGH);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+}
+
+/* Send device updated packet. */
+int send_device_updated(uint32_t handle, const device_updated_t *pkt, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
+{
+    device_updated_t packet = {
+        .hdr = {
+            .packet_type = PACKET_DEVICE_UPDATED,
+            .device_type = PRODUCT_DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_LOW,
+            .tracking_id = tracking_id,
+            .device_id = dst_id,
+            .status = status,
+        },
+        .device_type = pkt->device_type,
+        .device_id = pkt->device_id,
+        .serial_num = pkt->serial_num,
+        .version = pkt->version,
+        .connected_device_id = pkt->connected_device_id,
+        .hop_num = pkt->hop_num,
+        .sensor_count = pkt->sensor_count,
+    };
+
+    // Update tracker payload for retries in case of mesh packet loss
+    tracker_update_payload(tracking_id, &packet, sizeof(packet));
+
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+}
+
+/* Send device updated acknowledgment packet. */
+int send_device_updated_ack(uint32_t handle, uint16_t dst_device_id, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
+{
+    device_updated_ack_t packet = {
+        .hdr = {
+            .packet_type = PACKET_DEVICE_UPDATED_ACK,
+            .device_type = PRODUCT_DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_LOW,
+            .tracking_id = tracking_id,
+            .device_id = dst_id,
+            .status = status,
+        },
+        .dst_device_id = dst_device_id,
+    };
+
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Handle received pairing request packet. */
@@ -524,6 +570,26 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
                 }
                 LOG_INF("Sensor %d paired and stored (total %d)", dst_id, storage_sensor_count());
                 radio_update_known_devices();
+
+                if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+                    // Send Device Updated Packet to Gateway about new paired sensor
+                    uint8_t tid = tracker_next_id();
+                    tracker_add(radio_get_device_id(), radio_get_device_id(), tid, PACKET_DEVICE_UPDATED, PRODUCT_HOP_NUMBER * 500, 5, NULL, 0);
+                    
+                    device_updated_t pkt = {
+                    .device_type = PRODUCT_DEVICE_TYPE,
+                    .device_id = radio_get_device_id(),
+                    .serial_num = PRODUCT_SERIAL_NUMBER,
+                    .version = FIRMWARE_VERSION,
+                    .connected_device_id = 0xFFFF,
+                    .hop_num = PRODUCT_HOP_NUMBER,
+                    .sensor_count = storage_sensor_count(),
+                    };
+                    infra_entry_t entry;
+                    storage_infra_get(0, &entry);
+                    LOG_INF("Sending DEVICE_UPDATED to gateway about new paired SENSOR %d", dst_id);
+                    send_device_updated(0, &pkt, entry.device_id, tid, STATUS_SUCCESS);
+                }
             } else if (status == STATUS_ALREADY_EXISTS) {
                 LOG_INF("Sensor %d already paired, received PAIR_CONFIRM with success", dst_id);
             }
@@ -770,8 +836,20 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
         // Respond with PING_ACK
         LOG_INF("Sending PING_ACK to %d: status 0x%02x", dst_id, STATUS_SUCCESS);
         send_ping_ack(0, dst_id, ping->hdr.tracking_id, STATUS_SUCCESS);
-        if (update_infra_storage(dst_id, ping->hop_num, rssi_2)) {
-            LOG_INF("Updated hop number for device %d to %d based on PING_DEVICE", dst_id, PRODUCT_HOP_NUMBER);
+        if (update_infra_storage(dst_id, ping->hop_num, rssi_2) && PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+            LOG_INF("Sending DEVICE_UPDATED to %d for %s with new hop number %d", dst_id, device_type_str(ping->hdr.device_type), PRODUCT_HOP_NUMBER);
+            uint8_t tid = tracker_next_id();
+            tracker_add(radio_get_device_id(), radio_get_device_id(), tid, PACKET_DEVICE_UPDATED, PRODUCT_HOP_NUMBER * 500, 5, NULL, 0);
+            device_updated_t pkt = {
+                .device_type = PRODUCT_DEVICE_TYPE,
+                .device_id = radio_get_device_id(),
+                .serial_num = PRODUCT_SERIAL_NUMBER,
+                .version = FIRMWARE_VERSION,
+                .connected_device_id = 0xFFFF,
+                .hop_num = PRODUCT_HOP_NUMBER,
+                .sensor_count = storage_sensor_count(),
+            };
+            send_device_updated(0, &pkt, dst_id, tid, STATUS_SUCCESS);
         }
         return;
     }
@@ -799,10 +877,118 @@ void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
     }
 
     if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY || PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
-        if (update_infra_storage(dst_id, ping->hop_num, rssi_2)) {
+        if (update_infra_storage(dst_id, ping->hop_num, rssi_2) && PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
             LOG_INF("Updated hop number for device %d to %d based on PING_ACK", dst_id, PRODUCT_HOP_NUMBER);
+            uint8_t tid = tracker_next_id();
+            tracker_add(radio_get_device_id(), radio_get_device_id(), tid, PACKET_DEVICE_UPDATED, PRODUCT_HOP_NUMBER * 500, 5, NULL, 0);
+            device_updated_t pkt = {
+                .device_type = PRODUCT_DEVICE_TYPE,
+                .device_id = radio_get_device_id(),
+                .serial_num = PRODUCT_SERIAL_NUMBER,
+                .version = FIRMWARE_VERSION,
+                .connected_device_id = 0xFFFF,
+                .hop_num = PRODUCT_HOP_NUMBER,
+                .sensor_count = storage_sensor_count(),
+            };
+            send_device_updated(0, &pkt, dst_id, tid, STATUS_SUCCESS);
         }
         return;
+    }
+}
+
+/* Handle device updated packet */
+void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    const device_updated_t *update = (const device_updated_t *)pkt;
+
+    if (update->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF("DEVICE_UPDATED from %s ID:%d: status 0x%02x", device_type_str(update->hdr.device_type), dst_id, update->hdr.status);
+
+    if (update->hdr.status != STATUS_SUCCESS) {
+        LOG_WRN("DEVICE_UPDATED failed with status 0x%02x", update->hdr.status);
+        return;
+    }
+
+    if (update->hdr.device_type != DEVICE_TYPE_GATEWAY &&
+        update->hdr.device_type != DEVICE_TYPE_ANCHOR &&
+        update->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("DEVICE_UPDATED from unknown device type 0x%02x, ignoring", update->hdr.device_type);
+        return;
+    }
+
+    switch (PRODUCT_DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+            if (check_mesh_storage(update->device_id) == STATUS_ALREADY_EXISTS) {
+                update_mesh_storage(update->device_id, update->hop_num, update->version, update->connected_device_id, update->sensor_count);
+                LOG_INF("Updated mesh storage for device %s: %d based on DEVICE_UPDATED", device_type_str(update->hdr.device_type), update->device_id);
+                LOG_INF("Sending DEVICE_UPDATED_ACK to %d for device %d", dst_id, update->device_id);
+                send_device_updated_ack(0, update->device_id, dst_id, update->hdr.tracking_id, STATUS_SUCCESS);
+            }
+            break;
+        
+        case DEVICE_TYPE_ANCHOR:
+            if (update->hdr.device_type == DEVICE_TYPE_ANCHOR || update->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                LOG_INF("Forwarding DEVICE_UPDATED from %s: %d, updating infra storage", device_type_str(update->hdr.device_type), update->device_id);
+                infra_entry_t entry;
+                storage_infra_get(0, &entry);
+
+                uint8_t tid = tracker_next_id();
+                tracker_add(radio_get_device_id(), dst_id, tid, PACKET_DEVICE_UPDATED, PRODUCT_HOP_NUMBER * 500, 5, NULL, 0);
+                send_device_updated(0, update, entry.device_id, tid, STATUS_SUCCESS);
+            }
+            break;
+
+        case DEVICE_TYPE_SENSOR:
+            LOG_WRN("Sensor will never receive DEVICE_UPDATED, ignoring");
+            break;
+
+        default:
+            LOG_WRN("Unknown device type 0x%02x in DEVICE_UPDATED from %d, ignoring", update->hdr.device_type, dst_id);
+            break;
+    }
+    return;
+}
+
+/* Handle device updated acknowledgment packet */
+void handle_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    const device_updated_ack_t *ack = (const device_updated_ack_t *)pkt;
+
+    if (ack->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF("DEVICE_UPDATED_ACK from %s ID:%d: status 0x%02x", device_type_str(ack->hdr.device_type), dst_id, ack->hdr.status);
+
+    /* Get the tracker entry to find prev_id (downstream route), then remove. */
+    struct data_tracker *t = tracker_get_by_dst(ack->dst_device_id, PACKET_DEVICE_UPDATED);
+    uint16_t prev_id = t ? t->prev_id : 0;
+    tracker_remove_by_dst(ack->dst_device_id, PACKET_DEVICE_UPDATED);
+
+    switch (PRODUCT_DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+            LOG_WRN("Gateway will never receive DEVICE_UPDATED_ACK, ignoring");
+            return;
+
+        case DEVICE_TYPE_ANCHOR:
+            if (ack->dst_device_id == radio_get_device_id()) {
+                LOG_INF("Received DEVICE_UPDATED_ACK from GATEWAY: status 0x%02x", ack->hdr.status);
+            } else {
+                LOG_INF("Forwarding DEVICE_UPDATED_ACK to device %d: status 0x%02x", ack->dst_device_id, ack->hdr.status);
+                send_device_updated_ack(0, ack->dst_device_id, prev_id, ack->hdr.tracking_id, ack->hdr.status);
+            }
+            return;
+
+        case DEVICE_TYPE_SENSOR:
+            LOG_INF("Received DEVICE_UPDATED_ACK from %d for device %d: status 0x%02x", dst_id, ack->dst_device_id, ack->hdr.status);
+            return;
+
+        default:
+            LOG_WRN("Unknown device type 0x%02x in DEVICE_UPDATED_ACK from %d, ignoring", ack->hdr.device_type, dst_id);
+            return;
     }
 }
 

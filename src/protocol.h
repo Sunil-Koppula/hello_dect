@@ -142,6 +142,7 @@ typedef struct {
 /* DEVICE UPDATED Packet */
 typedef struct {
 	packet_header_t hdr;
+	uint8_t device_type;			/* device_type_t */
 	uint16_t device_id;				/* short device ID of the device that was updated */
 	uint64_t serial_num;			/* 64-bit serial number */
 	uint16_t version;				/* device firmware version */
