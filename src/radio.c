@@ -202,8 +202,12 @@ void radio_update_known_devices(void)
 /* Check if a packet should be enqueued (ISR-safe — no EEPROM access). */
 static bool should_enqueue(uint8_t packet_type, uint16_t sender_id)
 {
-	/* Control packets (pairing + mesh join) — always accept. */
-	if (packet_type >= PACKET_PAIR_REQUEST && packet_type <= PACKET_PAIR_ACK) {
+	/* Control packets (pairing + repair) — always accept.
+	 * REPAIR_REQUEST/RESPONSE must pass here because the peer may not be
+	 * in the known_devices cache yet during a repair. */
+	if ((packet_type >= PACKET_PAIR_REQUEST && packet_type <= PACKET_PAIR_ACK) ||
+	    packet_type == PACKET_REPAIR_REQUEST ||
+	    packet_type == PACKET_REPAIR_RESPONSE) {
 		return true;
 	}
 

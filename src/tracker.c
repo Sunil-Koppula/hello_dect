@@ -118,7 +118,7 @@ void tracker_init(void)
 
 	next_tracking_id = 1;
 
-	LOG_INF("Tracker init: %d entries, PSRAM payload 0x%06x–0x%06x (%d bytes, slot=%d)",
+	LOG_INF("Tracker init: %d entries, PSRAM payload 0x%06x-0x%06x (%d bytes, slot=%d)",
 		TRACKER_MAX_ENTRIES, TRACKER_PSRAM_BASE,
 		TRACKER_PSRAM_BASE + TRACKER_PSRAM_SIZE - 1, TRACKER_PSRAM_SIZE,
 		TRACKER_SLOT_SIZE);

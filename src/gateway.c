@@ -129,6 +129,14 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			/* Gateway should never receive DEVICE_UPDATED_ACK, ignore. */
 			break;
 
+		case PACKET_REPAIR_REQUEST:
+			handle_repair_request((const repair_request_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_REPAIR_RESPONSE:
+			handle_repair_response((const repair_response_t *)data, sender_id, rssi_2);
+			break;
+			
 		default:
 			break;
 	}

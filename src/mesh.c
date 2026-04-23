@@ -59,12 +59,10 @@ static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool
     // Check Only first slot as sensor can only pair with one gateway/anchor, but anchor can pair with multiple sensors
     if (all_slots == false) {
         if (storage_infra_get(0, &entry) == 0 && entry.device_id == device_id) {
-            LOG_WRN("%s %d already stored in infra, skipping add", device_type_str(device_type), device_id);
             return STATUS_ALREADY_EXISTS;
         }
         
         if (storage_infra_count() >= 1) {
-            LOG_WRN("Infra storage full, cannot add %s %d", device_type_str(device_type), device_id);
             return STATUS_STORAGE_FULL;
         }
 
@@ -73,13 +71,11 @@ static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool
 
     for (int i = 0; i < storage_infra_count(); i++) {
         if (storage_infra_get(i, &entry) == 0 && entry.device_id == device_id) {
-            LOG_WRN("%s %d already stored in infra, skipping add", device_type_str(device_type), device_id);
             return STATUS_ALREADY_EXISTS;
         }
     }
 
     if (storage_infra_count() >= STORAGE_PART1_MAX_ENTRIES) {
-        LOG_WRN("Infra storage full, cannot add %s %d", device_type_str(device_type), device_id);
         return STATUS_STORAGE_FULL;
     }
 
@@ -122,13 +118,11 @@ static uint8_t check_sensor_storage(uint16_t device_id)
 
     for (int i = 0; i < storage_sensor_count(); i++) {
         if (storage_sensor_get(i, &entry) == 0 && entry.device_id == device_id) {
-            LOG_WRN("Sensor %d already stored, skipping add", device_id);
             return STATUS_ALREADY_EXISTS;
         }
     }
 
     if (storage_sensor_count() >= STORAGE_PART2_MAX_ENTRIES) {
-        LOG_WRN("Sensor storage full, cannot add sensor %d", device_id);
         return STATUS_STORAGE_FULL;
     }
 
@@ -161,13 +155,11 @@ static uint8_t check_mesh_storage(uint16_t device_id)
 
     for (int i = 0; i < storage_mesh_count(); i++) {
         if (storage_mesh_get(i, &entry) == 0 && entry.device_id == device_id) {
-            LOG_WRN("Mesh %d already stored, skipping add", device_id);
             return STATUS_ALREADY_EXISTS;
         }
     }
 
     if (storage_mesh_count() >= STORAGE_PART3_MAX_ENTRIES) {
-        LOG_WRN("Mesh storage full, cannot add mesh %d", device_id);
         return STATUS_STORAGE_FULL;
     }
 
@@ -414,6 +406,52 @@ int send_device_updated_ack(uint32_t handle, uint16_t dst_device_id, uint16_t ds
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
+/* Send repair request packet. */
+int send_repair_request(uint32_t handle, uint16_t dst_id, uint8_t tracking_id)
+{
+    uint32_t random_num = generate_random_number();
+    uint32_t hash = compute_pair_hash(radio_get_device_id(), random_num);
+
+    repair_request_t packet = {
+        .hdr = {
+            .packet_type = PACKET_REPAIR_REQUEST,
+            .device_type = PRODUCT_DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_HIGH,
+            .tracking_id = tracking_id,
+            .device_id = dst_id,
+            .status = STATUS_SUCCESS,
+        },
+        .random_num = random_num,
+        .hash = hash,
+        .version = FIRMWARE_VERSION,
+        .hop_num = PRODUCT_HOP_NUMBER,
+    };
+
+    // Update tracker payload for retries in case of mesh packet loss
+    tracker_update_payload(tracking_id, &packet, sizeof(packet));
+
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+}
+
+/* Send repair response packet. */
+int send_repair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
+{
+    repair_response_t packet = {
+        .hdr = {
+            .packet_type = PACKET_REPAIR_RESPONSE,
+            .device_type = PRODUCT_DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_HIGH,
+            .tracking_id = tracking_id,
+            .device_id = dst_id,
+            .status = status,
+        },
+        .version = FIRMWARE_VERSION,
+        .hop_num = PRODUCT_HOP_NUMBER,
+    };
+
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+}
+
 /* Handle received pairing request packet. */
 void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
@@ -473,8 +511,30 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
     /* Stop the request tracker — pair request was broadcast (device_id = 0). */
     tracker_remove_by_dst(radio_get_device_id(), PACKET_PAIR_REQUEST);
 
-    if (resp->hdr.status != STATUS_SUCCESS) {
+    if (resp->hdr.status != STATUS_SUCCESS && resp->hdr.status != STATUS_ALREADY_EXISTS) {
         LOG_WRN("PAIR_RESPONSE failed: status 0x%02x", resp->hdr.status);
+        return;
+    }
+
+    if (resp->hdr.status == STATUS_ALREADY_EXISTS) {
+        // Check if we already have this device in storage
+        if (resp->hdr.device_type == DEVICE_TYPE_SENSOR) {
+            if (check_sensor_storage(dst_id) == STATUS_SUCCESS) {
+                // send repair request
+                uint8_t tid = tracker_next_id();
+                tracker_add(radio_get_device_id(), dst_id, tid, PACKET_REPAIR_REQUEST, 500, 5, NULL, 0);
+                LOG_INF("Sending REPAIR_REQUEST to SENSOR ID:%d since it's already paired but not in storage", dst_id);
+                send_repair_request(0, dst_id, tid);
+            }
+        } else {
+            if (check_infra_storage(dst_id, resp->hdr.device_type, true) == STATUS_SUCCESS) {
+                // send repair request
+                uint8_t tid = tracker_next_id();
+                tracker_add(radio_get_device_id(), dst_id, tid, PACKET_REPAIR_REQUEST, 500, 5, NULL, 0);
+                LOG_INF("Sending REPAIR_REQUEST to %s ID:%d since it's already paired but not in storage", device_type_str(resp->hdr.device_type), dst_id);
+                send_repair_request(0, dst_id, tid);
+            }
+        }
         return;
     }
 
@@ -989,6 +1049,145 @@ void handle_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id,
         default:
             LOG_WRN("Unknown device type 0x%02x in DEVICE_UPDATED_ACK from %d, ignoring", ack->hdr.device_type, dst_id);
             return;
+    }
+}
+
+/* Handle repair request packet */
+void handle_repair_request(const repair_request_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    const repair_request_t *req = (const repair_request_t *)pkt;
+
+    if (req->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF("Received REPAIR_REQUEST from %s ID:%d", device_type_str(req->hdr.device_type), dst_id);
+
+    /* Verify hash: hash should equal compute_pair_hash(dst_id, req->random_num) */
+    uint32_t expected_hash = compute_pair_hash(dst_id, req->random_num);
+
+    if (req->hash != expected_hash) {
+        LOG_WRN("REPAIR_REQUEST hash mismatch from %d (got 0x%08x, expected 0x%08x)",
+            dst_id, req->hash, expected_hash);
+        send_repair_response(0, dst_id, pkt->hdr.tracking_id, STATUS_AUTH_FAILED);
+        return;
+    }
+
+    uint8_t status;
+    switch(req->hdr.device_type) {
+        case DEVICE_TYPE_GATEWAY:
+            LOG_WRN("Received REPAIR_REQUEST from gateway device %d, ignoring", dst_id);
+            return;
+        case DEVICE_TYPE_ANCHOR:
+            // Check if device is already paired with this anchor
+            if (check_infra_storage(dst_id, req->hdr.device_type, true) == STATUS_ALREADY_EXISTS) {
+                LOG_INF("Repair request from known %s ID:%d, sending success response", device_type_str(req->hdr.device_type), dst_id);
+                status = STATUS_SUCCESS;
+            } else {
+                LOG_WRN("Repair request from unknown %s ID:%d, sending failure response", device_type_str(req->hdr.device_type), dst_id);
+                status = STATUS_NOT_FOUND;
+            }
+            break;
+        case DEVICE_TYPE_SENSOR:
+            // Check if device is already paired with this gateway/anchor
+            if (check_sensor_storage(dst_id) == STATUS_ALREADY_EXISTS) {
+                LOG_INF("Repair request from known %s ID:%d, sending success response", device_type_str(req->hdr.device_type), dst_id);
+                status = STATUS_SUCCESS;
+            } else {
+                LOG_WRN("Repair request from unknown %s ID:%d, sending failure response", device_type_str(req->hdr.device_type), dst_id);
+                status = STATUS_NOT_FOUND;
+            }
+            break;
+        default:
+            LOG_WRN("Unknown device type 0x%02x in REPAIR_REQUEST from %d, ignoring", req->hdr.device_type, dst_id);
+            return;
+    }
+
+    LOG_INF("Sending REPAIR_RESPONSE to %s ID:%d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, status);
+    send_repair_response(0, dst_id, pkt->hdr.tracking_id, status);
+}
+
+/* Handle repair response packet */
+void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    const repair_response_t *resp = (const repair_response_t *)pkt;
+
+    if (resp->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF("Received REPAIR_RESPONSE from %s ID:%d: status 0x%02x", device_type_str(resp->hdr.device_type), dst_id, resp->hdr.status);
+
+    /* Remove the tracker. */
+    tracker_remove_by_dst(radio_get_device_id(), PACKET_REPAIR_REQUEST);
+
+    if (resp->hdr.status == STATUS_SUCCESS) {
+        switch(resp->hdr.device_type) {
+            case DEVICE_TYPE_GATEWAY:
+            case DEVICE_TYPE_ANCHOR:
+            {
+                switch(PRODUCT_DEVICE_TYPE) {
+                    case DEVICE_TYPE_GATEWAY:
+                        LOG_WRN("Gateway will never receive REPAIR_RESPONSE, ignoring");
+                        return;
+                    
+                    case DEVICE_TYPE_ANCHOR:
+                        // Check if device is already paired with this anchor
+                        if (check_infra_storage(dst_id, resp->hdr.device_type, true) == STATUS_ALREADY_EXISTS) {
+                            if (update_infra_storage(dst_id, resp->hop_num, rssi_2)) {
+                                LOG_INF("Updated infra storage for device %d based on REPAIR_RESPONSE", dst_id);
+                            }
+                        } else {
+                            infra_entry_t entry;
+                            entry.device_id = dst_id;
+                            entry.device_type = resp->hdr.device_type;
+                            entry.hop_num = resp->hop_num;
+                            entry.rssi_2 = rssi_2;
+                            entry.version = resp->version;
+                            int err = storage_infra_add(&entry);
+                            if (err) {
+                                LOG_ERR("Failed to store repaired device, err %d", err);
+                                return;
+                            }
+                            LOG_INF("Stored repaired device %s ID:%d successfully", device_type_str(resp->hdr.device_type), dst_id);
+                            product_info_update_hop();
+                        }
+                        break;
+
+                    case DEVICE_TYPE_SENSOR:
+                        // Check if device is already paired with this gateway/anchor
+                        if (check_sensor_storage(dst_id) == STATUS_ALREADY_EXISTS) {
+                            LOG_INF("Received REPAIR_RESPONSE with success from known %s ID:%d, but no storage update needed since sensors don't store hop/RSSI", device_type_str(resp->hdr.device_type), dst_id);
+                        } else {
+                            infra_entry_t entry;
+                            storage_infra_get(0, &entry);
+                            entry.device_id = dst_id;
+                            entry.device_type = resp->hdr.device_type;
+                            entry.hop_num = resp->hop_num;
+                            entry.rssi_2 = rssi_2;
+                            entry.version = resp->version;
+                            storage_infra_update(0, &entry);
+                            LOG_INF("Updated infra storage for repaired sensor %d based on REPAIR_RESPONSE", dst_id);
+                        }
+                        break;
+
+                    default:
+                        LOG_WRN("Unknown device type 0x%02x in REPAIR_RESPONSE from %d, ignoring", resp->hdr.device_type, dst_id);
+                        return;
+                }
+                break;
+            }
+            case DEVICE_TYPE_SENSOR:
+                LOG_WRN("Received REPAIR_RESPONSE from sensor device %d, ignoring", dst_id);
+                return;
+            default:
+                LOG_WRN("Unknown device type 0x%02x in REPAIR_RESPONSE from %d, ignoring", resp->hdr.device_type, dst_id);
+                return;
+        }
+        radio_update_known_devices();
+        
+    } else {
+        LOG_WRN("REPAIR_RESPONSE failed with status 0x%02x", resp->hdr.status);
     }
 }
 

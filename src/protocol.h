@@ -28,6 +28,8 @@ typedef enum {
 	PACKET_PING_ACK				= 0x08,
 	PACKET_DEVICE_UPDATED		= 0x09,
 	PACKET_DEVICE_UPDATED_ACK	= 0x0A,
+	PACKET_REPAIR_REQUEST		= 0x0B,
+	PACKET_REPAIR_RESPONSE		= 0x0C,
 } packet_type_t;
 
 /* Packet Priority Levels */
@@ -124,6 +126,7 @@ typedef struct {
 /* PING DEVICE Packet */
 typedef struct {
 	packet_header_t hdr;
+	uint16_t dst_device_id;			/* short device ID of the device being pinged */
 	uint8_t hop_num; 				/* hop count from gateway */
 	uint16_t version;				/* device firmware version */
 } __attribute__((packed)) ping_device_t;
@@ -133,6 +136,7 @@ typedef struct {
 /* PING ACK Packet */
 typedef struct {
 	packet_header_t hdr;
+	uint16_t dst_device_id;			/* short device ID of the device being pinged */
 	uint8_t hop_num; 				/* hop count from gateway */
 	uint16_t version;				/* device firmware version */
 } __attribute__((packed)) ping_ack_t;
@@ -160,6 +164,26 @@ typedef struct {
 } __attribute__((packed)) device_updated_ack_t;
 
 #define DEVICE_UPDATED_ACK_PACKET_SIZE sizeof(device_updated_ack_t)
+
+/* REPAIR REQUEST Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint32_t random_num;
+	uint32_t hash;
+	uint16_t version;
+	uint8_t hop_num;
+} __attribute__((packed)) repair_request_t;
+
+#define REPAIR_REQUEST_PACKET_SIZE sizeof(repair_request_t)
+
+/* REPAIR RESPONSE Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t version;
+	uint8_t hop_num;
+} __attribute__((packed)) repair_response_t;
+
+#define REPAIR_RESPONSE_PACKET_SIZE sizeof(repair_response_t)
 
 /* Get device type as string */
 static inline const char *device_type_str(device_type_t type)
