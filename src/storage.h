@@ -36,11 +36,6 @@
 #define STORAGE_MAGIC_0       0xDE
 #define STORAGE_MAGIC_1       0xC7
 
-/* Max entries per partition. */
-#define STORAGE_PART1_MAX_ENTRIES 8
-#define STORAGE_PART2_MAX_ENTRIES 128
-#define STORAGE_PART3_MAX_ENTRIES 1024
-
 /*
  * Partition 1 entry: Connected infrastructure devices (Gateway/Anchors).
  * Stored by: Gateway, Anchor.

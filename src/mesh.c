@@ -75,7 +75,7 @@ static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool
         }
     }
 
-    if (storage_infra_count() >= STORAGE_PART1_MAX_ENTRIES) {
+    if (storage_infra_count() >= MAX_ANCHORS) {
         return STATUS_STORAGE_FULL;
     }
 
@@ -122,7 +122,7 @@ static uint8_t check_sensor_storage(uint16_t device_id)
         }
     }
 
-    if (storage_sensor_count() >= STORAGE_PART2_MAX_ENTRIES) {
+    if (storage_sensor_count() >= MAX_SENSORS) {
         return STATUS_STORAGE_FULL;
     }
 
@@ -159,7 +159,7 @@ static uint8_t check_mesh_storage(uint16_t device_id)
         }
     }
 
-    if (storage_mesh_count() >= STORAGE_PART3_MAX_ENTRIES) {
+    if (storage_mesh_count() >= MAX_DEVICES) {
         return STATUS_STORAGE_FULL;
     }
 
@@ -1156,18 +1156,18 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
 
                     case DEVICE_TYPE_SENSOR:
                         // Check if device is already paired with this gateway/anchor
-                        if (check_sensor_storage(dst_id) == STATUS_ALREADY_EXISTS) {
+                        uint8_t status = check_infra_storage(dst_id, resp->hdr.device_type, false);
+                        if (status == STATUS_ALREADY_EXISTS) {
                             LOG_INF("Received REPAIR_RESPONSE with success from known %s ID:%d, but no storage update needed since sensors don't store hop/RSSI", device_type_str(resp->hdr.device_type), dst_id);
-                        } else {
+                        } else if (status != STATUS_STORAGE_FULL) {
                             infra_entry_t entry;
-                            storage_infra_get(0, &entry);
                             entry.device_id = dst_id;
                             entry.device_type = resp->hdr.device_type;
                             entry.hop_num = resp->hop_num;
                             entry.rssi_2 = rssi_2;
                             entry.version = resp->version;
-                            storage_infra_update(0, &entry);
-                            LOG_INF("Updated infra storage for repaired sensor %d based on REPAIR_RESPONSE", dst_id);
+                            storage_infra_add(&entry);
+                            LOG_INF("Updated infra storage for repaired %s ID:%d based on REPAIR_RESPONSE", device_type_str(resp->hdr.device_type), dst_id);
                         }
                         break;
 
@@ -1227,9 +1227,10 @@ static void select_and_confirm(void)
 
     /* How many slots available?
      * Sensor: only 1 upstream connection allowed.
-     * Anchor: up to STORAGE_PART1_MAX_ENTRIES. */
-    int max_slots = (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) ? 1 : STORAGE_PART1_MAX_ENTRIES;
+     * Anchor: up to MAX_ANCHORS. */
+    int max_slots = (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) ? 1 : MAX_ANCHORS;
     int available = max_slots - storage_infra_count();
+    LOG_WRN("Infra storage has %d available slots for pairing and %d paired count", available, storage_infra_count());
 
     if (available <= 0) {
         LOG_WRN("Infra storage full, cannot pair with any candidates");
@@ -1279,7 +1280,7 @@ void mesh_tick(void)
     }
 
     if (nbtimeout_expired(&collect_timer)) {
-        LOG_INF("Collection window expired — %d candidates", resp_candidate_count);
+        LOG_INF("Collection window expired - %d candidates", resp_candidate_count);
         collecting = false;
         nbtimeout_stop(&collect_timer);
         select_and_confirm();

@@ -11,6 +11,7 @@
 #include <zephyr/drivers/eeprom.h>
 #include <zephyr/logging/log.h>
 #include "storage.h"
+#include "product_info.h"
 
 LOG_MODULE_REGISTER(storage, CONFIG_STORAGE_LOG_LEVEL);
 
@@ -107,7 +108,7 @@ int storage_init(void)
 
 int storage_infra_add(const infra_entry_t *entry)
 {
-	if (infra_count >= STORAGE_PART1_MAX_ENTRIES) {
+	if (infra_count >= MAX_ANCHORS) {
 		LOG_WRN("Infra partition full");
 		return -ENOMEM;
 	}
@@ -155,7 +156,7 @@ int storage_infra_clear(void)
 
 int storage_sensor_add(const sensor_entry_t *entry)
 {
-	if (sensor_count >= STORAGE_PART2_MAX_ENTRIES) {
+	if (sensor_count >= MAX_SENSORS) {
 		LOG_WRN("Sensor partition full");
 		return -ENOMEM;
 	}
@@ -203,7 +204,7 @@ int storage_sensor_clear(void)
 
 int storage_mesh_add(const mesh_entry_t *entry)
 {
-	if (mesh_count >= STORAGE_PART3_MAX_ENTRIES) {
+	if (mesh_count >= MAX_DEVICES) {
 		LOG_WRN("Mesh partition full");
 		return -ENOMEM;
 	}

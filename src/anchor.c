@@ -48,7 +48,7 @@ static int anchor_init(void)
 
 		product_info_update_hop();
 
-		if (infra >= STORAGE_PART1_MAX_ENTRIES) {
+		if (infra >= MAX_ANCHORS) {
 			return 0;
 		}
 	}

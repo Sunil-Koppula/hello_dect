@@ -122,10 +122,10 @@ void product_info_update_hop(void)
 	}
 
 	/* Read all infra entries into a local array. */
-	infra_entry_t entries[STORAGE_PART1_MAX_ENTRIES];
+	infra_entry_t entries[MAX_ANCHORS];
 	int count = 0;
 
-	for (int i = 0; i < infra && i < STORAGE_PART1_MAX_ENTRIES; i++) {
+	for (int i = 0; i < infra && i < MAX_ANCHORS; i++) {
 		if (storage_infra_get(i, &entries[count]) == 0) {
 			count++;
 		}

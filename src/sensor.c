@@ -87,6 +87,30 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 			handle_joined_network_ack((const joined_network_ack_t *)data, sender_id, rssi_2);
 			break;
 
+		case PACKET_PING_DEVICE:
+			handle_ping_device((const ping_device_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_PING_ACK:
+			handle_ping_ack((const ping_ack_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_DEVICE_UPDATED:
+			handle_device_updated((const device_updated_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_DEVICE_UPDATED_ACK:
+			handle_device_updated_ack((const device_updated_ack_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_REPAIR_REQUEST:
+			handle_repair_request((const repair_request_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_REPAIR_RESPONSE:
+			handle_repair_response((const repair_response_t *)data, sender_id, rssi_2);
+			break;
+
 		default:
 			break;
 	}

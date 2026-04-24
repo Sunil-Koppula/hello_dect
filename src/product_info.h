@@ -7,8 +7,10 @@
 #define PRODUCT_NAME "DECT NR+ PHY MESH"
 #define FIRMWARE_VERSION 100
 
-#define MAX_ANCHORS 8
-#define MAX_SENSORS 128
+#define MESH_MAX_HOP        8
+#define MAX_ANCHORS         8
+#define MAX_SENSORS         128
+#define MAX_DEVICES         1024
 
 /* Runtime device type (set by product_info_init from GPIO pins). */
 extern device_type_t PRODUCT_DEVICE_TYPE;
