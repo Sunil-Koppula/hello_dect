@@ -35,6 +35,14 @@ static int resp_candidate_count;
 static struct nbtimeout collect_timer;
 static bool collecting;
 
+/* Mesh time — milliseconds since the gateway started.
+ * mesh_time_get() returns mesh_time_offset + k_uptime_get(), so the value
+ * keeps advancing locally between syncs. On the gateway, the offset is set
+ * once at startup. On anchors/sensors, the offset is rewritten each time
+ * a SYNC_TIME packet arrives.
+ */
+static int64_t mesh_time_offset;
+
 /* Generate random number for pairing. */
 static uint32_t generate_random_number(void)
 {
@@ -452,6 +460,45 @@ int send_repair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, 
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
+/* Send SYNC_TIME packet — pass dst_id = 0 to broadcast. */
+int send_sync_time(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
+{
+    sync_time_t packet = {
+        .hdr = {
+            .packet_type = PACKET_SYNC_TIME,
+            .device_type = PRODUCT_DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_LOW,
+            .tracking_id = tracking_id,
+            .device_id = dst_id,
+            .status = status,
+        },
+        .timestamp = mesh_time_get() + 15,
+    };
+
+    // Update tracker payload for retries in case of mesh packet loss
+    tracker_update_payload(tracking_id, &packet, sizeof(packet));
+
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+}
+
+/* Send SYNC_TIME_ACK back to the sender of a SYNC_TIME. */
+int send_sync_time_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status)
+{
+    sync_time_ack_t packet = {
+        .hdr = {
+            .packet_type = PACKET_SYNC_TIME_ACK,
+            .device_type = PRODUCT_DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_LOW,
+            .tracking_id = tracking_id,
+            .device_id = dst_id,
+            .status = status,
+        },
+        .timestamp = mesh_time_get(),
+    };
+
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+}
+
 /* Handle received pairing request packet. */
 void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
@@ -492,6 +539,13 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
 
     LOG_INF("Sending PAIR_RESPONSE to %d: status 0x%02x", dst_id, status);
     send_pair_response(0, dst_id, pkt->hdr.tracking_id, status, PRODUCT_HOP_NUMBER);
+    if (status == STATUS_ALREADY_EXISTS) {
+        // send sync time packet
+        uint8_t tid = tracker_next_id();
+        tracker_add(radio_get_device_id(), dst_id, tid, PACKET_SYNC_TIME, 500, 5, NULL, 0);
+        LOG_INF("Sending SYNC_TIME to %d since it's already paired", dst_id);
+        send_sync_time(0, dst_id, tid, STATUS_SUCCESS);
+    }
 }
 
 /* Handle received pairing response packet.
@@ -661,6 +715,13 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
 
     LOG_INF("Sending PAIR_ACK to %d: status 0x%02x", dst_id, status);
     send_pair_ack(0, dst_id, conf->hdr.tracking_id, status, PRODUCT_HOP_NUMBER);
+    // Send SYNC_TIME packet if already paired to sync time with the new device
+    if (status == STATUS_SUCCESS || status == STATUS_ALREADY_EXISTS) {
+        uint8_t tid = tracker_next_id();
+        tracker_add(radio_get_device_id(), dst_id, tid, PACKET_SYNC_TIME, 500, 5, NULL, 0);
+        LOG_INF("Sending SYNC_TIME to %d since it's already paired", dst_id);
+        send_sync_time(0, dst_id, tid, STATUS_SUCCESS);
+    }
     return;
 
 }
@@ -1191,6 +1252,72 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
     }
 }
 
+/* Handle SYNC_TIME packet. */
+void handle_sync_time(const sync_time_t *sync, uint16_t sender_id, int16_t rssi_2)
+{
+    const sync_time_t *pkt = (const sync_time_t *)sync;
+
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF("SYNC_TIME from %s ID:%d: timestamp %llu", device_type_str(pkt->hdr.device_type), sender_id, pkt->timestamp);
+    
+    switch (pkt->hdr.device_type) {
+        case DEVICE_TYPE_GATEWAY:
+        case DEVICE_TYPE_ANCHOR:
+            mesh_time_set(pkt->timestamp);
+            LOG_INF("Mesh time updated to %llu based on SYNC_TIME from %s ID:%d", pkt->timestamp, device_type_str(pkt->hdr.device_type), sender_id);
+            break;
+
+        
+        case DEVICE_TYPE_SENSOR:
+            LOG_WRN("Received SYNC_TIME from sensor device %d, ignoring", sender_id);
+            return;
+
+        default:
+            LOG_WRN("Unknown device type 0x%02x in SYNC_TIME from %d, ignoring", pkt->hdr.device_type, sender_id);
+            return;
+    }
+
+    LOG_INF("Sending SYNC_TIME_ACK to %d: status 0x%02x", sender_id, STATUS_SUCCESS);
+    send_sync_time_ack(0, sender_id, pkt->hdr.tracking_id, STATUS_SUCCESS);
+
+}
+
+/* Handle SYNC_TIME_ACK packet. */
+void handle_sync_time_ack(const sync_time_ack_t *ack, uint16_t sender_id, int16_t rssi_2)
+{
+    const sync_time_ack_t *pkt = (const sync_time_ack_t *)ack;
+
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    // Remove the tracker
+    tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+    tracker_remove_by_dst(radio_get_device_id(), PACKET_SYNC_TIME);
+
+    LOG_INF("SYNC_TIME_ACK from %s ID:%d: status 0x%02x", device_type_str(pkt->hdr.device_type), sender_id, pkt->hdr.status);
+
+    switch (pkt->hdr.device_type) {
+        case DEVICE_TYPE_GATEWAY:
+            LOG_WRN("Received SYNC_TIME_ACK from gateway device %d, ignoring", sender_id);
+            return;
+
+        case DEVICE_TYPE_ANCHOR:
+        case DEVICE_TYPE_SENSOR:
+            LOG_INF("Received SYNC_TIME_ACK from %s ID:%d, difference is %lld ms ", device_type_str(pkt->hdr.device_type), sender_id, (int64_t)mesh_time_get() - (int64_t)pkt->timestamp);
+            break;
+
+        default:
+            LOG_WRN("Unknown device type 0x%02x in SYNC_TIME_ACK from %d, ignoring", pkt->hdr.device_type, sender_id);
+            return;
+    }
+    
+    return;
+}
+
 /* Simple bubble sort candidates by hop (ascending), then RSSI (descending). */
 static void sort_candidates(void)
 {
@@ -1284,5 +1411,39 @@ void mesh_tick(void)
         collecting = false;
         nbtimeout_stop(&collect_timer);
         select_and_confirm();
+    }
+}
+
+/* Mesh time accessors. */
+
+void mesh_time_init(void)
+{
+    /* Gateway-only: anchor mesh_time at 0 for the moment of startup. */
+    mesh_time_offset = -k_uptime_get();
+}
+
+uint64_t mesh_time_get(void)
+{
+    return (uint64_t)(mesh_time_offset + k_uptime_get());
+}
+
+void mesh_time_set(uint64_t remote_mesh_time)
+{
+    mesh_time_offset = (int64_t)remote_mesh_time - k_uptime_get();
+}
+
+#define MESH_TIME_MILESTONE_MS (1ULL * 60ULL * 1000ULL)
+
+void mesh_time_check_milestone(void)
+{
+    static uint64_t last_logged_bucket;
+
+    uint64_t now = mesh_time_get();
+    uint64_t bucket = now / MESH_TIME_MILESTONE_MS;
+
+    if (bucket > 0 && bucket != last_logged_bucket) {
+        last_logged_bucket = bucket;
+        LOG_INF("Mesh time milestone: %llu min",
+            bucket * (MESH_TIME_MILESTONE_MS / 60000));
     }
 }

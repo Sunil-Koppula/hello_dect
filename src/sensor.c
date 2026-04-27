@@ -96,7 +96,7 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 			break;
 
 		case PACKET_DEVICE_UPDATED:
-			handle_device_updated((const device_updated_t *)data, sender_id, rssi_2);
+			/* Sensor should never receive DEVICE_UPDATED, ignore. */
 			break;
 
 		case PACKET_DEVICE_UPDATED_ACK:
@@ -109,6 +109,14 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 
 		case PACKET_REPAIR_RESPONSE:
 			handle_repair_response((const repair_response_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_SYNC_TIME:
+			handle_sync_time((const sync_time_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_SYNC_TIME_ACK:
+			handle_sync_time_ack((const sync_time_ack_t *)data, sender_id, rssi_2);
 			break;
 
 		default:
@@ -178,6 +186,7 @@ void sensor_main(void)
 		case MAIN_SUB_TRACKER:
 			mesh_tick();
 			tracker_tick(tracker_default_expired_cb);
+			mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
 			break;
 

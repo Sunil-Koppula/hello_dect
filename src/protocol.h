@@ -30,6 +30,8 @@ typedef enum {
 	PACKET_DEVICE_UPDATED_ACK	= 0x0A,
 	PACKET_REPAIR_REQUEST		= 0x0B,
 	PACKET_REPAIR_RESPONSE		= 0x0C,
+	PACKET_SYNC_TIME			= 0x0D,
+	PACKET_SYNC_TIME_ACK		= 0x0E,
 } packet_type_t;
 
 /* Packet Priority Levels */
@@ -184,6 +186,22 @@ typedef struct {
 } __attribute__((packed)) repair_response_t;
 
 #define REPAIR_RESPONSE_PACKET_SIZE sizeof(repair_response_t)
+
+/* SYNC TIME Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint64_t timestamp;
+} __attribute__((packed)) sync_time_t;
+
+#define SYNC_TIME_PACKET_SIZE sizeof(sync_time_t)
+
+/* SYNC TIME ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint64_t timestamp;
+} __attribute__((packed)) sync_time_ack_t;
+
+#define SYNC_TIME_ACK_PACKET_SIZE sizeof(sync_time_ack_t)
 
 /* Get device type as string */
 static inline const char *device_type_str(device_type_t type)

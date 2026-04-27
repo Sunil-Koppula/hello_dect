@@ -303,6 +303,12 @@ void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exha
 		nbtimeout_max_retries(&entry->timeout));
 
 	if (entry->payload_len > 0) {
+		// for sync time packet we should update the timestamp before retrying
+		if (entry->packet_type == PACKET_SYNC_TIME) {
+			sync_time_t *pkt = (sync_time_t *)entry->payload;
+			pkt->timestamp = mesh_time_get();
+			tracker_update_payload(entry->tracking_id, pkt, sizeof(sync_time_t));
+		}
 		tx_queue_put(entry->payload, entry->payload_len, entry->payload[2]);
 	} else {
 		LOG_WRN("No payload for packet type 0x%02x retry, cannot resend",
