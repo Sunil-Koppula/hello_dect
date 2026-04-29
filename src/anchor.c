@@ -21,6 +21,7 @@
 #include "storage.h"
 #include "queue.h"
 #include "tracker.h"
+#include "data.h"
 
 LOG_MODULE_REGISTER(anchor, CONFIG_ANCHOR_LOG_LEVEL);
 
@@ -58,6 +59,7 @@ static int anchor_init(void)
 	LOG_INF("Sending PAIR REQUEST!");
 
 	tracker_init();
+	data_init();
 	uint8_t tid = tracker_next_id();
 
 	tracker_add(radio_get_device_id(), 0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
@@ -123,6 +125,22 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 
 	case PACKET_SYNC_TIME_ACK:
 		handle_sync_time_ack((const sync_time_ack_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_DATA_INIT:
+		handle_data_init((const data_init_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_DATA_INIT_ACK:
+		handle_data_init_ack((const data_init_ack_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_DATA_CHUNK:
+		handle_data_chunk((const data_chunk_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_DATA_CHUNK_ACK:
+		handle_data_chunk_ack((const data_chunk_ack_t *)data, sender_id, rssi_2);
 		break;
 
 	default:
@@ -194,6 +212,7 @@ void anchor_main(void)
 		case MAIN_SUB_TRACKER:
 			mesh_tick();
 			tracker_tick(tracker_default_expired_cb);
+			data_tick();
 			mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
 			break;

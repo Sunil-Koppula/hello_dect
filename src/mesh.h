@@ -26,6 +26,7 @@ int send_repair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, 
 int send_sync_time(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
 int send_sync_time_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t status);
 
+/* RX handlers — wire into each device's RX dispatch switch. */
 void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rssi_2);

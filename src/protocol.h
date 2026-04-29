@@ -32,6 +32,10 @@ typedef enum {
 	PACKET_REPAIR_RESPONSE		= 0x0C,
 	PACKET_SYNC_TIME			= 0x0D,
 	PACKET_SYNC_TIME_ACK		= 0x0E,
+	PACKET_DATA_INIT			= 0x0F,
+	PACKET_DATA_INIT_ACK		= 0x10,
+	PACKET_DATA_CHUNK			= 0x11,
+	PACKET_DATA_CHUNK_ACK		= 0x12,
 } packet_type_t;
 
 /* Packet Priority Levels */
@@ -202,6 +206,46 @@ typedef struct {
 } __attribute__((packed)) sync_time_ack_t;
 
 #define SYNC_TIME_ACK_PACKET_SIZE sizeof(sync_time_ack_t)
+
+/* DATA INIT Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint16_t total_size;			/* total size of the data being sent (can be larger than what fits in one packet) */
+	uint8_t chunk_count;			/* total number of chunks that will be sent */
+	uint8_t last_chunk_size;		/* size of the last chunk (since it may be smaller than the others) */
+	uint32_t crc32;					/* CRC32 of the entire data for integrity checking */
+} __attribute__((packed)) data_init_t;
+
+#define DATA_INIT_PACKET_SIZE sizeof(data_init_t)
+
+/* DATA INIT ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+} __attribute__((packed)) data_init_ack_t;
+
+#define DATA_INIT_ACK_PACKET_SIZE sizeof(data_init_ack_t)
+
+#define SEND_DATA_MAX 200 /* Max data size per chunk (210 - 10)*/
+/* DATA CHUNK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t chunk_index;			/* index of this chunk (starting from 0) */
+	uint8_t data[SEND_DATA_MAX];	/* chunk data */
+} __attribute__((packed)) data_chunk_t;
+
+#define DATA_CHUNK_PACKET_SIZE sizeof(data_chunk_t)
+
+/* DATA CHUNK ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t chunk_index;			/* index of the chunk being acknowledged */
+} __attribute__((packed)) data_chunk_ack_t;
+
+#define DATA_CHUNK_ACK_PACKET_SIZE sizeof(data_chunk_ack_t)
 
 /* Get device type as string */
 static inline const char *device_type_str(device_type_t type)

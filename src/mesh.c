@@ -14,6 +14,7 @@
 #include "storage.h"
 #include "protocol.h"
 #include "product_info.h"
+#include "data.h"
 
 LOG_MODULE_REGISTER(mesh, CONFIG_MESH_LOG_LEVEL);
 

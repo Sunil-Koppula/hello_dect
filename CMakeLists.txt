@@ -22,6 +22,7 @@ target_sources(app PRIVATE
   src/tracker.c
   src/fragment.c
   src/psram.c
+  src/data.c
   src/spi_bus.c
 )
 

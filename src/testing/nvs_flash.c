@@ -130,6 +130,20 @@ int storage_infra_add(const infra_entry_t *entry)
 	return write_count(NVS_ID_INFRA_COUNT, infra_count);
 }
 
+int storage_infra_update(uint16_t index, const infra_entry_t *entry)
+{
+	if (index >= infra_count) {
+		return -EINVAL;
+	}
+
+	spi_bus_lock();
+	int rc = nvs_write(&nvs, NVS_ID_INFRA_BASE + index,
+			   entry, sizeof(*entry));
+	spi_bus_unlock();
+
+	return (rc < 0) ? rc : 0;
+}
+
 int storage_infra_get(uint16_t index, infra_entry_t *entry)
 {
 	if (index >= infra_count) {
@@ -183,6 +197,20 @@ int storage_sensor_add(const sensor_entry_t *entry)
 	return write_count(NVS_ID_SENSOR_COUNT, sensor_count);
 }
 
+int storage_sensor_update(uint16_t index, const sensor_entry_t *entry)
+{
+	if (index >= sensor_count) {
+		return -EINVAL;
+	}
+
+	spi_bus_lock();
+	int rc = nvs_write(&nvs, NVS_ID_SENSOR_BASE + index,
+			   entry, sizeof(*entry));
+	spi_bus_unlock();
+
+	return (rc < 0) ? rc : 0;
+}
+
 int storage_sensor_get(uint16_t index, sensor_entry_t *entry)
 {
 	if (index >= sensor_count) {
@@ -234,6 +262,20 @@ int storage_mesh_add(const mesh_entry_t *entry)
 
 	mesh_count++;
 	return write_count(NVS_ID_MESH_COUNT, mesh_count);
+}
+
+int storage_mesh_update(uint16_t index, const mesh_entry_t *entry)
+{
+	if (index >= mesh_count) {
+		return -EINVAL;
+	}
+
+	spi_bus_lock();
+	int rc = nvs_write(&nvs, NVS_ID_MESH_BASE + index,
+			   entry, sizeof(*entry));
+	spi_bus_unlock();
+
+	return (rc < 0) ? rc : 0;
 }
 
 int storage_mesh_get(uint16_t index, mesh_entry_t *entry)

@@ -17,6 +17,7 @@
 #include "storage.h"
 #include "queue.h"
 #include "tracker.h"
+#include "data.h"
 
 LOG_MODULE_REGISTER(gateway, CONFIG_GATEWAY_LOG_LEVEL);
 
@@ -27,6 +28,7 @@ static int gateway_init(void)
 {
 	tracker_init();
 	mesh_time_init();
+	data_init();
 
 	LOG_INF("Gateway init: infra=%d sensors=%d mesh=%d",
 		storage_infra_count(), storage_sensor_count(), storage_mesh_count());
@@ -149,6 +151,22 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			handle_sync_time_ack((const sync_time_ack_t *)data, sender_id, rssi_2);
 			break;
 
+		case PACKET_DATA_INIT:
+			handle_data_init((const data_init_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_DATA_INIT_ACK:
+			handle_data_init_ack((const data_init_ack_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_DATA_CHUNK:
+			handle_data_chunk((const data_chunk_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_DATA_CHUNK_ACK:
+			handle_data_chunk_ack((const data_chunk_ack_t *)data, sender_id, rssi_2);
+			break;
+
 		default:
 			break;
 	}
@@ -215,6 +233,7 @@ void gateway_main(void)
 
 		case MAIN_SUB_TRACKER:
 			tracker_tick(tracker_default_expired_cb);
+			data_tick();
 			mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
 			break;

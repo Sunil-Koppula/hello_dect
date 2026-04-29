@@ -22,6 +22,7 @@
 #include "storage.h"
 #include "queue.h"
 #include "tracker.h"
+#include "data.h"
 
 LOG_MODULE_REGISTER(sensor, CONFIG_SENSOR_LOG_LEVEL);
 
@@ -31,6 +32,7 @@ static uint8_t  paired_device_type;
 static int sensor_init(void)
 {
 	tracker_init();
+	data_init();
 
 	storage_infra_clear();
 
@@ -119,6 +121,22 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 			handle_sync_time_ack((const sync_time_ack_t *)data, sender_id, rssi_2);
 			break;
 
+		case PACKET_DATA_INIT:
+			handle_data_init((const data_init_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_DATA_INIT_ACK:
+			handle_data_init_ack((const data_init_ack_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_DATA_CHUNK:
+			handle_data_chunk((const data_chunk_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_DATA_CHUNK_ACK:
+			handle_data_chunk_ack((const data_chunk_ack_t *)data, sender_id, rssi_2);
+			break;
+
 		default:
 			break;
 	}
@@ -186,6 +204,7 @@ void sensor_main(void)
 		case MAIN_SUB_TRACKER:
 			mesh_tick();
 			tracker_tick(tracker_default_expired_cb);
+			data_tick();
 			mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
 			break;
