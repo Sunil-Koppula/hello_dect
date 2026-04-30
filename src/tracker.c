@@ -309,7 +309,11 @@ void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exha
 			pkt->timestamp = mesh_time_get();
 			tracker_update_payload(entry->tracking_id, pkt, sizeof(sync_time_t));
 		}
-		tx_queue_put(entry->payload, entry->payload_len, entry->payload[2]);
+		if (entry->payload_len <= QUEUE_DATA_MIN) {
+			tx_small_queue_put(entry->payload, entry->payload_len, entry->payload[2]);
+		} else {
+			tx_large_queue_put(entry->payload, entry->payload_len, entry->payload[2]);
+		}
 	} else {
 		LOG_WRN("No payload for packet type 0x%02x retry, cannot resend",
 			entry->packet_type);

@@ -40,7 +40,8 @@ typedef enum {
 
 /* Packet Priority Levels */
 #define PACKET_PRIORITY_HIGH    0x00
-#define PACKET_PRIORITY_LOW     0x01
+#define PACKET_PRIORITY_MEDIUM  0x01
+#define PACKET_PRIORITY_LOW     0x02
 
 /* General Status Codes — unified across all packet types */
 #define STATUS_SUCCESS                  0x00
@@ -227,7 +228,7 @@ typedef struct {
 
 #define DATA_INIT_ACK_PACKET_SIZE sizeof(data_init_ack_t)
 
-#define SEND_DATA_MAX 200 /* Max data size per chunk (210 - 10)*/
+#define SEND_DATA_MAX 184 /* Max data size per chunk: keeps data_chunk_t (190 B with 10 B header overhead) within 14 DECT subslots @ MCS 2 with margin. */
 /* DATA CHUNK Packet */
 typedef struct {
 	packet_header_t hdr;

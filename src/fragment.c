@@ -66,7 +66,7 @@ int fragment_send(const void *data, size_t data_len, uint8_t subslots)
 		buf[2] = frag_total;
 		memcpy(&buf[FRAG_HEADER_SIZE], src, chunk);
 
-		int err = tx_queue_put(buf, FRAG_HEADER_SIZE + chunk, QUEUE_PRIO_LOW);
+		int err = tx_large_queue_put(buf, FRAG_HEADER_SIZE + chunk, QUEUE_PRIO_LOW);
 
 		if (err) {
 			LOG_ERR("Failed to queue fragment %d/%d", i + 1, frag_total);

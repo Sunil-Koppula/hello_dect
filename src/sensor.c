@@ -171,12 +171,19 @@ void sensor_main(void)
 			break;
 
 		case MAIN_SUB_RX_PROCESS: {
-			struct rx_data_item rx_item;
+			struct rx_small_data_item rx_small_item;
+			struct rx_large_data_item rx_large_item;
 			int rx_count = 0;
 
 			while (rx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-			       rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
-				sensor_process_rx(rx_item.data, rx_item.sender_id, rx_item.rssi_2);
+			       rx_small_queue_get(&rx_small_item, K_NO_WAIT) == 0) {
+				sensor_process_rx(rx_small_item.data, rx_small_item.sender_id, rx_small_item.rssi_2);
+				rx_count++;
+			}
+
+			while (rx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
+			       rx_large_queue_get(&rx_large_item, K_NO_WAIT) == 0) {
+				sensor_process_rx(rx_large_item.data, rx_large_item.sender_id, rx_large_item.rssi_2);
 				rx_count++;
 			}
 			state = MAIN_SUB_TX_PROCESS;
@@ -184,12 +191,24 @@ void sensor_main(void)
 		}
 
 		case MAIN_SUB_TX_PROCESS: {
-			struct tx_data_item tx_item;
+			struct tx_small_data_item tx_small_item;
+			struct tx_large_data_item tx_large_item;
 			int tx_count = 0;
 
 			while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-			       tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
-				err = transmit(0, tx_item.data, tx_item.data_len, 0);
+			       tx_small_queue_get(&tx_small_item, K_NO_WAIT) == 0) {
+				err = transmit(0, tx_small_item.data, tx_small_item.data_len, 0);
+				if (err) {
+					LOG_ERR("TX failed, err %d", err);
+					break;
+				}
+				k_sem_take(&operation_sem, K_FOREVER);
+				tx_count++;
+			}
+
+			while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
+			       tx_large_queue_get(&tx_large_item, K_NO_WAIT) == 0) {
+				err = transmit(0, tx_large_item.data, tx_large_item.data_len, 0);
 				if (err) {
 					LOG_ERR("TX failed, err %d", err);
 					break;
