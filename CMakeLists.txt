@@ -20,10 +20,10 @@ target_sources(app PRIVATE
   src/anchor.c
   src/timeout.c
   src/tracker.c
-  src/fragment.c
   src/psram.c
   src/data.c
   src/spi_bus.c
+  src/serial.c
 )
 
 # Testing utilities

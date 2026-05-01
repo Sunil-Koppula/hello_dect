@@ -82,11 +82,11 @@ config MESH_LOG_LEVEL
 	help
 	   Choose the log level for the mesh module.
 
-config FRAGMENT_LOG_LEVEL
-	int "Fragment log level"
+config DATA_LOG_LEVEL
+	int "Data log level"
 	default 4
 	help
-	   Choose the log level for the fragment module.
+	   Choose the log level for the data module.
 
 config PRODUCT_INFO_LOG_LEVEL
 	int "Product info log level"

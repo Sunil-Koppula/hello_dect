@@ -1,9 +1,4 @@
-/*
- * Bulk data transfer over the mesh.
- *
- * Receiver side: per-(gen_device_id, priority) reassembly slot in PSRAM.
- * Sender side: single in-flight transfer, sequential chunk-by-chunk with ACK.
- */
+/* Data */
 
 #include <string.h>
 #include <zephyr/kernel.h>
@@ -19,26 +14,31 @@
 #include "product_info.h"
 #include "storage.h"
 
-LOG_MODULE_REGISTER(data, CONFIG_MESH_LOG_LEVEL);
+LOG_MODULE_REGISTER(data, CONFIG_DATA_LOG_LEVEL);
 
-#define DATA_RETRY_TIMEOUT_MS  500
-#define DATA_MAX_RETRIES       5
+#define DATA_RETRY_TIMEOUT_MS  	500
+#define DATA_MAX_RETRIES       	5
 
-/* ceil(DATA_MAX_TRANSFER_SIZE / SEND_DATA_MAX) — max chunks per transfer. */
-#define DATA_MAX_CHUNKS        ((DATA_MAX_TRANSFER_SIZE + SEND_DATA_MAX - 1) / SEND_DATA_MAX)
-#define DATA_MASK_BYTES        ((DATA_MAX_CHUNKS + 7) / 8)
+#define DATA_MAX_CHUNKS        	((DATA_MAX_TRANSFER_SIZE + SEND_DATA_MAX - 1) / SEND_DATA_MAX)
+#define CRC_VERIFY_STAGE_SIZE 	256
+
+static data_chunk_t chunk_pkt;
+static uint8_t crc_stage[CRC_VERIFY_STAGE_SIZE];
+
+struct data_sender sender;
 
 /* ===== Receiver state ===== */
 
 struct data_slot {
 	bool     active;
+	bool	 upstream_ready;
 	uint16_t gen_device_id;
 	uint8_t  priority;
 	uint16_t total_size;
 	uint8_t  chunk_count;
 	uint8_t  last_chunk_size;
 	uint32_t crc32;
-	uint8_t  received_mask[DATA_MASK_BYTES];
+	bool     received[DATA_MAX_CHUNKS];
 	uint8_t  received_count;
 	struct nbtimeout idle_timeout;
 };
@@ -53,9 +53,10 @@ static uint32_t slot_psram_addr(int idx)
 static int find_slot(uint16_t gen_device_id, uint8_t priority)
 {
 	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
-		if (slots[i].active &&
-		    slots[i].gen_device_id == gen_device_id &&
-		    slots[i].priority == priority) {
+		if (slots[i].active && slots[i].gen_device_id == gen_device_id && slots[i].priority == priority) {
+			if (slots[i].upstream_ready) {
+				return -2; // Special code meaning "slot already active and ready for upstream
+			}
 			return i;
 		}
 	}
@@ -78,26 +79,6 @@ static void slot_free(int idx)
 	nbtimeout_stop(&slots[idx].idle_timeout);
 }
 
-/* ===== Sender state (single in-flight transfer) ===== */
-
-struct data_sender sender;
-
-/* CRC verification staging buffer.
- *
- * On transfer completion we re-read the slot from PSRAM and CRC-check it.
- * Streaming the CRC in small chunks (CRC_VERIFY_STAGE_SIZE bytes at a time)
- * lets us keep the SRAM cost bounded at CRC_VERIFY_STAGE_SIZE rather than
- * the full DATA_MAX_TRANSFER_SIZE. crc32_ieee_update() preserves state
- * across calls, so the per-chunk CRC matches a one-shot crc32_ieee() over
- * the whole buffer.
- *
- * For ANCHOR forward (TODO): the forward path will need to re-read from
- * the same PSRAM slot directly into the outgoing data_chunk_t.data — no
- * full-buffer SRAM staging is required there either.
- */
-#define CRC_VERIFY_STAGE_SIZE 256
-static uint8_t crc_stage[CRC_VERIFY_STAGE_SIZE];
-
 static uint8_t chunk_size_for(uint8_t chunk_idx)
 {
 	if (chunk_idx == sender.chunk_count - 1) {
@@ -105,14 +86,6 @@ static uint8_t chunk_size_for(uint8_t chunk_idx)
 	}
 	return SEND_DATA_MAX;
 }
-
-/* Send sender.next_chunk from PSRAM slot 0, install tracker, advance counter.
- * Returns 0 on success; on failure aborts the transfer (clears sender.active).
- *
- * chunk_pkt is static (~200 B) — only one transfer is in flight at a time, and
- * keeping it off the stack avoids overflowing the main thread when called deep
- * in the RX → handle_data_init_ack → send_next_chunk → tx_large_queue_put chain. */
-static data_chunk_t chunk_pkt;
 
 static int send_next_chunk(void)
 {
@@ -151,7 +124,7 @@ int send_data_init(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_
 	pkt->hdr.device_id = dst_id;
 
 	tracker_update_payload(tracking_id, pkt, sizeof(*pkt));
-	return tx_small_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
 int send_data_init_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_init_ack_t *pkt)
@@ -162,7 +135,7 @@ int send_data_init_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, d
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
 
-	return tx_small_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
 int send_data_chunk(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_chunk_t *pkt)
@@ -174,7 +147,7 @@ int send_data_chunk(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data
 	pkt->hdr.device_id = dst_id;
 
 	tracker_update_payload(tracking_id, pkt, sizeof(*pkt));
-	return tx_large_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
 int send_data_chunk_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_chunk_ack_t *pkt)
@@ -185,7 +158,7 @@ int send_data_chunk_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, 
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
 
-	return tx_small_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
 /* ===== RX handlers ===== */
@@ -221,6 +194,12 @@ void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
 	int idx = find_slot(pkt->gen_device_id, pkt->hdr.priority);
 	if (idx < 0) {
+		if (idx == -2) {
+			LOG_WRN("DATA_INIT rejected: slot already active and ready for upstream for gen %d prio %d", pkt->gen_device_id, pkt->hdr.priority);
+			ack.hdr.status = STATUS_ALREADY_EXISTS;
+			send_data_init_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
+			return;
+		}
 		idx = alloc_slot();
 		if (idx < 0) {
 			LOG_WRN("DATA_INIT rejected: no free slot");
@@ -230,13 +209,14 @@ void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		}
 
 		slots[idx].active = true;
+		slots[idx].upstream_ready = false;
 		slots[idx].gen_device_id = pkt->gen_device_id;
 		slots[idx].priority = pkt->hdr.priority;
 		slots[idx].total_size = pkt->total_size;
 		slots[idx].chunk_count = pkt->chunk_count;
 		slots[idx].last_chunk_size = pkt->last_chunk_size;
 		slots[idx].crc32 = pkt->crc32;
-		memset(slots[idx].received_mask, 0, sizeof(slots[idx].received_mask));
+		memset(slots[idx].received, 0, sizeof(slots[idx].received));
 		slots[idx].received_count = 0;
 		nbtimeout_init(&slots[idx].idle_timeout, DATA_SLOT_TIMEOUT_MS, 0);
 	}
@@ -276,7 +256,7 @@ void handle_data_init_ack(const data_init_ack_t *pkt, uint16_t dst_id, int16_t r
 				}
 			} else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
 				// Start sending data chunks if status is success or already exists (in case of retry)
-				if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
+				if (pkt->hdr.status == STATUS_SUCCESS) {
 					if (!sender.active || sender.dst_id != dst_id) {
 						LOG_WRN("DATA_INIT_ACK from %d but sender inactive or dst mismatch", dst_id);
 						return;
@@ -330,9 +310,7 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		return;
 	}
 
-	uint8_t mask_byte = pkt->chunk_index / 8;
-	uint8_t mask_bit  = 1u << (pkt->chunk_index % 8);
-	bool already = (s->received_mask[mask_byte] & mask_bit) != 0;
+	bool already = s->received[pkt->chunk_index];
 
 	if (!already) {
 		uint8_t csz = (pkt->chunk_index == s->chunk_count - 1)
@@ -345,7 +323,7 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 			send_data_chunk_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
 			return;
 		}
-		s->received_mask[mask_byte] |= mask_bit;
+		s->received[pkt->chunk_index] = true;
 		s->received_count++;
 	}
 
@@ -354,7 +332,6 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		pkt->gen_device_id, pkt->hdr.priority, pkt->chunk_index, dst_id,
 		s->received_count, s->chunk_count);
 	ack.hdr.status = STATUS_SUCCESS;
-	send_data_chunk_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
 
 	if (s->received_count == s->chunk_count) {
 		uint32_t base = slot_psram_addr(idx);
@@ -383,17 +360,21 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		if (crc == s->crc32) {
 			LOG_INF("Transfer complete: gen %d, %u bytes, CRC OK (0x%08x)",
 				s->gen_device_id, s->total_size, crc);
+			// mark slot as ready for upstream (e.g. to forward to gateway if this is an anchor)
+			s->upstream_ready = true;
+			nbtimeout_stop(&s->idle_timeout);
 		} else {
 			LOG_ERR("Transfer complete: gen %d, %u bytes, CRC FAIL (got 0x%08x exp 0x%08x)",
 				s->gen_device_id, s->total_size, crc, s->crc32);
+			ack.hdr.status = STATUS_CRC_FAIL;
 		}
 		/* TODO(anchor): if PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR, kick off
 		 * forward DATA_INIT to the upstream parent here. The forward sender
 		 * will pull each chunk straight from this PSRAM slot via psram_read
 		 * into the outgoing data_chunk_t.data (no full-buffer SRAM staging).
 		 * Defer slot_free() until the forward transfer completes. */
-		slot_free(idx);
 	}
+	send_data_chunk_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
 }
 
 void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
@@ -495,7 +476,7 @@ int data_init(void)
 
 	if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
 		LOG_INF("***For testing, building dummy data in PSRAM slot 0 for potential sending...***");
-		build_dummy_data(4096);  // For testing: build a 4KB pattern in slot 0 for potential sending.
+		build_dummy_data(256);  // For testing: build a 256B pattern in slot 0 for potential sending.
 	}
 
 	return 0;

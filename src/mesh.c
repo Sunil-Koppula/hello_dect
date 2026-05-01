@@ -224,7 +224,7 @@ int send_pair_request(uint32_t handle, uint8_t tracking_id)
     /* Store packet as tracker payload for retries. */
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send pairing response packet. */
@@ -242,7 +242,7 @@ int send_pair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, ui
         .hop_num = hop_num,
     };
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send pairing confirm packet. */
@@ -263,7 +263,7 @@ int send_pair_confirm(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uin
     /* Store packet as tracker payload for retries. */
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send pairing acknowledgment packet. */
@@ -281,7 +281,7 @@ int send_pair_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t
         .hop_num = hop_num,
     };
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send joined network packet. */
@@ -308,7 +308,7 @@ int send_joined_network(uint32_t handle,const joined_network_t *pkt, uint16_t ds
     // Update tracker payload for retries in case of mesh packet loss
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send joined network acknowledgment packet. */
@@ -326,7 +326,7 @@ int send_joined_network_ack(uint32_t handle, uint16_t dst_device_id, uint16_t ds
         .dst_device_id = dst_device_id,
     };
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send ping device packet. */
@@ -348,7 +348,7 @@ int send_ping_device(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint
     // Update tracker payload for retries in case of mesh packet loss
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send ping acknowledgment packet. */
@@ -367,7 +367,7 @@ int send_ping_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_t
         .version = FIRMWARE_VERSION,
     };
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send device updated packet. */
@@ -394,7 +394,7 @@ int send_device_updated(uint32_t handle, const device_updated_t *pkt, uint16_t d
     // Update tracker payload for retries in case of mesh packet loss
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send device updated acknowledgment packet. */
@@ -412,7 +412,7 @@ int send_device_updated_ack(uint32_t handle, uint16_t dst_device_id, uint16_t ds
         .dst_device_id = dst_device_id,
     };
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send repair request packet. */
@@ -439,7 +439,7 @@ int send_repair_request(uint32_t handle, uint16_t dst_id, uint8_t tracking_id)
     // Update tracker payload for retries in case of mesh packet loss
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send repair response packet. */
@@ -458,7 +458,7 @@ int send_repair_response(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, 
         .hop_num = PRODUCT_HOP_NUMBER,
     };
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send SYNC_TIME packet — pass dst_id = 0 to broadcast. */
@@ -479,7 +479,7 @@ int send_sync_time(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, uint8_
     // Update tracker payload for retries in case of mesh packet loss
     tracker_update_payload(tracking_id, &packet, sizeof(packet));
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Send SYNC_TIME_ACK back to the sender of a SYNC_TIME. */
@@ -497,7 +497,7 @@ int send_sync_time_ack(uint32_t handle, uint16_t dst_id, uint8_t tracking_id, ui
         .timestamp = mesh_time_get(),
     };
 
-    return tx_small_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
 /* Handle received pairing request packet. */
@@ -1245,6 +1245,22 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
                             entry.version = resp->version;
                             storage_infra_add(&entry);
                             LOG_INF("Updated infra storage for repaired %s ID:%d based on REPAIR_RESPONSE", device_type_str(resp->hdr.device_type), dst_id);
+                            // Testing purpose: send data init packet
+                            radio_update_known_devices();
+                            sender.dst_id = dst_id;
+                            data_init_t data_pkt = {
+                                .gen_device_id = sender.gen_device_id,
+                                .total_size = sender.total_size,
+                                .chunk_count = sender.chunk_count,
+                                .last_chunk_size = sender.last_chunk_size,
+                                .crc32 = sender.crc32,
+                            };
+
+                            uint8_t tid = tracker_next_id();
+                            tracker_add(dst_id, radio_get_device_id(), tid, PACKET_DATA_INIT, 500, 5, &data_pkt, sizeof(data_pkt));
+                            LOG_INF("Sending DATA_INIT to connected device %s ID:%d for testing", device_type_str(PRODUCT_DEVICE_TYPE), PRODUCT_CONNECTED_DEVICE_ID);
+                            send_data_init(dst_id, sender.priority, tid, &data_pkt);
+                            return;
                         }
                         break;
 

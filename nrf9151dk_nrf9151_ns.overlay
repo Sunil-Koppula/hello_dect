@@ -54,3 +54,13 @@
 		timeout = <10>;
 	};
 };
+
+/* UART1 = AT command host interface.
+ * Default board pinctrl already routes UART1 to P0.29 (TX), P0.28 (RX),
+ * P0.17 (CTS), P0.16 (RTS) — exposed on the Arduino-style headers.
+ * UART0 stays on its board default (logs / console). */
+&uart1 {
+	status = "okay";
+	current-speed = <1000000>;
+	hw-flow-control;
+};

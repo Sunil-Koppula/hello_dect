@@ -9,8 +9,8 @@
 
 #define MESH_MAX_HOP        8
 #define MAX_ANCHORS         8
-#define MAX_SENSORS         128
-#define MAX_DEVICES         1024
+#define MAX_SENSORS         64
+#define MAX_DEVICES         512
 
 /* Runtime device type (set by product_info_init from GPIO pins). */
 extern device_type_t PRODUCT_DEVICE_TYPE;

@@ -237,23 +237,14 @@ static void on_pdc(const struct nrf_modem_dect_phy_pdc_event *evt)
 		return;
 	}
 
-	if (packet_type == PACKET_DATA_CHUNK) {
-		struct rx_large_data_item item = {
-			.sender_id = last_sender_id,
-			.rssi_2 = evt->rssi_2,
-			.data_len = (evt->len < QUEUE_DATA_MAX) ? evt->len : QUEUE_DATA_MAX,
-		};
-		memcpy(item.data, evt->data, item.data_len);
-		rx_large_queue_put(&item, item.data[2]); /* The 3rd byte of the header contains Priority. */
-	} else {
-		struct rx_small_data_item item = {
-		.sender_id = last_sender_id,
-		.rssi_2 = evt->rssi_2,
-		.data_len = (evt->len < QUEUE_DATA_MAX) ? evt->len : QUEUE_DATA_MAX,
-		};
-		memcpy(item.data, evt->data, item.data_len);
-		rx_small_queue_put(&item, item.data[2]); /* The 3rd byte of the header contains Priority. */
-	}
+	struct rx_data_item item = {
+	.sender_id = last_sender_id,
+	.rssi_2 = evt->rssi_2,
+	.data_len = (evt->len < QUEUE_DATA_MAX) ? evt->len : QUEUE_DATA_MAX,
+	};
+
+	memcpy(item.data, evt->data, item.data_len);
+	rx_queue_put(&item, item.data[2]); /* The 3rd byte of the header contains Priority. */
 }
 
 /* Physical Data Channel CRC error notification. */

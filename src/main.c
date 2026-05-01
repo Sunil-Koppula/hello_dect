@@ -14,6 +14,7 @@
 #include "storage.h"
 #include "main_sub.h"
 #include "psram.h"
+#include "serial.h"
 #include "testing/factory_reset.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
@@ -99,6 +100,11 @@ int main(void)
 	radio_set_device_id(hw_id);
 
 	LOG_INF("Dect NR+ PHY initialized, device ID: %d", hw_id);
+
+	err = at_command_init();
+	if (err) {
+		LOG_WRN("AT command init failed, err %d", err);
+	}
 
 	err = nrf_modem_dect_phy_capability_get();
 	if (err) {
