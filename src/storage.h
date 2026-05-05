@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <zephyr/kernel.h>
+#include "product_info.h"
 
 /*
  * EEPROM partition layout (M24M02 — 256KB):
@@ -71,6 +72,22 @@ typedef struct {
 	uint8_t  sensor_count;     		/* number of sensors connected to this device */
 } __attribute__((packed)) mesh_entry_t;
 
+/* 
+ * Partition 4: Routing table for mesh network.
+ * Stored by: Gateway, Anchor.
+ */
+typedef struct {
+	uint16_t next_hop_id;    		/* short device ID of the next hop towards this device */
+	uint8_t route_length;     		/* number of hops to this device */
+	uint16_t avg_rssi_2;			/* Average RSSI to this device (in units of 0.5 dBm) */
+} __attribute__((packed)) route_info_t;
+
+typedef struct {
+	uint8_t device_type;      		/* device_type_t */
+	uint16_t device_id;      		/* short device ID */
+	route_info_t route_info[MAX_ANCHORS];     	/* routing info to reach this device */
+} __attribute__((packed)) route_entry_t;
+
 /* Initialize storage (must be called once at boot). */
 int storage_init(void);
 
@@ -78,6 +95,7 @@ int storage_init(void);
 int storage_infra_add(const infra_entry_t *entry);
 int storage_infra_update(uint16_t index, const infra_entry_t *entry);
 int storage_infra_get(uint16_t index, infra_entry_t *entry);
+int storage_infra_remove(uint16_t index);
 int storage_infra_count(void);
 int storage_infra_clear(void);
 
@@ -85,6 +103,7 @@ int storage_infra_clear(void);
 int storage_sensor_add(const sensor_entry_t *entry);
 int storage_sensor_update(uint16_t index, const sensor_entry_t *entry);
 int storage_sensor_get(uint16_t index, sensor_entry_t *entry);
+int storage_sensor_remove(uint16_t index);
 int storage_sensor_count(void);
 int storage_sensor_clear(void);
 
@@ -92,6 +111,7 @@ int storage_sensor_clear(void);
 int storage_mesh_add(const mesh_entry_t *entry);
 int storage_mesh_update(uint16_t index, const mesh_entry_t *entry);
 int storage_mesh_get(uint16_t index, mesh_entry_t *entry);
+int storage_mesh_remove(uint16_t index);
 int storage_mesh_count(void);
 int storage_mesh_clear(void);
 

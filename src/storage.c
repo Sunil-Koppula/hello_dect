@@ -141,6 +141,29 @@ int storage_infra_get(uint16_t index, infra_entry_t *entry)
 	return read_entry(STORAGE_PART1_OFFSET, index, entry, sizeof(*entry));
 }
 
+int storage_infra_remove(uint16_t index)
+{
+	if (index >= infra_count) {
+		return -EINVAL;
+	}
+
+	/* Shift entries after index up by one. */
+	for (uint16_t i = index + 1; i < infra_count; i++) {
+		infra_entry_t entry;
+		int err = storage_infra_get(i, &entry);
+		if (err) {
+			return err;
+		}
+		err = write_entry(STORAGE_PART1_OFFSET, i - 1, &entry, sizeof(entry));
+		if (err) {
+			return err;
+		}
+	}
+
+	infra_count--;
+	return write_header(STORAGE_PART1_OFFSET, infra_count);
+}
+
 int storage_infra_count(void)
 {
 	return infra_count;
@@ -192,6 +215,29 @@ int storage_sensor_get(uint16_t index, sensor_entry_t *entry)
 int storage_sensor_count(void)
 {
 	return sensor_count;
+}
+
+int storage_sensor_remove(uint16_t index)
+{
+	if (index >= sensor_count) {
+		return -EINVAL;
+	}
+
+	/* Shift entries after index up by one. */
+	for (uint16_t i = index + 1; i < sensor_count; i++) {
+		sensor_entry_t entry;
+		int err = storage_sensor_get(i, &entry);
+		if (err) {
+			return err;
+		}
+		err = write_entry(STORAGE_PART2_OFFSET, i - 1, &entry, sizeof(entry));
+		if (err) {
+			return err;
+		}
+	}
+
+	sensor_count--;
+	return write_header(STORAGE_PART2_OFFSET, sensor_count);
 }
 
 int storage_sensor_clear(void)
@@ -246,4 +292,27 @@ int storage_mesh_clear(void)
 {
 	mesh_count = 0;
 	return write_header(STORAGE_PART3_OFFSET, 0);
+}
+
+int storage_mesh_remove(uint16_t index)
+{
+	if (index >= mesh_count) {
+		return -EINVAL;
+	}
+
+	/* Shift entries after index up by one. */
+	for (uint16_t i = index + 1; i < mesh_count; i++) {
+		mesh_entry_t entry;
+		int err = storage_mesh_get(i, &entry);
+		if (err) {
+			return err;
+		}
+		err = write_entry(STORAGE_PART3_OFFSET, i - 1, &entry, sizeof(entry));
+		if (err) {
+			return err;
+		}
+	}
+
+	mesh_count--;
+	return write_header(STORAGE_PART3_OFFSET, mesh_count);
 }

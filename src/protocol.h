@@ -30,12 +30,26 @@ typedef enum {
 	PACKET_DEVICE_UPDATED_ACK	= 0x0A,
 	PACKET_REPAIR_REQUEST		= 0x0B,
 	PACKET_REPAIR_RESPONSE		= 0x0C,
-	PACKET_SYNC_TIME			= 0x0D,
-	PACKET_SYNC_TIME_ACK		= 0x0E,
+	PACKET_ROUTE_INFO			= 0x0D,
+	PACKET_ROUTE_INFO_ACK		= 0x0E,
 	PACKET_DATA_INIT			= 0x0F,
 	PACKET_DATA_INIT_ACK		= 0x10,
 	PACKET_DATA_CHUNK			= 0x11,
 	PACKET_DATA_CHUNK_ACK		= 0x12,
+	PACKET_DATA_RECEIVED		= 0x13,
+	PACKET_CONFIG				= 0x14,
+	PACKET_CONFIG_ACK			= 0x15,
+	PACKET_CONFIG_RECEIVED		= 0x16,
+	PACKET_LARGE_DATA_INIT		= 0x17,
+	PACKET_LARGE_DATA_INIT_ACK	= 0x18,
+	PACKET_LARGE_DATA_CHUNK		= 0x19,
+	PACKET_LARGE_DATA_CHUNK_ACK	= 0x1A,
+	PACKET_LARGE_DATA_RECEIVED	= 0x1B,
+	PACKET_OTA_INIT				= 0x1C,
+	PACKET_OTA_INIT_ACK			= 0x1D,
+	PACKET_OTA_CHUNK			= 0x1E,
+	PACKET_OTA_CHUNK_ACK		= 0x1F,
+	PACKET_OTA_RECEIVED			= 0x20,
 } packet_type_t;
 
 /* Packet Priority Levels */
@@ -136,6 +150,7 @@ typedef struct {
 	uint16_t dst_device_id;			/* short device ID of the device being pinged */
 	uint8_t hop_num; 				/* hop count from gateway */
 	uint16_t version;				/* device firmware version */
+	uint64_t timestamp;				/* sender timestamp for RTT measurement */
 } __attribute__((packed)) ping_device_t;
 
 #define PING_DEVICE_PACKET_SIZE sizeof(ping_device_t)
@@ -146,6 +161,7 @@ typedef struct {
 	uint16_t dst_device_id;			/* short device ID of the device being pinged */
 	uint8_t hop_num; 				/* hop count from gateway */
 	uint16_t version;				/* device firmware version */
+	uint64_t timestamp;				/* sender timestamp for RTT measurement */
 } __attribute__((packed)) ping_ack_t;
 
 #define PING_ACK_PACKET_SIZE sizeof(ping_ack_t)
@@ -191,22 +207,6 @@ typedef struct {
 } __attribute__((packed)) repair_response_t;
 
 #define REPAIR_RESPONSE_PACKET_SIZE sizeof(repair_response_t)
-
-/* SYNC TIME Packet */
-typedef struct {
-	packet_header_t hdr;
-	uint64_t timestamp;
-} __attribute__((packed)) sync_time_t;
-
-#define SYNC_TIME_PACKET_SIZE sizeof(sync_time_t)
-
-/* SYNC TIME ACK Packet */
-typedef struct {
-	packet_header_t hdr;
-	uint64_t timestamp;
-} __attribute__((packed)) sync_time_ack_t;
-
-#define SYNC_TIME_ACK_PACKET_SIZE sizeof(sync_time_ack_t)
 
 /* DATA INIT Packet */
 typedef struct {

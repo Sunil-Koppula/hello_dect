@@ -34,8 +34,6 @@ static int sensor_init(void)
 	tracker_init();
 	data_init();
 
-	storage_infra_clear();
-
 	/* Check EEPROM partition 1 — sensor can pair with only one device. */
 	if (storage_infra_count() > 0) {
 		infra_entry_t entry;
@@ -44,11 +42,13 @@ static int sensor_init(void)
 		if (err == 0) {
 			paired_device_id = entry.device_id;
 			paired_device_type = entry.device_type;
-			LOG_INF("Already paired with %s ID:%d (hop:%d)",
-				device_type_str(entry.device_type),
-				entry.device_id, entry.hop_num);
+			LOG_INF("Already paired with %s ID:%d (hop:%d)", device_type_str(entry.device_type), entry.device_id, entry.hop_num);
+			product_info_update_hop();
+			update_known_devices();
+			ping_known_devices();
 			return 0;
 		}
+
 	}
 
 	/* Not paired — start pairing. */
@@ -57,7 +57,7 @@ static int sensor_init(void)
 	uint8_t tid = tracker_next_id();
 
 	tracker_add(radio_get_device_id(), 0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
-	send_pair_request(0, tid);
+	send_pair_request(tid);
 
 	return 0;
 }
@@ -111,14 +111,6 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 
 		case PACKET_REPAIR_RESPONSE:
 			handle_repair_response((const repair_response_t *)data, sender_id, rssi_2);
-			break;
-
-		case PACKET_SYNC_TIME:
-			handle_sync_time((const sync_time_t *)data, sender_id, rssi_2);
-			break;
-
-		case PACKET_SYNC_TIME_ACK:
-			handle_sync_time_ack((const sync_time_ack_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_DATA_INIT:
@@ -214,7 +206,8 @@ void sensor_main(void)
 			mesh_tick();
 			tracker_tick(tracker_default_expired_cb);
 			data_tick();
-			mesh_time_check_milestone();
+			known_devices_tick();
+			// mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
 			break;
 

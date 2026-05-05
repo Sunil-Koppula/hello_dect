@@ -14,7 +14,11 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/logging/log.h>
+#include "main_sub.h"
 #include "product_info.h"
+#include "tracker.h"
+#include "radio.h"
+#include "mesh.h"
 #include "storage.h"
 
 LOG_MODULE_REGISTER(product_info, CONFIG_PRODUCT_INFO_LOG_LEVEL);
@@ -29,6 +33,9 @@ device_type_t PRODUCT_DEVICE_TYPE;
 uint64_t PRODUCT_SERIAL_NUMBER;
 uint8_t PRODUCT_HOP_NUMBER;
 uint16_t PRODUCT_CONNECTED_DEVICE_ID;
+
+known_device_t known_devices[MAX_KNOWN_DEVICES];
+uint8_t known_device_count;
 
 int product_info_init(void)
 {
@@ -167,4 +174,132 @@ void product_info_update_hop(void)
 		device_type_str(entries[0].device_type),
 		PRODUCT_CONNECTED_DEVICE_ID,
 		entries[0].hop_num);
+}
+
+void update_known_devices(void)
+{
+	uint8_t count = 0;
+
+	for (int i = 0; i < storage_infra_count() && count < MAX_KNOWN_DEVICES; i++) {
+		infra_entry_t entry;
+		if (storage_infra_get(i, &entry) == 0) {
+			known_devices[count].device_type = entry.device_type;
+			known_devices[count++].device_id = entry.device_id;
+		}
+	}
+
+	for (int i = 0; i < storage_sensor_count() && count < MAX_KNOWN_DEVICES; i++) {
+		sensor_entry_t entry;
+		if (storage_sensor_get(i, &entry) == 0) {
+			known_devices[count].device_type = DEVICE_TYPE_SENSOR;
+			known_devices[count++].device_id = entry.device_id;
+		}
+	}
+
+	known_device_count = count;
+
+}
+
+bool is_known_device(uint16_t device_id)
+{
+	for (int i = 0; i < known_device_count; i++) {
+		if (known_devices[i].device_id == device_id) {
+			known_devices[i].last_comm_ms = k_uptime_get();
+			known_devices[i].comm_failures = 0;
+			known_devices[i].is_ping_packet_sent = false;
+			return true;
+		}
+	}
+	return false;
+}
+
+int known_device_idx(uint16_t device_id)
+{
+	for (int i = 0; i < known_device_count; i++) {
+		if (known_devices[i].device_id == device_id) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
+{
+	if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR && !is_successful_comm) {
+		// Clear Infra Storage and Known Devices
+		storage_infra_clear();
+		known_device_count = 0;
+
+		// Send Pair Request because connected device is unreachable, and sensor should send data to gateway through new paired device.
+		uint8_t tid = tracker_next_id();
+		tracker_add(device_id, radio_get_device_id(), tid, PACKET_PAIR_REQUEST, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
+		LOG_INF("%s ID:%d is unreachable, sending PAIR_REQUEST to find new route to gateway", device_type_str(PRODUCT_DEVICE_TYPE), device_id);
+		send_pair_request(tid);
+		return;
+	}
+	uint64_t now = k_uptime_get();
+
+	for (int i = 0; i < known_device_count; i++) {
+		if (known_devices[i].device_id == device_id) {
+			if (is_successful_comm) {
+				known_devices[i].comm_failures = 0;
+			} else {
+				known_devices[i].comm_failures++;
+			}
+			known_devices[i].last_comm_ms = now;
+			known_devices[i].is_ping_packet_sent = false;
+
+			if (known_devices[i].comm_failures >= MAX_COMM_FAILURES) {
+				LOG_WRN("Device ID:%d has %d consecutive communication failures, removing from known devices", device_id, known_devices[i].comm_failures);
+				// Remove device from known devices list
+				for (int j = i; j < known_device_count - 1; j++) {
+					known_devices[j] = known_devices[j + 1];
+				}
+				known_device_count--;
+
+				// If it's an infra device, also remove from infra storage
+				for (int j = 0; j < storage_infra_count(); j++) {
+					infra_entry_t entry;
+					if (storage_infra_get(j, &entry) == 0 && entry.device_id == device_id) {
+						storage_infra_remove(j);
+						LOG_INF("Removed %s ID:%d from infra storage due to communication failures", device_type_str(entry.device_type), device_id);
+						break;
+					}
+				}
+			}
+			// Implement Device Removed logic to update route info
+
+			break;
+		}
+	}
+}
+
+
+void known_devices_tick(void)
+{
+	uint64_t now = k_uptime_get();
+
+	for (int i = 0; i < known_device_count; i++) {
+		if ((now - known_devices[i].last_comm_ms > PING_TIMEOUT_MS) && (known_devices[i].device_type != DEVICE_TYPE_SENSOR) && !known_devices[i].is_ping_packet_sent) {
+			// Send Ping Device packet to check if device is still reachable
+			uint8_t tid = tracker_next_id();
+			tracker_add(known_devices[i].device_id, radio_get_device_id(), tid, PACKET_PING_DEVICE, 500, 5, NULL, 0);
+			LOG_INF("Sending PING_DEVICE to known device ID:%d to check connectivity", known_devices[i].device_id);
+			send_ping_device(known_devices[i].device_id, tid, STATUS_SUCCESS);
+			known_devices[i].is_ping_packet_sent = true;
+		}
+	}
+}
+
+void ping_known_devices(void)
+{
+	for (int i = 0; i < known_device_count; i++) {
+		if (known_devices[i].device_type != DEVICE_TYPE_SENSOR) {  /* Only ping non-sensor devices since sensors don't store hop/RSSI and are less critical to keep updated */
+			uint8_t tid = tracker_next_id();
+			tracker_add(known_devices[i].device_id, radio_get_device_id(), tid, PACKET_PING_DEVICE, 500, 5, NULL, 0);
+			LOG_INF("Pinging known device ID:%d at startup to check connectivity", known_devices[i].device_id);
+			send_ping_device(known_devices[i].device_id, tid, STATUS_SUCCESS);
+			known_devices[i].is_ping_packet_sent = true;
+		}
+	}
 }

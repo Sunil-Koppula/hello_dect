@@ -85,9 +85,7 @@ static int gateway_init(void)
 		}
 	}
 
-	storage_infra_clear();
-	storage_sensor_clear();
-	storage_mesh_clear();
+	ping_known_devices();
 
 	return 0;
 }
@@ -141,14 +139,6 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 
 		case PACKET_REPAIR_RESPONSE:
 			handle_repair_response((const repair_response_t *)data, sender_id, rssi_2);
-			break;
-
-		case PACKET_SYNC_TIME:
-			handle_sync_time((const sync_time_t *)data, sender_id, rssi_2);
-			break;
-
-		case PACKET_SYNC_TIME_ACK:
-			handle_sync_time_ack((const sync_time_ack_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_DATA_INIT:
@@ -242,7 +232,8 @@ void gateway_main(void)
 		case MAIN_SUB_TRACKER:
 			tracker_tick(tracker_default_expired_cb);
 			data_tick();
-			mesh_time_check_milestone();
+			known_devices_tick();
+			// mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
 			break;
 

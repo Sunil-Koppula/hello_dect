@@ -28,6 +28,7 @@ LOG_MODULE_REGISTER(anchor, CONFIG_ANCHOR_LOG_LEVEL);
 static int anchor_init(void)
 {
 	int infra = storage_infra_count();
+	LOG_WRN("Anchor init: found %d infra entries", infra);
 
 	LOG_INF("Anchor init: infra=%d sensors=%d", infra, storage_sensor_count());
 
@@ -48,13 +49,13 @@ static int anchor_init(void)
 		}
 
 		product_info_update_hop();
+		update_known_devices();
 
 		if (infra >= MAX_ANCHORS) {
+			ping_known_devices();
 			return 0;
 		}
 	}
-	storage_infra_clear();
-	storage_sensor_clear();
 
 	LOG_INF("Sending PAIR REQUEST!");
 
@@ -63,7 +64,7 @@ static int anchor_init(void)
 	uint8_t tid = tracker_next_id();
 
 	tracker_add(radio_get_device_id(), 0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
-	send_pair_request(0, tid);
+	send_pair_request(tid);
 
 	return 0;
 }
@@ -117,14 +118,6 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 
 	case PACKET_REPAIR_RESPONSE:
 		handle_repair_response((const repair_response_t *)data, sender_id, rssi_2);
-		break;
-
-	case PACKET_SYNC_TIME:
-		handle_sync_time((const sync_time_t *)data, sender_id, rssi_2);
-		break;
-
-	case PACKET_SYNC_TIME_ACK:
-		handle_sync_time_ack((const sync_time_ack_t *)data, sender_id, rssi_2);
 		break;
 
 	case PACKET_DATA_INIT:
@@ -221,7 +214,8 @@ void anchor_main(void)
 			mesh_tick();
 			tracker_tick(tracker_default_expired_cb);
 			data_tick();
-			mesh_time_check_milestone();
+			known_devices_tick();
+			// mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
 			break;
 

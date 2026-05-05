@@ -39,7 +39,7 @@ int main(void)
 		return err;
 	}
 
-	radio_update_known_devices();
+	update_known_devices();
 
 	err = psram_init();
 	if (err) {

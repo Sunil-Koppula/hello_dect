@@ -11,6 +11,21 @@
 #define MAX_ANCHORS         8
 #define MAX_SENSORS         64
 #define MAX_DEVICES         512
+#define MAX_KNOWN_DEVICES   (MAX_ANCHORS + MAX_SENSORS)
+
+#define PING_TIMEOUT_MS      10 * 60 * 1000 /* 10 minutes timeout for known devices */
+#define MAX_COMM_FAILURES    3
+
+typedef struct {
+    uint8_t device_type;
+    uint16_t device_id;
+    uint64_t last_comm_ms;
+    uint8_t comm_failures;
+    bool is_ping_packet_sent;
+} known_device_t;
+
+extern known_device_t known_devices[MAX_KNOWN_DEVICES];
+extern uint8_t known_device_count;
 
 /* Runtime device type (set by product_info_init from GPIO pins). */
 extern device_type_t PRODUCT_DEVICE_TYPE;
@@ -32,5 +47,23 @@ int product_info_init(void);
 
 /* Update hop number (called after pairing for anchors). */
 void product_info_update_hop(void);
+
+/* Update the list of known devices in the radio module. */
+void update_known_devices(void);
+
+/* Check if a device is known (connected or paired). */
+bool is_known_device(uint16_t device_id);
+
+/* Get index of a known device by ID, or -1 if not found. */
+int known_device_idx(uint16_t device_id);
+
+/* Tick function to update known devices' last communication time. */
+void known_devices_tick(void);
+
+/* Update the last communication time for a known device. */
+void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm);
+
+/* Ping all known devices at initialization. */
+void ping_known_devices(void);
 
 #endif /* PRODUCT_INFO_H */

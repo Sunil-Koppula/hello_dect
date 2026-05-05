@@ -12,6 +12,7 @@
 #include "queue.h"
 #include "protocol.h"
 #include "storage.h"
+#include "product_info.h"
 
 LOG_MODULE_REGISTER(radio, CONFIG_RADIO_LOG_LEVEL);
 
@@ -169,36 +170,6 @@ static void on_pcc_crc_err(const struct nrf_modem_dect_phy_pcc_crc_failure_event
 	LOG_WRN("pcc_crc_err cb time %"PRIu64"", modem_time);
 }
 
-/*
- * Known device cache — ISR-safe (RAM only, no EEPROM access).
- * Updated from main thread via radio_update_known_devices().
- */
-#define MAX_KNOWN_DEVICES (MAX_SENSORS + MAX_ANCHORS)
-
-static uint16_t known_devices[MAX_KNOWN_DEVICES];
-static int known_device_count;
-
-void radio_update_known_devices(void)
-{
-	int count = 0;
-
-	for (int i = 0; i < storage_infra_count() && count < MAX_KNOWN_DEVICES; i++) {
-		infra_entry_t entry;
-		if (storage_infra_get(i, &entry) == 0) {
-			known_devices[count++] = entry.device_id;
-		}
-	}
-
-	for (int i = 0; i < storage_sensor_count() && count < MAX_KNOWN_DEVICES; i++) {
-		sensor_entry_t entry;
-		if (storage_sensor_get(i, &entry) == 0) {
-			known_devices[count++] = entry.device_id;
-		}
-	}
-
-	known_device_count = count;
-}
-
 /* Check if a packet should be enqueued (ISR-safe — no EEPROM access). */
 static bool should_enqueue(uint8_t packet_type, uint16_t sender_id)
 {
@@ -208,14 +179,12 @@ static bool should_enqueue(uint8_t packet_type, uint16_t sender_id)
 	if ((packet_type >= PACKET_PAIR_REQUEST && packet_type <= PACKET_PAIR_ACK) ||
 	    packet_type == PACKET_REPAIR_REQUEST ||
 	    packet_type == PACKET_REPAIR_RESPONSE) {
+		is_known_device(sender_id); /* Touch known devices cache to update last_comm_ms for this sender. */
 		return true;
 	}
 
-	/* Check cached known devices. */
-	for (int i = 0; i < known_device_count; i++) {
-		if (known_devices[i] == sender_id) {
-			return true;
-		}
+	if (is_known_device(sender_id)) {
+		return true;
 	}
 
 	LOG_DBG("Dropping packet type 0x%02x from unknown device %d", packet_type, sender_id);
