@@ -214,7 +214,8 @@ typedef struct {
 typedef struct {
 	packet_header_t hdr;
 	uint16_t device_id;				/* short device ID of the device whose route info is being shared */
-	uint8_t hop_num; 				/* hop count from gateway */
+	uint8_t device_type;			/* device_type_t of the device whose route info is being shared */
+	uint8_t route_len; 				/* hop count from gateway */
 	int16_t avg_rssi_2;				/* Average RSSI to this device (in units of 0.5 dBm) */
 } __attribute__((packed)) route_info_t;
 
@@ -224,7 +225,8 @@ typedef struct {
 typedef struct {
 	packet_header_t hdr;
 	uint16_t device_id;				/* short device ID of the device whose route info is being acknowledged */
-	uint8_t hop_num; 				/* hop count from gateway */
+	uint8_t device_type;			/* device_type_t of the device whose route info is being acknowledged */
+	uint8_t route_len; 				/* hop count from gateway */
 	int16_t avg_rssi_2;				/* Average RSSI to this device (in units of 0.5 dBm) */
 } __attribute__((packed)) route_info_ack_t;
 

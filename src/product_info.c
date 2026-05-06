@@ -243,10 +243,8 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 		known_device_count = 0;
 
 		// Send Pair Request because connected device is unreachable, and sensor should send data to gateway through new paired device.
-		uint8_t tid = tracker_next_id();
-		tracker_add(device_id, radio_get_device_id(), tid, PACKET_PAIR_REQUEST, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
-		LOG_INF("%s ID:%d is unreachable, sending PAIR_REQUEST to find new route to gateway", device_type_str(PRODUCT_DEVICE_TYPE), device_id);
-		send_pair_request(tid);
+		LOG_WRN("%s ID:%d is unreachable, send PAIR_REQUEST to find new route to gateway", device_type_str(PRODUCT_DEVICE_TYPE), device_id);
+		send_pair_request();
 		return;
 	}
 	uint64_t now = k_uptime_get();
@@ -294,10 +292,7 @@ void known_devices_tick(void)
 	for (int i = 0; i < known_device_count; i++) {
 		if ((now - known_devices[i].last_comm_ms > PING_TIMEOUT_MS) && (known_devices[i].device_type != DEVICE_TYPE_SENSOR) && !known_devices[i].is_ping_packet_sent) {
 			// Send Ping Device packet to check if device is still reachable
-			uint8_t tid = tracker_next_id();
-			tracker_add(known_devices[i].device_id, radio_get_device_id(), tid, PACKET_PING_DEVICE, 500, 5, NULL, 0);
-			LOG_INF("Sending PING_DEVICE to known device ID:%d to check connectivity", known_devices[i].device_id);
-			send_ping_device(known_devices[i].device_id, tid, STATUS_SUCCESS);
+			send_ping_device(known_devices[i].device_id, STATUS_SUCCESS);
 			known_devices[i].is_ping_packet_sent = true;
 		}
 	}
@@ -307,10 +302,7 @@ void ping_known_devices(void)
 {
 	for (int i = 0; i < known_device_count; i++) {
 		if (known_devices[i].device_type != DEVICE_TYPE_SENSOR) {  /* Only ping non-sensor devices since sensors don't store hop/RSSI and are less critical to keep updated */
-			uint8_t tid = tracker_next_id();
-			tracker_add(known_devices[i].device_id, radio_get_device_id(), tid, PACKET_PING_DEVICE, 500, 5, NULL, 0);
-			LOG_INF("Pinging known device ID:%d at startup to check connectivity", known_devices[i].device_id);
-			send_ping_device(known_devices[i].device_id, tid, STATUS_SUCCESS);
+			send_ping_device(known_devices[i].device_id, STATUS_SUCCESS);
 			known_devices[i].is_ping_packet_sent = true;
 		}
 	}

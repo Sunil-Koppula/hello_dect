@@ -104,10 +104,7 @@ static int send_next_chunk(void)
 		return err;
 	}
 
-	uint8_t tid = tracker_next_id();
-	tracker_add(sender.dst_id, radio_get_device_id(), tid, PACKET_DATA_CHUNK,
-		    DATA_RETRY_TIMEOUT_MS, DATA_MAX_RETRIES, &chunk_pkt, sizeof(chunk_pkt));
-	send_data_chunk(sender.dst_id, sender.priority, tid, &chunk_pkt);
+	send_data_chunk(sender.dst_id, sender.priority, &chunk_pkt);
 	LOG_INF("Sending DATA_CHUNK to ID:%d (Chunk: %d, Size: %d)", sender.dst_id, idx, csz);
 	sender.next_chunk = idx + 1;
 	return 0;
@@ -115,15 +112,18 @@ static int send_next_chunk(void)
 
 /* ===== TX builders ===== */
 
-int send_data_init(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_init_t *pkt)
+int send_data_init(uint16_t dst_id, uint8_t priority, data_init_t *pkt)
 {
 	pkt->hdr.packet_type = PACKET_DATA_INIT;
 	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
 	pkt->hdr.priority = priority;
-	pkt->hdr.tracking_id = tracking_id;
+	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
 
-	tracker_update_payload(tracking_id, pkt, sizeof(*pkt));
+	// Add tracker entry for retries
+	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_INIT, DATA_RETRY_TIMEOUT_MS, DATA_MAX_RETRIES, pkt, sizeof(*pkt));
+
+	LOG_INF("----> Sending DATA_INIT to device %s ID:%d for SENSOR ID:%d", device_type_str(PRODUCT_DEVICE_TYPE), dst_id, pkt->gen_device_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -135,18 +135,22 @@ int send_data_init_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, d
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
 
+	LOG_INF("----> Sending DATA_INIT_ACK to device %s ID:%d for SENSOR ID:%d", device_type_str(PRODUCT_DEVICE_TYPE), dst_id, pkt->gen_device_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
-int send_data_chunk(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_chunk_t *pkt)
+int send_data_chunk(uint16_t dst_id, uint8_t priority, data_chunk_t *pkt)
 {
 	pkt->hdr.packet_type = PACKET_DATA_CHUNK;
 	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
 	pkt->hdr.priority = priority;
-	pkt->hdr.tracking_id = tracking_id;
+	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
 
-	tracker_update_payload(tracking_id, pkt, sizeof(*pkt));
+	// Add tracker entry for retries
+	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_CHUNK, DATA_RETRY_TIMEOUT_MS, DATA_MAX_RETRIES, pkt, sizeof(*pkt));
+
+	LOG_INF("----> Sending DATA_CHUNK to device %s ID:%d for SENSOR ID:%d (Chunk: %d, Size: %d)", device_type_str(PRODUCT_DEVICE_TYPE), dst_id, pkt->gen_device_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index));
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -158,6 +162,7 @@ int send_data_chunk_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, 
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
 
+	LOG_INF("----> Sending DATA_CHUNK_ACK to device %s ID:%d for SENSOR ID:%d (Chunk: %d)", device_type_str(PRODUCT_DEVICE_TYPE), dst_id, pkt->gen_device_id, pkt->chunk_index);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -328,9 +333,6 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 	}
 
 	nbtimeout_start(&s->idle_timeout);
-	LOG_INF("Sending DATA_CHUNK_ACK for gen %d prio %d chunk %d to %d (%u/%u)",
-		pkt->gen_device_id, pkt->hdr.priority, pkt->chunk_index, dst_id,
-		s->received_count, s->chunk_count);
 	ack.hdr.status = STATUS_SUCCESS;
 
 	if (s->received_count == s->chunk_count) {

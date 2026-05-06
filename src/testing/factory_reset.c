@@ -82,6 +82,7 @@ int factory_reset_init(void)
 	storage_infra_clear();
 	storage_sensor_clear();
 	storage_mesh_clear();
+	storage_route_clear();
 
 	LOG_WRN("Factory Reset Complete, Rebooting...");
 	k_msleep(500);

@@ -108,7 +108,6 @@ int storage_init(void)
 	// Update Known routes from storage
 	known_route_count = route_count;
 	for (uint16_t i = 0; i < route_count; i++) {
-		LOG_WRN("Loading route entry %d from storage", i);
 		route_entry_t entry;
 		err = storage_route_get(i, &entry);
 		if (err) {
@@ -119,6 +118,7 @@ int storage_init(void)
 		for (int j = 0; j < entry.route_count; j++) {
 			known_route_table[i].next_device_id[j] = entry.route_info[j].next_hop_id;
 		}
+		LOG_WRN("Loading route entry %d %s ID:%d from storage", i, device_type_str(entry.device_type), entry.device_id);
 	}
 
 	LOG_INF("Storage init: infra=%d sensors=%d mesh=%d routes=%d",

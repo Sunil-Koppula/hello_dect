@@ -54,10 +54,7 @@ static int sensor_init(void)
 	/* Not paired — start pairing. */
 	LOG_INF("Sensor not paired, sending PAIR_REQUEST");
 
-	uint8_t tid = tracker_next_id();
-
-	tracker_add(radio_get_device_id(), 0, tid, PACKET_PAIR_REQUEST, 5 * PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
-	send_pair_request(tid);
+	send_pair_request();
 
 	return 0;
 }
@@ -111,6 +108,14 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 
 		case PACKET_REPAIR_RESPONSE:
 			handle_repair_response((const repair_response_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_ROUTE_INFO:
+			handle_route_info((const route_info_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_ROUTE_INFO_ACK:
+			handle_route_info_ack((const route_info_ack_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_DATA_INIT:

@@ -35,9 +35,9 @@ int data_init(void);
 void data_tick(void);
 
 /* TX helpers */
-int send_data_init(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_init_t *pkt);
+int send_data_init(uint16_t dst_id, uint8_t priority, data_init_t *pkt);
 int send_data_init_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_init_ack_t *pkt);
-int send_data_chunk(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_chunk_t *pkt);
+int send_data_chunk(uint16_t dst_id, uint8_t priority, data_chunk_t *pkt);
 int send_data_chunk_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_chunk_ack_t *pkt);
 
 /* RX handlers — wire into each device's RX dispatch switch. */
