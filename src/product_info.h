@@ -7,7 +7,7 @@
 #define PRODUCT_NAME "DECT NR+ PHY MESH"
 #define FIRMWARE_VERSION 100
 
-#define MESH_MAX_HOP        8
+#define MAX_DEPTH           8
 #define MAX_ANCHORS         8
 #define MAX_SENSORS         64
 #define MAX_DEVICES         512
@@ -15,17 +15,6 @@
 
 #define PING_TIMEOUT_MS      10 * 60 * 1000 /* 10 minutes timeout for known devices */
 #define MAX_COMM_FAILURES    3
-
-typedef struct {
-    uint8_t device_type;
-    uint16_t device_id;
-    uint64_t last_comm_ms;
-    uint8_t comm_failures;
-    bool is_ping_packet_sent;
-} known_device_t;
-
-extern known_device_t known_devices[MAX_KNOWN_DEVICES];
-extern uint8_t known_device_count;
 
 /* Runtime device type (set by product_info_init from GPIO pins). */
 extern device_type_t PRODUCT_DEVICE_TYPE;
@@ -40,6 +29,27 @@ extern uint8_t PRODUCT_HOP_NUMBER;
 /* Connected (upstream parent) device ID.
  * Gateway = 0, Anchor = best infra device ID, Sensor = paired device ID. */
 extern uint16_t PRODUCT_CONNECTED_DEVICE_ID;
+
+/* Connected Devices Information */
+typedef struct {
+    uint8_t device_type;
+    uint16_t device_id;
+    uint64_t last_comm_ms;
+    uint8_t comm_failures;
+    bool is_ping_packet_sent;
+} known_device_t;
+
+extern known_device_t known_devices[MAX_KNOWN_DEVICES];
+extern uint8_t known_device_count;
+
+/* Known Routes Information */
+typedef struct {
+    uint16_t device_id;
+    uint16_t next_device_id[MAX_ANCHORS];
+} known_route_t;
+
+extern known_route_t known_route_table[MAX_DEVICES];
+extern uint16_t known_route_count;
 
 /* Read GPIO pins P0.21/P0.23 to set device type.
  * Must be called before any mesh operations. */
@@ -65,5 +75,8 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm);
 
 /* Ping all known devices at initialization. */
 void ping_known_devices(void);
+
+/* Get the next hop device ID for a given device ID. */
+uint16_t get_next_hop_device_id(uint16_t device_id);
 
 #endif /* PRODUCT_INFO_H */

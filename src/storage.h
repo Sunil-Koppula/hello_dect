@@ -33,6 +33,9 @@
 #define STORAGE_PART3_OFFSET  0x02000
 #define STORAGE_PART3_SIZE    0x04000  /* 16KB */
 
+#define STORAGE_PART4_OFFSET  0x06000
+#define STORAGE_PART4_SIZE    0x08000  /* 32KB */
+
 #define STORAGE_HEADER_SIZE   4
 #define STORAGE_MAGIC_0       0xDE
 #define STORAGE_MAGIC_1       0xC7
@@ -80,12 +83,13 @@ typedef struct {
 	uint16_t next_hop_id;    		/* short device ID of the next hop towards this device */
 	uint8_t route_length;     		/* number of hops to this device */
 	uint16_t avg_rssi_2;			/* Average RSSI to this device (in units of 0.5 dBm) */
-} __attribute__((packed)) route_info_t;
+} __attribute__((packed)) route_t;
 
 typedef struct {
-	uint8_t device_type;      		/* device_type_t */
-	uint16_t device_id;      		/* short device ID */
-	route_info_t route_info[MAX_ANCHORS];     	/* routing info to reach this device */
+	uint8_t device_type;      			/* device_type_t */
+	uint16_t device_id;      			/* short device ID */
+	uint8_t route_count;     			/* number of routes to this device (for multipath) */
+	route_t route_info[MAX_ANCHORS];    /* routing info to reach this device */
 } __attribute__((packed)) route_entry_t;
 
 /* Initialize storage (must be called once at boot). */
@@ -114,5 +118,12 @@ int storage_mesh_get(uint16_t index, mesh_entry_t *entry);
 int storage_mesh_remove(uint16_t index);
 int storage_mesh_count(void);
 int storage_mesh_clear(void);
+
+/* Partition 4: Routing table for mesh network (Gateway + Anchor). */
+int storage_route_add(uint16_t dst_id, uint16_t device_id, uint8_t device_type, uint8_t route_len, int16_t avg_rssi_2);
+int storage_route_get(uint16_t index, route_entry_t *entry);
+int storage_route_remove(uint16_t device_id, uint16_t dst_id);
+int storage_route_count(void);
+int storage_route_clear(void);
 
 #endif /* STORAGE_H */

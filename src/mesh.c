@@ -769,7 +769,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
             uint8_t tid = tracker_next_id();
             tracker_add(dst_id, radio_get_device_id(), tid, PACKET_JOINED_NETWORK, (ack->hop_num + 1) * 500, 5, &jn_pkt, sizeof(jn_pkt));
 
-            LOG_INF("Sending JOINED_NETWORK to %d for %s: hop %d", dst_id, device_type_str(ack->hdr.device_type), jn_pkt.hop_num);
+            LOG_INF("Sending JOINED_NETWORK to %d for %s: hop %d", dst_id, device_type_str(ack->hdr.device_type), ack->hop_num);
             send_joined_network(&jn_pkt, dst_id, tid, STATUS_SUCCESS);
         }
     } else if (status == STATUS_ALREADY_EXISTS) {
@@ -1404,11 +1404,7 @@ static void select_and_confirm(void)
 
     sort_candidates();
 
-    /* How many slots available?
-     * Sensor: only 1 upstream connection allowed.
-     * Anchor: up to MAX_ANCHORS. */
-    int max_slots = (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) ? 1 : MAX_ANCHORS;
-    int available = max_slots - storage_infra_count();
+    int available = MAX_ANCHORS - storage_infra_count();
     LOG_WRN("Infra storage has %d available slots for pairing and %d paired count", available, storage_infra_count());
 
     if (available <= 0) {
@@ -1436,6 +1432,11 @@ static void select_and_confirm(void)
             break;
         }
 
+        if (PRODUCT_HOP_NUMBER == 0xFF && c->hop_num == 0xFF) {
+            LOG_WRN("Candidate %s ID:%d has no upstream link or has invalid hop number %d, skipping", device_type_str(c->device_type), c->sender_id, c->hop_num);
+            continue;
+        }
+
         uint8_t tid = tracker_next_id();
 
         LOG_INF("Sending PAIR_CONFIRM to %s ID:%d (hop:%d, RSSI:%d.%d, tid:%d)",
@@ -1444,6 +1445,11 @@ static void select_and_confirm(void)
 
         tracker_add(c->sender_id, radio_get_device_id(), tid, PACKET_PAIR_CONFIRM, PAIR_TIMEOUT_MS, PAIR_MAX_RETRIES, NULL, 0);
         send_pair_confirm(c->sender_id, tid, STATUS_SUCCESS);
+
+        if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+            // Sensor only pairs with one anchor, so stop after the first confirmation
+            break;
+        }
     }
 }
 

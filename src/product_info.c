@@ -37,6 +37,9 @@ uint16_t PRODUCT_CONNECTED_DEVICE_ID;
 known_device_t known_devices[MAX_KNOWN_DEVICES];
 uint8_t known_device_count;
 
+known_route_t known_route_table[MAX_DEVICES];
+uint16_t known_route_count;
+
 int product_info_init(void)
 {
 	int err;
@@ -106,6 +109,7 @@ int product_info_init(void)
 		PRODUCT_HOP_NUMBER = 0xFF;  /* anchor: updated after pairing */
 		break;
 	}
+	product_info_update_hop();
 
 	LOG_INF("Device type: %s, SN: 0x%016llx, Hop: %d",
 		device_type_str(PRODUCT_DEVICE_TYPE),
@@ -123,8 +127,9 @@ void product_info_update_hop(void)
 	int infra = storage_infra_count();
 
 	if (infra == 0) {
+		LOG_WRN("No infra devices found, setting hop number to 0xFF and connected device ID to 0xFFFF");
 		PRODUCT_HOP_NUMBER = 0xFF;
-		PRODUCT_CONNECTED_DEVICE_ID = 0;
+		PRODUCT_CONNECTED_DEVICE_ID = 0xFFFF;
 		return;
 	}
 
@@ -165,8 +170,15 @@ void product_info_update_hop(void)
 		storage_infra_add(&entries[i]);
 	}
 
+	uint8_t temp_hop_num = (entries[0].hop_num < 0xFE) ? entries[0].hop_num + 1 : 0xFF;
+
 	/* Best entry is now at index 0. */
-	PRODUCT_HOP_NUMBER = (entries[0].hop_num < 0xFE) ? entries[0].hop_num + 1 : 0xFF;
+	if (temp_hop_num != PRODUCT_HOP_NUMBER && PRODUCT_HOP_NUMBER != 0xFF) {
+		LOG_INF("Updating hop number from %d to %d", PRODUCT_HOP_NUMBER, temp_hop_num);
+		// Send Ping Device packet to known devices
+		ping_known_devices();
+	}
+	PRODUCT_HOP_NUMBER = temp_hop_num;
 	PRODUCT_CONNECTED_DEVICE_ID = entries[0].device_id;
 
 	LOG_INF("Anchor hop updated: %d, connected to %s ID:%d (hop: %d), infra sorted",
@@ -302,4 +314,18 @@ void ping_known_devices(void)
 			known_devices[i].is_ping_packet_sent = true;
 		}
 	}
+}
+
+uint16_t get_next_hop_device_id(uint16_t device_id)
+{
+	for (int i = 0; i < known_route_count; i++) {
+		if (known_route_table[i].device_id == device_id) {
+			if (known_route_table[i].next_device_id[0] != 0xFFFF) {
+				return known_route_table[i].next_device_id[0];
+			} else {
+				return 0xFFFF; // No valid next hop
+			}
+		}
+	}
+	return 0xFFFF; // Device ID not found in route table
 }

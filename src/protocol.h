@@ -71,7 +71,9 @@ typedef enum {
 #define STATUS_BUSY                     0x0A
 #define STATUS_VERSION_MISMATCH         0x0B
 #define STATUS_STORAGE_FULL             0x0D
-#define STATUS_AUTH_FAILED              0x0E
+#define STATUS_DEVICE_JOINED            0x0C
+#define STATUS_DEVICE_REMOVED		   	0x0E
+#define STATUS_AUTH_FAILED              0x0F
 #define STATUS_VENDOR_SPECIFIC          0x1F
 
 /********** Common Packet Header **********/
@@ -207,6 +209,26 @@ typedef struct {
 } __attribute__((packed)) repair_response_t;
 
 #define REPAIR_RESPONSE_PACKET_SIZE sizeof(repair_response_t)
+
+/* ROUTE INFO Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t device_id;				/* short device ID of the device whose route info is being shared */
+	uint8_t hop_num; 				/* hop count from gateway */
+	int16_t avg_rssi_2;				/* Average RSSI to this device (in units of 0.5 dBm) */
+} __attribute__((packed)) route_info_t;
+
+#define ROUTE_INFO_PACKET_SIZE sizeof(route_info_t)
+
+/* ROUTE INFO ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t device_id;				/* short device ID of the device whose route info is being acknowledged */
+	uint8_t hop_num; 				/* hop count from gateway */
+	int16_t avg_rssi_2;				/* Average RSSI to this device (in units of 0.5 dBm) */
+} __attribute__((packed)) route_info_ack_t;
+
+#define ROUTE_INFO_ACK_PACKET_SIZE sizeof(route_info_ack_t)
 
 /* DATA INIT Packet */
 typedef struct {
