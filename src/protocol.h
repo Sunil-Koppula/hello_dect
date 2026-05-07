@@ -7,6 +7,12 @@
 
 #include <stdint.h>
 
+#define MAX_DEPTH           8
+#define MAX_ANCHORS         8
+#define MAX_SENSORS         64
+#define MAX_DEVICES         512
+#define MAX_KNOWN_DEVICES   (MAX_ANCHORS + MAX_SENSORS)
+
 /* Device Type */
 typedef enum {
 	DEVICE_TYPE_UNKNOWN = 0x00,
@@ -111,6 +117,7 @@ typedef struct {
 typedef struct {
 	packet_header_t hdr;
 	uint16_t version;
+	uint8_t hop_num;
 } __attribute__((packed)) pair_confirm_t;
 
 #define PAIR_CONFIRM_PACKET_SIZE sizeof(pair_confirm_t)
@@ -142,6 +149,7 @@ typedef struct {
 typedef struct {
 	packet_header_t hdr;
 	uint16_t dst_device_id;			/* short device ID of the device that sent the JOINED_NETWORK packet being acknowledged */
+	uint8_t dst_device_type;			/* device_type_t of the device that sent the JOINED_NETWORK packet being acknowledged */
 } __attribute__((packed)) joined_network_ack_t;
 
 #define JOINED_NETWORK_ACK_PACKET_SIZE sizeof(joined_network_ack_t)
@@ -186,6 +194,7 @@ typedef struct {
 typedef struct {
 	packet_header_t hdr;
 	uint16_t dst_device_id;			/* short device ID of the device that sent the DEVICE_UPDATED packet being acknowledged */
+	uint8_t dst_device_type;			/* device_type_t of the device that sent the DEVICE_UPDATED packet being acknowledged */
 } __attribute__((packed)) device_updated_ack_t;
 
 #define DEVICE_UPDATED_ACK_PACKET_SIZE sizeof(device_updated_ack_t)

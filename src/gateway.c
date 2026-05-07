@@ -43,9 +43,11 @@ static int gateway_init(void)
 				LOG_ERR("Failed to read infra entry %d, err %d", i, err);
 				continue;
 			}
+			int16_t rssi_signed = (int16_t)entry.rssi_2;
 			LOG_INF("%d: %s ID:%d (hop:%d and RSSI:%d.%d)", i,
 				device_type_str(entry.device_type),
-				entry.device_id, entry.hop_num, entry.rssi_2 / 2, (entry.rssi_2 & 0b1) * 5);
+				entry.device_id, entry.hop_num,
+				rssi_signed / 2, (rssi_signed < 0 ? -rssi_signed : rssi_signed) & 0b1 ? 5 : 0);
 		}
 	}
 
@@ -98,7 +100,7 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			break;
 
 		case PACKET_PAIR_RESPONSE:
-			/* Gateway should never receive PAIR_RESPONSE, ignore. */
+			handle_pair_response((const pair_response_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_PAIR_CONFIRM:
@@ -106,7 +108,7 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			break;
 
 		case PACKET_PAIR_ACK:
-			/* Gateway should never receive PAIR_ACK, ignore. */
+			handle_pair_ack((const pair_ack_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_JOINED_NETWORK:
@@ -114,7 +116,7 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			break;
 
 		case PACKET_JOINED_NETWORK_ACK:
-			/* Gateway should never receive JOINED_NETWORK_ACK, ignore. */
+			handle_joined_network_ack((const joined_network_ack_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_PING_DEVICE:
@@ -130,7 +132,7 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			break;
 
 		case PACKET_DEVICE_UPDATED_ACK:
-			/* Gateway should never receive DEVICE_UPDATED_ACK, ignore. */
+			handle_device_updated_ack((const device_updated_ack_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_REPAIR_REQUEST:

@@ -7,12 +7,6 @@
 #define PRODUCT_NAME "DECT NR+ PHY MESH"
 #define FIRMWARE_VERSION 100
 
-#define MAX_DEPTH           8
-#define MAX_ANCHORS         8
-#define MAX_SENSORS         64
-#define MAX_DEVICES         512
-#define MAX_KNOWN_DEVICES   (MAX_ANCHORS + MAX_SENSORS)
-
 #define PING_TIMEOUT_MS      10 * 60 * 1000 /* 10 minutes timeout for known devices */
 #define MAX_COMM_FAILURES    3
 

@@ -63,7 +63,7 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 {
 	switch (data[0]) {
 		case PACKET_PAIR_REQUEST:
-			/* Sensor should never receive PAIR_REQUEST, ignore. */
+			handle_pair_request((const pair_request_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_PAIR_RESPONSE:
@@ -71,7 +71,7 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 			break;
 
 		case PACKET_PAIR_CONFIRM:
-			/* Sensor should never receive PAIR_CONFIRM, ignore. */
+			handle_pair_confirm((const pair_confirm_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_PAIR_ACK:
@@ -79,7 +79,7 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 			break;
 
 		case PACKET_JOINED_NETWORK:
-			/* Sensor should never receive JOINED_NETWORK, ignore. */
+			handle_joined_network((const joined_network_t *)data, sender_id, rssi_2);
 			break;
 		
 		case PACKET_JOINED_NETWORK_ACK:
@@ -95,7 +95,7 @@ static void sensor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 			break;
 
 		case PACKET_DEVICE_UPDATED:
-			/* Sensor should never receive DEVICE_UPDATED, ignore. */
+			handle_device_updated((const device_updated_t *)data, sender_id, rssi_2);
 			break;
 
 		case PACKET_DEVICE_UPDATED_ACK:

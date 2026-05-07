@@ -115,10 +115,12 @@ int storage_init(void)
 			known_route_table[i].device_id = 0xFFFF; /* Mark invalid */
 			continue;
 		}
+		LOG_WRN("Loading route entry %d %s ID:%d from storage", i, device_type_str(entry.device_type), entry.device_id);
+		known_route_table[i].device_id = entry.device_id;
 		for (int j = 0; j < entry.route_count; j++) {
 			known_route_table[i].next_device_id[j] = entry.route_info[j].next_hop_id;
+			LOG_INF("  next hop %d: ID:%d", j, known_route_table[i].next_device_id[j]);
 		}
-		LOG_WRN("Loading route entry %d %s ID:%d from storage", i, device_type_str(entry.device_type), entry.device_id);
 	}
 
 	LOG_INF("Storage init: infra=%d sensors=%d mesh=%d routes=%d",

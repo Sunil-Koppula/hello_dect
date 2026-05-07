@@ -292,7 +292,7 @@ void known_devices_tick(void)
 	for (int i = 0; i < known_device_count; i++) {
 		if ((now - known_devices[i].last_comm_ms > PING_TIMEOUT_MS) && (known_devices[i].device_type != DEVICE_TYPE_SENSOR) && !known_devices[i].is_ping_packet_sent) {
 			// Send Ping Device packet to check if device is still reachable
-			send_ping_device(known_devices[i].device_id, STATUS_SUCCESS);
+			send_ping_device(known_devices[i].device_id, DEVICE_TYPE_ANCHOR, STATUS_SUCCESS);
 			known_devices[i].is_ping_packet_sent = true;
 		}
 	}
@@ -302,7 +302,7 @@ void ping_known_devices(void)
 {
 	for (int i = 0; i < known_device_count; i++) {
 		if (known_devices[i].device_type != DEVICE_TYPE_SENSOR) {  /* Only ping non-sensor devices since sensors don't store hop/RSSI and are less critical to keep updated */
-			send_ping_device(known_devices[i].device_id, STATUS_SUCCESS);
+			send_ping_device(known_devices[i].device_id, DEVICE_TYPE_ANCHOR, STATUS_SUCCESS);
 			known_devices[i].is_ping_packet_sent = true;
 		}
 	}

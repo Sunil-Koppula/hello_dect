@@ -147,6 +147,9 @@ int tracker_add(uint16_t dst_id, uint16_t prev_id, uint8_t tracking_id,
 				psram_payload_write(i, payload, payload_len);
 			}
 
+			LOG_DBG("Tracker 0x%02x (pkt: 0x%02x) for device %d added at idx %d with timeout %d ms and max retries %d",
+				tracking_id, packet_type, dst_id, i, timeout_ms, max_retries);
+
 			return i;
 		}
 	}
@@ -185,9 +188,12 @@ void tracker_remove_by_tracking_id(uint8_t tracking_id)
 		if (index_pool[i].active && index_pool[i].tracking_id == tracking_id) {
 			index_pool[i].active = false;
 			nbtimeout_stop(&index_pool[i].timeout);
+			LOG_DBG("Tracker 0x%02x (pkt: 0x%02x) for device %d removed by tracking_id",
+				tracking_id, index_pool[i].packet_type, index_pool[i].dst_id);
 			return;
 		}
 	}
+	LOG_WRN("Tracker with tracking_id 0x%02x not found for removal", tracking_id);
 }
 
 void tracker_remove_by_dst(uint16_t dst_id, uint8_t packet_type)
@@ -198,9 +204,12 @@ void tracker_remove_by_dst(uint16_t dst_id, uint8_t packet_type)
 		    index_pool[i].packet_type == packet_type) {
 			index_pool[i].active = false;
 			nbtimeout_stop(&index_pool[i].timeout);
+			LOG_DBG("Tracker 0x%02x (pkt: 0x%02x) for device %d removed by dst_id",
+				index_pool[i].tracking_id, index_pool[i].packet_type, dst_id);
 			return;
 		}
 	}
+	LOG_WRN("Tracker with dst_id 0x%04x and packet_type 0x%02x not found for removal", dst_id, packet_type);
 }
 
 void tracker_remove_by_device(uint16_t dst_id)
@@ -209,6 +218,8 @@ void tracker_remove_by_device(uint16_t dst_id)
 		if (index_pool[i].active && index_pool[i].dst_id == dst_id) {
 			index_pool[i].active = false;
 			nbtimeout_stop(&index_pool[i].timeout);
+			LOG_DBG("Tracker 0x%02x (pkt: 0x%02x) for device %d removed by device",
+				index_pool[i].tracking_id, index_pool[i].packet_type, dst_id);
 		}
 	}
 }
