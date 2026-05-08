@@ -245,6 +245,7 @@ typedef struct {
 typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t data_id;				/* ID of the data being sent (for the sender's reference, e.g. to match with ACKs) */
 	uint16_t total_size;			/* total size of the data being sent (can be larger than what fits in one packet) */
 	uint8_t chunk_count;			/* total number of chunks that will be sent */
 	uint8_t last_chunk_size;		/* size of the last chunk (since it may be smaller than the others) */
@@ -257,15 +258,17 @@ typedef struct {
 typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t data_id;				/* ID of the data being acknowledged */
 } __attribute__((packed)) data_init_ack_t;
 
 #define DATA_INIT_ACK_PACKET_SIZE sizeof(data_init_ack_t)
 
-#define SEND_DATA_MAX 184 /* Max data size per chunk: keeps data_chunk_t (190 B with 10 B header overhead) within 14 DECT subslots @ MCS 2 with margin. */
+#define SEND_DATA_MAX 180 /* Max data size per chunk: keeps data_chunk_t (190 B with 10 B header overhead) within 14 DECT subslots @ MCS 2 with margin. */
 /* DATA CHUNK Packet */
 typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t data_id;				/* ID of the data being sent (for the sender's reference, e.g. to match with ACKs) */
 	uint8_t chunk_index;			/* index of this chunk (starting from 0) */
 	uint8_t data[SEND_DATA_MAX];	/* chunk data */
 } __attribute__((packed)) data_chunk_t;
@@ -276,6 +279,7 @@ typedef struct {
 typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t data_id;				/* ID of the data being acknowledged */
 	uint8_t chunk_index;			/* index of the chunk being acknowledged */
 } __attribute__((packed)) data_chunk_ack_t;
 

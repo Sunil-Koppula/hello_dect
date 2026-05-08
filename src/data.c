@@ -33,6 +33,7 @@ struct data_slot {
 	bool     active;
 	bool	 upstream_ready;
 	uint16_t gen_device_id;
+	uint8_t data_id;
 	uint8_t  priority;
 	uint16_t total_size;
 	uint8_t  chunk_count;
@@ -50,10 +51,10 @@ static uint32_t slot_psram_addr(int idx)
 	return DATA_PSRAM_BASE + ((uint32_t)idx * DATA_MAX_TRANSFER_SIZE);
 }
 
-static int find_slot(uint16_t gen_device_id, uint8_t priority)
+static int find_slot(uint16_t gen_device_id, uint8_t data_id)
 {
 	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
-		if (slots[i].active && slots[i].gen_device_id == gen_device_id && slots[i].priority == priority) {
+		if (slots[i].active && slots[i].gen_device_id == gen_device_id && slots[i].data_id == data_id) {
 			if (slots[i].upstream_ready) {
 				return -2; // Special code meaning "slot already active and ready for upstream
 			}
@@ -87,13 +88,14 @@ static uint8_t chunk_size_for(uint8_t chunk_idx)
 	return SEND_DATA_MAX;
 }
 
-static int send_next_chunk(void)
+static int send_next_chunk(uint16_t dst_id, uint8_t dst_type)
 {
 	uint8_t idx = sender.next_chunk;
 	uint8_t csz = chunk_size_for(idx);
 
 	memset(&chunk_pkt, 0, sizeof(chunk_pkt));
 	chunk_pkt.gen_device_id = sender.gen_device_id;
+	chunk_pkt.data_id = sender.data_id;
 	chunk_pkt.chunk_index = idx;
 
 	uint32_t addr = slot_psram_addr(0) + (uint32_t)idx * SEND_DATA_MAX;
@@ -104,118 +106,29 @@ static int send_next_chunk(void)
 		return err;
 	}
 
-	send_data_chunk(sender.dst_id, sender.priority, &chunk_pkt);
-	LOG_INF("Sending DATA_CHUNK to ID:%d (Chunk: %d, Size: %d)", sender.dst_id, idx, csz);
+	send_data_chunk(&chunk_pkt, dst_id, dst_type, sender.priority);
 	sender.next_chunk = idx + 1;
 	return 0;
 }
 
-/* ===== TX builders ===== */
-
-int send_data_init(uint16_t dst_id, uint8_t priority, data_init_t *pkt)
+static uint8_t validate_slot(const data_init_t *pkt)
 {
-	pkt->hdr.packet_type = PACKET_DATA_INIT;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
-	pkt->hdr.priority = priority;
-	pkt->hdr.tracking_id = tracker_next_id();
-	pkt->hdr.device_id = dst_id;
-
-	// Add tracker entry for retries
-	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_INIT, DATA_RETRY_TIMEOUT_MS, DATA_MAX_RETRIES, pkt, sizeof(*pkt));
-
-	LOG_INF("----> Sending DATA_INIT to device %s ID:%d for SENSOR ID:%d", device_type_str(PRODUCT_DEVICE_TYPE), dst_id, pkt->gen_device_id);
-	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
-}
-
-int send_data_init_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_init_ack_t *pkt)
-{
-	pkt->hdr.packet_type = PACKET_DATA_INIT_ACK;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
-	pkt->hdr.priority = priority;
-	pkt->hdr.tracking_id = tracking_id;
-	pkt->hdr.device_id = dst_id;
-
-	LOG_INF("----> Sending DATA_INIT_ACK to device %s ID:%d for SENSOR ID:%d", device_type_str(PRODUCT_DEVICE_TYPE), dst_id, pkt->gen_device_id);
-	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
-}
-
-int send_data_chunk(uint16_t dst_id, uint8_t priority, data_chunk_t *pkt)
-{
-	pkt->hdr.packet_type = PACKET_DATA_CHUNK;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
-	pkt->hdr.priority = priority;
-	pkt->hdr.tracking_id = tracker_next_id();
-	pkt->hdr.device_id = dst_id;
-
-	// Add tracker entry for retries
-	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_CHUNK, DATA_RETRY_TIMEOUT_MS, DATA_MAX_RETRIES, pkt, sizeof(*pkt));
-
-	LOG_INF("----> Sending DATA_CHUNK to device %s ID:%d for SENSOR ID:%d (Chunk: %d, Size: %d)", device_type_str(PRODUCT_DEVICE_TYPE), dst_id, pkt->gen_device_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index));
-	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
-}
-
-int send_data_chunk_ack(uint16_t dst_id, uint8_t priority, uint8_t tracking_id, data_chunk_ack_t *pkt)
-{
-	pkt->hdr.packet_type = PACKET_DATA_CHUNK_ACK;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
-	pkt->hdr.priority = priority;
-	pkt->hdr.tracking_id = tracking_id;
-	pkt->hdr.device_id = dst_id;
-
-	LOG_INF("----> Sending DATA_CHUNK_ACK to device %s ID:%d for SENSOR ID:%d (Chunk: %d)", device_type_str(PRODUCT_DEVICE_TYPE), dst_id, pkt->gen_device_id, pkt->chunk_index);
-	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
-}
-
-/* ===== RX handlers ===== */
-
-void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
-{
-	if (pkt->hdr.device_id != radio_get_device_id()) {
-		return;
-	}
-
-	if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
-		LOG_WRN("Received DATA_INIT from gateway ID:%d — ignoring", dst_id);
-		return;
-	}
-
-	LOG_INF("DATA_INIT from %s ID:%d gen %d prio %d size %u chunks %u crc 0x%08x",
-		device_type_str(pkt->hdr.device_type), dst_id,
-		pkt->gen_device_id, pkt->hdr.priority,
-		pkt->total_size, pkt->chunk_count, pkt->crc32);
-
-	data_init_ack_t ack = {
-		.gen_device_id = pkt->gen_device_id,
-	};
-
-	if (pkt->total_size == 0 || pkt->total_size > DATA_MAX_TRANSFER_SIZE ||
-	    pkt->chunk_count == 0 || pkt->chunk_count > DATA_MAX_CHUNKS ||
-	    pkt->last_chunk_size == 0 || pkt->last_chunk_size > SEND_DATA_MAX) {
-		LOG_WRN("DATA_INIT rejected: invalid size/chunk params");
-		ack.hdr.status = STATUS_INVALID_PARAMETER;
-		send_data_init_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
-		return;
-	}
-
 	int idx = find_slot(pkt->gen_device_id, pkt->hdr.priority);
 	if (idx < 0) {
 		if (idx == -2) {
 			LOG_WRN("DATA_INIT rejected: slot already active and ready for upstream for gen %d prio %d", pkt->gen_device_id, pkt->hdr.priority);
-			ack.hdr.status = STATUS_ALREADY_EXISTS;
-			send_data_init_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
-			return;
+			return STATUS_ALREADY_EXISTS;
 		}
 		idx = alloc_slot();
 		if (idx < 0) {
 			LOG_WRN("DATA_INIT rejected: no free slot");
-			ack.hdr.status = STATUS_RESOURCE_UNAVAILABLE;
-			send_data_init_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
-			return;
+			return STATUS_RESOURCE_UNAVAILABLE;
 		}
 
 		slots[idx].active = true;
 		slots[idx].upstream_ready = false;
 		slots[idx].gen_device_id = pkt->gen_device_id;
+		slots[idx].data_id = pkt->data_id;
 		slots[idx].priority = pkt->hdr.priority;
 		slots[idx].total_size = pkt->total_size;
 		slots[idx].chunk_count = pkt->chunk_count;
@@ -228,190 +141,409 @@ void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
 	nbtimeout_start(&slots[idx].idle_timeout);
 
-	ack.hdr.status = STATUS_SUCCESS;
-	send_data_init_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
+	return STATUS_SUCCESS;
+}
+
+static uint8_t validate_data_chunk(const data_chunk_t *pkt)
+{
+	int idx = find_slot(pkt->gen_device_id, pkt->data_id);
+	if (idx < 0) {
+		LOG_WRN("DATA_CHUNK rejected: no active slot for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
+		return STATUS_NOT_FOUND;
+	}
+
+	if (pkt->chunk_index >= slots[idx].chunk_count) {
+		LOG_WRN("DATA_CHUNK rejected: invalid chunk index %d (total chunks %d)", pkt->chunk_index, slots[idx].chunk_count);
+		return STATUS_INVALID_PARAMETER;
+	}
+
+	if (slots[idx].received[pkt->chunk_index]) {
+		LOG_WRN("DATA_CHUNK rejected: chunk index %d already received for gen %d data_id %d", pkt->chunk_index, pkt->gen_device_id, pkt->data_id);
+		return STATUS_ALREADY_EXISTS;
+	}
+
+	bool already_recieved = slots[idx].received[pkt->chunk_index];
+
+	if(!already_recieved) {
+		uint8_t csz = (pkt->chunk_index == slots[idx].chunk_count - 1) ? slots[idx].last_chunk_size : SEND_DATA_MAX;
+		uint32_t addr = slot_psram_addr(idx) + (uint32_t)pkt->chunk_index * SEND_DATA_MAX;
+		int err = psram_write(addr, pkt->data, csz);
+		if (err) {
+			LOG_ERR("psram_write @0x%06x failed (%d), aborting transfer", addr, err);
+			return STATUS_FAILURE;
+		}
+		slots[idx].received[pkt->chunk_index] = true;
+		slots[idx].received_count++;
+	}
+
+	nbtimeout_start(&slots[idx].idle_timeout);
+
+	if (slots[idx].received_count == slots[idx].chunk_count) {
+		// All chunks received, verify CRC
+		uint32_t base_addr = slot_psram_addr(idx);
+		uint32_t crc = 0;
+		uint32_t bytes_remaining = slots[idx].total_size;
+		uint16_t offset = 0;
+		bool first_stage = true;
+
+		while (bytes_remaining > 0) {
+			uint16_t n = (bytes_remaining > CRC_VERIFY_STAGE_SIZE) ? CRC_VERIFY_STAGE_SIZE : bytes_remaining;
+			int err = psram_read(base_addr + offset, crc_stage, n);
+			if (err) {
+				LOG_ERR("Transfer complete but psram_read @0x%06x failed (%d), freeing slot", base_addr + offset, err);
+				slot_free(idx);
+				return STATUS_CRC_FAIL;
+			}
+			crc = first_stage ? crc32_ieee(crc_stage, n) : crc32_ieee_update(crc, crc_stage, n);
+			first_stage = false;
+			offset += n;
+			bytes_remaining -= n;
+		}
+
+		if (crc == slots[idx].crc32) {
+			LOG_INF("CRC match for gen %d data_id %d, transfer complete", pkt->gen_device_id, pkt->data_id);
+			slots[idx].upstream_ready = true;
+			nbtimeout_stop(&slots[idx].idle_timeout);
+		} else {
+			LOG_ERR("CRC mismatch for gen %d data_id %d: expected 0x%08x computed 0x%08x, freeing slot", pkt->gen_device_id, pkt->data_id, slots[idx].crc32, crc);
+			slot_free(idx);
+			return STATUS_CRC_FAIL;
+		}
+	}
+	return STATUS_SUCCESS;
+}
+
+/* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------------**** TX Helpers ****------------------------------------------------------------------------------- */
+
+int send_data_init(data_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
+{
+	pkt->hdr.packet_type = PACKET_DATA_INIT;
+	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.priority = priority;
+	pkt->hdr.tracking_id = tracker_next_id();
+	pkt->hdr.device_id = dst_id;
+
+	// Add tracker entry for retries
+	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_INIT, DATA_RETRY_TIMEOUT_MS, DATA_MAX_RETRIES, pkt, sizeof(*pkt));
+
+	LOG_INF("----> Sending DATA_INIT to device %s ID:%d for SENSOR ID:%d", device_type_str(dst_type), dst_id, pkt->gen_device_id);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+int send_data_init_ack(data_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
+{
+	pkt->hdr.packet_type = PACKET_DATA_INIT_ACK;
+	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.priority = priority;
+	pkt->hdr.tracking_id = tracking_id;
+	pkt->hdr.device_id = dst_id;
+
+	LOG_INF("----> Sending DATA_INIT_ACK to device %s ID:%d for SENSOR ID:%d", device_type_str(dst_type), dst_id, pkt->gen_device_id);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+int send_data_chunk(data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
+{
+	pkt->hdr.packet_type = PACKET_DATA_CHUNK;
+	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.priority = priority;
+	pkt->hdr.tracking_id = tracker_next_id();
+	pkt->hdr.device_id = dst_id;
+
+	// Add tracker entry for retries
+	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_CHUNK, DATA_RETRY_TIMEOUT_MS, DATA_MAX_RETRIES, pkt, sizeof(*pkt));
+
+	LOG_INF("----> Sending DATA_CHUNK to device %s ID:%d for SENSOR ID:%d (Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index));
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+int send_data_chunk_ack(data_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
+{
+	pkt->hdr.packet_type = PACKET_DATA_CHUNK_ACK;
+	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.priority = priority;
+	pkt->hdr.tracking_id = tracking_id;
+	pkt->hdr.device_id = dst_id;
+
+	LOG_INF("----> Sending DATA_CHUNK_ACK to device %s ID:%d for SENSOR ID:%d (Chunk: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->chunk_index);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+/* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------**** Handlers Functions ****--------------------------------------------------------------------------- */
+
+void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+	// Only Process if it's for this device
+	if (pkt->hdr.device_id != radio_get_device_id()) {
+		return;
+	}
+
+	// Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in DATA_INIT from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+	LOG_INF("Received DATA_INIT from %s ID:%d for SENSOR ID:%d gen %d prio %d size %u chunks %u crc 0x%08x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id,
+		pkt->gen_device_id, pkt->hdr.priority, pkt->total_size, pkt->chunk_count, pkt->crc32);
+
+	data_init_ack_t ack = {
+		.gen_device_id = pkt->gen_device_id,
+	};
+	
+	if (pkt->total_size == 0 || pkt->total_size > DATA_MAX_TRANSFER_SIZE || pkt->chunk_count == 0 || pkt->chunk_count > DATA_MAX_CHUNKS || pkt->last_chunk_size == 0 || pkt->last_chunk_size > SEND_DATA_MAX) {
+		LOG_WRN("DATA_INIT rejected: invalid size/chunk params");
+		ack.hdr.status = STATUS_INVALID_PARAMETER;
+		send_data_init_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
+		return;
+	}
+
+	switch (PRODUCT_DEVICE_TYPE) {
+		case DEVICE_TYPE_GATEWAY:
+		case DEVICE_TYPE_ANCHOR:
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+				// Check there is already an active slot or free slot for this incoming data init, if not reject the packet
+				uint8_t status = validate_slot(pkt);
+				ack.hdr.status = status;
+			} else {
+				// Reject data init except from anchor and sensor
+				return;
+			}
+		}
+		break;
+
+		case DEVICE_TYPE_SENSOR:
+		{
+			// Sensor's will not process or transfer any data, so reject any incoming data init 
+		}
+		break;
+
+		default:
+		{
+			// There are only 3 valid device types, reject any data init if this device has invalid type
+			return;
+		}
+		break;
+
+	}
+	
+	send_data_init_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
+
+	return;
 }
 
 void handle_data_init_ack(const data_init_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
+	// Only Process if it's for this device
 	if (pkt->hdr.device_id != radio_get_device_id()) {
 		return;
 	}
+
+	// Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in DATA_INIT_ACK from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
 	
-	LOG_INF("DATA_INIT_ACK from %s ID:%d gen %d prio %d status 0x%02x",
-		device_type_str(pkt->hdr.device_type), dst_id,
-		pkt->gen_device_id, pkt->hdr.priority, pkt->hdr.status);
+	LOG_INF("Received DATA_INIT_ACK from %s ID:%d gen %d prio %d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->hdr.priority, pkt->hdr.status);
 
 	// Remove tracker
-	tracker_remove_by_dst(dst_id, PACKET_DATA_INIT);
-	
-	switch (pkt->hdr.device_type) {
-		case DEVICE_TYPE_GATEWAY:
-			LOG_WRN("Received DATA_INIT_ACK from gateway ID:%d — ignoring", dst_id);
-			return;
+	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
+	switch (PRODUCT_DEVICE_TYPE) {
+		case DEVICE_TYPE_GATEWAY:
+		{
+			// Gateway will never receive data init ack because only anchor and sensor can receive data init ack, so just ignore if received
+			return;
+		}
+		break;
+
+		case DEVICE_TYPE_SENSOR:
 		case DEVICE_TYPE_ANCHOR:
-			LOG_INF("Received DATA_INIT_ACK from %s ID:%d for device %d: status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->hdr.status);
-			if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
-				// Upstream the Data Chunks if status is success or already exists (in case of retry)
-				if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
-					// get the data from PSRAM to forward
-				} else {
-					LOG_WRN("DATA_INIT_ACK failed from %s ID:%d for device %d: status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->hdr.status);
-				}
-			} else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
-				// Start sending data chunks if status is success or already exists (in case of retry)
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
 				if (pkt->hdr.status == STATUS_SUCCESS) {
+					// Start sending data chunks if status is success
 					if (!sender.active || sender.dst_id != dst_id) {
 						LOG_WRN("DATA_INIT_ACK from %d but sender inactive or dst mismatch", dst_id);
 						return;
 					}
-					send_next_chunk();
-				} else {
-					LOG_WRN("DATA_INIT_ACK failed from %s ID:%d for device %d: status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->hdr.status);
+					send_next_chunk(dst_id, pkt->hdr.device_type);
 				}
+			} else {
+				// Reject data init ack except from gateway and anchor
+				return;
 			}
+		}
+		break;
+
+		default:
+		{
+			// There are only 3 valid device types, reject any data init ack if this device has invalid type
 			return;
+		}
+		break;
 	}
 
+	return;
 }
 
 void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
+	// Only Process if it's for this device
 	if (pkt->hdr.device_id != radio_get_device_id()) {
 		return;
 	}
 
-	if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
-		LOG_WRN("Received DATA_CHUNK from gateway ID:%d — ignoring", dst_id);
-		return;
-	}
+	// Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in DATA_CHUNK from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
 
-	LOG_INF("DATA_CHUNK from %s ID:%d gen %d prio %d chunk %d",
-		device_type_str(pkt->hdr.device_type), dst_id,
-		pkt->gen_device_id, pkt->hdr.priority, pkt->chunk_index);
+	LOG_INF("Received DATA_CHUNK from %s ID:%d gen %d prio %d chunk %d", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->hdr.priority, pkt->chunk_index);
 
 	data_chunk_ack_t ack = {
 		.gen_device_id = pkt->gen_device_id,
 		.chunk_index = pkt->chunk_index,
 	};
 
-	int idx = find_slot(pkt->gen_device_id, pkt->hdr.priority);
-	if (idx < 0) {
-		LOG_WRN("DATA_CHUNK rejected: no slot for gen %d prio %d (DATA_INIT missing or expired)",
-			pkt->gen_device_id, pkt->hdr.priority);
-		ack.hdr.status = STATUS_NOT_FOUND;
-		send_data_chunk_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
-		return;
-	}
-
-	struct data_slot *s = &slots[idx];
-
-	if (pkt->chunk_index >= s->chunk_count) {
-		LOG_WRN("DATA_CHUNK rejected: chunk_index %d out of range (count %d)",
-			pkt->chunk_index, s->chunk_count);
-		ack.hdr.status = STATUS_INVALID_PARAMETER;
-		send_data_chunk_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
-		return;
-	}
-
-	bool already = s->received[pkt->chunk_index];
-
-	if (!already) {
-		uint8_t csz = (pkt->chunk_index == s->chunk_count - 1)
-				? s->last_chunk_size : SEND_DATA_MAX;
-		uint32_t addr = slot_psram_addr(idx) + (uint32_t)pkt->chunk_index * SEND_DATA_MAX;
-		int err = psram_write(addr, pkt->data, csz);
-		if (err) {
-			LOG_ERR("DATA_CHUNK psram_write @0x%06x failed (%d)", addr, err);
-			ack.hdr.status = STATUS_FAILURE;
-			send_data_chunk_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
-			return;
-		}
-		s->received[pkt->chunk_index] = true;
-		s->received_count++;
-	}
-
-	nbtimeout_start(&s->idle_timeout);
-	ack.hdr.status = STATUS_SUCCESS;
-
-	if (s->received_count == s->chunk_count) {
-		uint32_t base = slot_psram_addr(idx);
-		uint32_t crc = 0;
-		uint16_t remaining = s->total_size;
-		uint16_t off = 0;
-		bool first = true;
-
-		while (remaining > 0) {
-			uint16_t n = remaining > CRC_VERIFY_STAGE_SIZE
-					? CRC_VERIFY_STAGE_SIZE : remaining;
-			int err = psram_read(base + off, crc_stage, n);
-			if (err) {
-				LOG_ERR("Transfer complete but psram_read @0x%06x failed (%d), freeing slot",
-					base + off, err);
-				slot_free(idx);
+	switch (PRODUCT_DEVICE_TYPE)
+	{
+		case DEVICE_TYPE_GATEWAY:
+		case DEVICE_TYPE_ANCHOR:
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+				// Check the incoming data chunk is valid for an active slot, if not reject the packet
+				uint8_t status = validate_data_chunk(pkt);
+				ack.hdr.status = status;
+			} else {
+				// Reject data chunk except from anchor and sensor
 				return;
 			}
-			crc = first ? crc32_ieee(crc_stage, n)
-				    : crc32_ieee_update(crc, crc_stage, n);
-			first = false;
-			off += n;
-			remaining -= n;
 		}
-
-		if (crc == s->crc32) {
-			LOG_INF("Transfer complete: gen %d, %u bytes, CRC OK (0x%08x)",
-				s->gen_device_id, s->total_size, crc);
-			// mark slot as ready for upstream (e.g. to forward to gateway if this is an anchor)
-			s->upstream_ready = true;
-			nbtimeout_stop(&s->idle_timeout);
-		} else {
-			LOG_ERR("Transfer complete: gen %d, %u bytes, CRC FAIL (got 0x%08x exp 0x%08x)",
-				s->gen_device_id, s->total_size, crc, s->crc32);
-			ack.hdr.status = STATUS_CRC_FAIL;
+		break;
+		
+		default:
+		{
+			// There are only 3 valid device types, reject any data chunk if this device has invalid type
+			return;
 		}
-		/* TODO(anchor): if PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR, kick off
-		 * forward DATA_INIT to the upstream parent here. The forward sender
-		 * will pull each chunk straight from this PSRAM slot via psram_read
-		 * into the outgoing data_chunk_t.data (no full-buffer SRAM staging).
-		 * Defer slot_free() until the forward transfer completes. */
+		break;
 	}
-	send_data_chunk_ack(dst_id, pkt->hdr.priority, pkt->hdr.tracking_id, &ack);
+	
+	send_data_chunk_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
+
+	// Send Data Recieved Packet to Sensor
+	int idx = find_slot(pkt->gen_device_id, pkt->data_id);
+	if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY && idx == -2) {
+		// Implement Data Received Packet.
+		LOG_ERR("Need to Send Data Received Packet to Sensor for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
+	} else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR && idx == -2) {
+		// Need to Upstream the data
+		LOG_ERR("Need to Upstream data for gen SENSOR ID:%d data_id %d", pkt->gen_device_id, pkt->data_id);
+	}
+
+	return;
 }
 
 void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
+	// Only Process if it's for this device
 	if (pkt->hdr.device_id != radio_get_device_id()) {
 		return;
 	}
 
-	LOG_INF("DATA_CHUNK_ACK from %s ID:%d gen %d chunk %d status 0x%02x",
-		device_type_str(pkt->hdr.device_type), dst_id,
-		pkt->gen_device_id, pkt->chunk_index, pkt->hdr.status);
+	// Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in DATA_CHUNK_ACK from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
 
-	tracker_remove_by_dst(dst_id, PACKET_DATA_CHUNK);
+	LOG_INF("Received DATA_CHUNK_ACK from %s ID:%d gen %d chunk %d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->chunk_index, pkt->hdr.status);
 
+	// Remove tracker
+	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+	// Validate that the ack is for the current active sender transfer, if not ignore the packet
 	if (!sender.active || sender.gen_device_id != pkt->gen_device_id) {
-		LOG_WRN("DATA_CHUNK_ACK ignored: sender inactive or gen mismatch (got %d, have %d)",
-			pkt->gen_device_id, sender.gen_device_id);
+		LOG_WRN("DATA_CHUNK_ACK ignored: sender inactive or gen mismatch (got %d, have %d)", pkt->gen_device_id, sender.gen_device_id);
 		return;
 	}
 
-	if (pkt->hdr.status != STATUS_SUCCESS) {
-		LOG_ERR("DATA_CHUNK_ACK failed for chunk %d: status 0x%02x, aborting transfer",
-			pkt->chunk_index, pkt->hdr.status);
+	if (sender.next_chunk >= sender.chunk_count && pkt->hdr.status == STATUS_SUCCESS) {
+		LOG_INF("Transfer complete: %u bytes in %u chunks to ID:%d", sender.total_size, sender.chunk_count, sender.dst_id);
 		sender.active = false;
 		return;
 	}
 
-	if (sender.next_chunk >= sender.chunk_count) {
-		LOG_INF("Transfer complete: %u bytes in %u chunks to ID:%d",
-			sender.total_size, sender.chunk_count, sender.dst_id);
-		sender.active = false;
-		return;
+	switch (PRODUCT_DEVICE_TYPE)
+	{
+		case DEVICE_TYPE_GATEWAY:
+		{
+			// Gateway will never receive data chunk ack because only anchor and sensor can receive data chunk ack, so just ignore if received
+			return;
+		}
+		break;
+
+		case DEVICE_TYPE_ANCHOR:
+		case DEVICE_TYPE_SENSOR:
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+				// If status is not found, resend the data init
+				if (pkt->hdr.status == STATUS_NOT_FOUND) {
+					LOG_WRN("Received DATA_CHUNK_ACK with NOT_FOUND, resending DATA_INIT");
+					data_init_t init_pkt = {
+						.gen_device_id = sender.gen_device_id,
+						.data_id = sender.data_id,
+						.total_size = sender.total_size,
+						.chunk_count = sender.chunk_count,
+						.last_chunk_size = sender.last_chunk_size,
+						.crc32 = sender.crc32,
+					};
+					send_data_init(&init_pkt, dst_id, pkt->hdr.device_type, sender.priority);
+					return;
+				} else if (pkt->hdr.status == STATUS_ALREADY_EXISTS || pkt->hdr.status == STATUS_INVALID_PARAMETER) {
+					// Rebuild same chunk and resend
+					LOG_WRN("Received DATA_CHUNK_ACK with status 0x%02x, resending chunk %d", pkt->hdr.status, pkt->chunk_index);
+					uint8_t idx = pkt->chunk_index;
+					uint8_t csz = chunk_size_for(idx);
+					memset(&chunk_pkt, 0, sizeof(chunk_pkt));
+					chunk_pkt.gen_device_id = sender.gen_device_id;
+					chunk_pkt.data_id = sender.data_id;
+					chunk_pkt.chunk_index = idx;
+
+					uint32_t addr = slot_psram_addr(0) + (uint32_t)idx * SEND_DATA_MAX;
+					int err = psram_read(addr, chunk_pkt.data, csz);
+					if (err) {
+						LOG_ERR("psram_read @0x%06x failed (%d), aborting transfer", addr, err);
+						sender.active = false;
+						return;
+					}
+					send_data_chunk(&chunk_pkt, dst_id, pkt->hdr.device_type, sender.priority);
+				} else if (pkt->hdr.status == STATUS_SUCCESS) {
+					// Send next chunk if status is success
+					send_next_chunk(dst_id, pkt->hdr.device_type);
+				}
+			} else {
+				// Reject data chunk ack except from gateway and anchor
+				return;
+			}
+		}
+		break;
+
+		default:
+		{
+			// There are only 3 valid device types, reject any data chunk ack if this device has invalid type
+			return;
+		}
+		break;
 	}
 
-	send_next_chunk();
+	return;
 }
 
 /* ===== Module init / tick ===== */
@@ -433,6 +565,7 @@ static void build_dummy_data(uint16_t size)
 	sender.active = true;
 	sender.dst_id = PRODUCT_CONNECTED_DEVICE_ID;
 	sender.gen_device_id = radio_get_device_id();
+	sender.data_id = 0x01; // For testing purpose, data_id is hardcoded to 0x01,
 	sender.priority = PACKET_PRIORITY_MEDIUM;
 	sender.buf = NULL;  // Not used since we're writing directly to PSRAM for testing
 	sender.total_size = size;

@@ -532,6 +532,65 @@ int send_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, uint8_t ds
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------------**** Handlers Functions ****--------------------------------------------------------------------------- */
 
+static void build_route_info_and_send(uint16_t dst_id, uint8_t dst_type, const route_info_t *route, int16_t rssi_2, bool is_called_from_pair)
+{
+    infra_entry_t entry;
+    uint16_t next_hop_id[MAX_ANCHORS];;
+    uint8_t next_hop_count = 0;
+    uint16_t gateway_id = 0xFFFF;
+
+    if (is_called_from_pair) {
+        for (int i = 0; i < storage_infra_count(); i++) {
+            storage_infra_get(i, &entry);
+            if (entry.device_id != dst_id) {
+                next_hop_id[next_hop_count++] = entry.device_id;
+            }
+            if (entry.device_type == DEVICE_TYPE_GATEWAY) {
+                gateway_id = entry.device_id;
+            }
+        }
+    } else if (route != NULL) {
+        route_entry_t known_entry;
+        uint8_t idx = 0;
+        for (int i = 0; i < known_route_count; i++) {
+            if (known_route_table[i].device_id == route->device_id) {
+                for (idx = 0; idx < MAX_ANCHORS; idx++) {
+                    if (known_route_table[i].next_device_id[idx] == dst_id) {
+                        storage_route_get(i, &known_entry);
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (int i = 0; i < storage_infra_count(); i++) {
+            storage_infra_get(i, &entry);
+            if (entry.device_id != dst_id && entry.device_id != route->device_id && known_entry.route_info[idx].route_length < route->route_len) {
+                next_hop_id[next_hop_count++] = entry.device_id;
+            }
+            if (entry.device_type == DEVICE_TYPE_GATEWAY) {
+                gateway_id = entry.device_id;
+            }
+        }
+    } else {
+        LOG_ERR("The route info is null when building route info packet for device %d", dst_id);
+        return;
+    }
+
+    route_info_t forward_pkt = {
+        .device_id = is_called_from_pair ? dst_id : route->device_id,
+        .device_type = is_called_from_pair ? dst_type : route->device_type,
+        .route_len = is_called_from_pair ? 1 : (route->route_len + 1),
+        .avg_rssi_2 = is_called_from_pair ? rssi_2 : ( route->avg_rssi_2 + rssi_2) / 2,
+    };
+
+    for (int i = 0; i < next_hop_count; i++) {
+        send_route_info(&forward_pkt, next_hop_id[i], (gateway_id == next_hop_id[i]) ? DEVICE_TYPE_GATEWAY : DEVICE_TYPE_ANCHOR, (route == NULL) ? STATUS_DEVICE_JOINED : route->hdr.status);
+    }
+
+    return;
+}
+
 /* Handle received pairing request packet. */
 void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
@@ -764,6 +823,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
                         return;
                     }
                     LOG_INF("SENSOR ID:%d paired and stored (total %d)", dst_id, storage_sensor_count());
+                    update_known_devices();
                 } else if (status == STATUS_ALREADY_EXISTS) {
                     LOG_INF("SENSOR ID:%d already paired, received PAIR_CONFIRM with success", dst_id);
                 }
@@ -791,7 +851,6 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
 
     send_pair_ack(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
 
-    // ToDo: Re write this part
     // Send Route Info Request to the newly paired device if status is success
     if (status == STATUS_SUCCESS) {
         switch (PRODUCT_DEVICE_TYPE) {
@@ -803,6 +862,9 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
                     return;
                 }
                 LOG_INF("Added route for device %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id);
+
+                // Build route info packet and send to other devices in the network to update the route info for the newly paired device
+                build_route_info_and_send(dst_id, pkt->hdr.device_type, NULL, rssi_2, true);
             }
             break;
 
@@ -815,26 +877,8 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
                 }
                 LOG_INF("Added route for device %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id);
 
-                infra_entry_t entry;
-                uint16_t next_hop_id[MAX_ANCHORS];
-                uint8_t next_hop_count = 0;
-
-                for (int i = 0; i < storage_infra_count(); i++) {
-                    storage_infra_get(i, &entry);
-                    if (entry.device_id != dst_id) {
-                        next_hop_id[next_hop_count++] = entry.device_id;
-                    }
-                }
-
-                route_info_t forward_pkt = {
-                    .device_id = dst_id,
-                    .device_type = pkt->hdr.device_type,
-                    .route_len = 2,
-                    .avg_rssi_2 = rssi_2,
-                };
-                for (int i = 0; i < next_hop_count; i++) {
-                    send_route_info(&forward_pkt, next_hop_id[i], pkt->hdr.device_type, STATUS_DEVICE_JOINED);
-                }
+                // Build route info packet and send to other devices in the network to update the route info for the newly paired device
+                build_route_info_and_send(dst_id, pkt->hdr.device_type, NULL, rssi_2, true);
             }
             break;
 
@@ -953,6 +997,27 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
         if (storage_infra_count() == 1) {
             send_joined_network(&jn_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
         }
+
+        // Send Route Info Request to the newly paired device
+        switch (PRODUCT_DEVICE_TYPE) {
+            case DEVICE_TYPE_ANCHOR:
+            {
+                int err = storage_route_add(dst_id, dst_id, pkt->hdr.device_type, 1, rssi_2);
+                if (err) {
+                    LOG_ERR("Failed to add route for device %s ID:%d, err %d", device_type_str(pkt->hdr.device_type), dst_id, err);
+                    return;
+                }
+                LOG_INF("Added route for device %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id);
+
+                // Build route info packet and send to other devices in the network to update the route info for the newly paired device
+                build_route_info_and_send(dst_id, pkt->hdr.device_type, NULL, rssi_2, true);
+            }
+            break;
+
+            default:
+                break; 
+        }
+
     } else if (status == STATUS_ALREADY_EXISTS) {
         LOG_INF("%s ID:%d already paired, received PAIR_ACK with success", device_type_str(pkt->hdr.device_type), dst_id);
     } else if (status == STATUS_STORAGE_FULL) {
@@ -1070,7 +1135,7 @@ void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id,
         return;
     }
 
-    LOG_INF("----> Received JOINED_NETWORK_ACK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->dst_device_id), pkt->dst_device_id, (rssi_2 / 2), pkt->hdr.status);
+    LOG_INF("----> Received JOINED_NETWORK_ACK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id, (rssi_2 / 2), pkt->hdr.status);
 
     // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
     if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
@@ -1112,12 +1177,13 @@ void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id,
                 sender.dst_id = dst_id;
                 data_init_t data_pkt = {
                     .gen_device_id = sender.gen_device_id,
+                    .data_id = 0x01, // For testing purpose, data_id is hardcoded to 0x01, 
                     .total_size = sender.total_size,
                     .chunk_count = sender.chunk_count,
                     .last_chunk_size = sender.last_chunk_size,
                     .crc32 = sender.crc32,
                 };
-                send_data_init(dst_id, sender.priority, &data_pkt);
+                send_data_init(&data_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
                 return;
             } else {
                 // Reject joined network ack except from anchor and gateway
@@ -1529,7 +1595,7 @@ void handle_repair_request(const repair_request_t *pkt, uint16_t dst_id, int16_t
 
     if (pkt->hash != expected_hash) {
         LOG_WRN("REPAIR_REQUEST hash mismatch from %s ID:%d (got 0x%08x, expected 0x%08x)", device_type_str(pkt->hdr.device_type), dst_id, pkt->hash, expected_hash);
-        send_repair_response(dst_id, pkt->hdr.tracking_id, pkt->hdr.device_type, STATUS_AUTH_FAILED);
+        send_repair_response(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, STATUS_AUTH_FAILED);
         return;
     }
 
@@ -1569,7 +1635,7 @@ void handle_repair_request(const repair_request_t *pkt, uint16_t dst_id, int16_t
         break;
     }
 
-    send_repair_response(dst_id, pkt->hdr.tracking_id, pkt->hdr.device_type, status);
+    send_repair_response(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
 
     return;
 }
@@ -1708,32 +1774,7 @@ void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
     switch (PRODUCT_DEVICE_TYPE) {
         case DEVICE_TYPE_GATEWAY:
         {
-            if (route->hdr.device_type == DEVICE_TYPE_ANCHOR || route->hdr.device_type == DEVICE_TYPE_SENSOR) {
-                // Update the route info based on status
-                if (route->hdr.status == STATUS_DEVICE_JOINED) {
-                    err = storage_route_add(dst_id, route->device_id, route->device_type, route->route_len, (route->avg_rssi_2 + rssi_2) / 2);
-                    if (err) {
-                        LOG_ERR("Failed to add route for device %s ID:%d, err %d", device_type_str(route->hdr.device_type), route->device_id, err);
-                        status = STATUS_FAILURE;
-                    }
-                    LOG_INF("Added route for device %s ID:%d via %d", device_type_str(route->hdr.device_type), route->device_id, dst_id);
-                    status = STATUS_SUCCESS;
-                } else if (route->hdr.status == STATUS_DEVICE_REMOVED) {
-                    err = storage_route_remove(dst_id, route->device_id);
-                    if (err) {
-                        LOG_ERR("Failed to remove route for device %s ID:%d, err %d", device_type_str(route->hdr.device_type), route->device_id, err);
-                        status = STATUS_FAILURE;
-                    }
-                    LOG_INF("Removed route for device %s ID:%d via %d", device_type_str(route->hdr.device_type), route->device_id, dst_id);
-                    status = STATUS_SUCCESS;
-                }
-            }
-        }
-        break;
-
-        case DEVICE_TYPE_ANCHOR:
-        {
-            if (route->hdr.device_type == DEVICE_TYPE_ANCHOR || route->hdr.device_type == DEVICE_TYPE_SENSOR) {
+            if (route->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 // Update the route info based on status
                 if (route->hdr.status == STATUS_DEVICE_JOINED) {
                     err = storage_route_add(dst_id, route->device_id, route->device_type, route->route_len, (route->avg_rssi_2 + rssi_2) / 2);
@@ -1755,40 +1796,37 @@ void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
                 // Pass the route info to upstream devices if the route is updated successfully
                 if (status == STATUS_SUCCESS) {
-                    infra_entry_t entry;
-                    uint16_t next_hop_id[MAX_ANCHORS];
-                    uint8_t next_hop_count = 0;
+                    build_route_info_and_send(dst_id, route->hdr.device_type, route, rssi_2, false);
+                }
+            }
+        }
+        break;
 
-                    route_entry_t known_entry;
-                    uint8_t idx = 0;
-                    for (int i = 0; i < known_route_count; i++) {
-                        if (known_route_table[i].device_id == route->device_id) {
-                            for (idx = 0; idx < MAX_ANCHORS; idx++) {
-                                if (known_route_table[i].next_device_id[idx] == dst_id) {
-                                    storage_route_get(i, &known_entry);
-                                    break;
-                                }
-                            }
-                        }
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (route->hdr.device_type == DEVICE_TYPE_ANCHOR || route->hdr.device_type == DEVICE_TYPE_GATEWAY) {
+                // Update the route info based on status
+                if (route->hdr.status == STATUS_DEVICE_JOINED) {
+                    err = storage_route_add(dst_id, route->device_id, route->device_type, route->route_len, (route->avg_rssi_2 + rssi_2) / 2);
+                    if (err) {
+                        LOG_ERR("Failed to add route for device %s ID:%d, err %d", device_type_str(route->hdr.device_type), route->device_id, err);
+                        status = STATUS_FAILURE;
                     }
+                    LOG_INF("Added route for device %s ID:%d via %d", device_type_str(route->hdr.device_type), route->device_id, dst_id);
+                    status = STATUS_SUCCESS;
+                } else if (route->hdr.status == STATUS_DEVICE_REMOVED) {
+                    err = storage_route_remove(dst_id, route->device_id);
+                    if (err) {
+                        LOG_ERR("Failed to remove route for device %s ID:%d, err %d", device_type_str(route->hdr.device_type), route->device_id, err);
+                        status = STATUS_FAILURE;
+                    }
+                    LOG_INF("Removed route for device %s ID:%d via %d", device_type_str(route->hdr.device_type), route->device_id, dst_id);
+                    status = STATUS_SUCCESS;
+                }
 
-                    for (int i = 0; i < storage_infra_count(); i++) {
-                        storage_infra_get(i, &entry);
-                        if (entry.device_id != dst_id && entry.device_id != route->device_id && known_entry.route_info[idx].route_length < route->route_len) {
-                            next_hop_id[next_hop_count++] = entry.device_id;
-                        }
-                    }
-
-                    route_info_t forward_pkt = {
-                        .device_id = route->device_id,
-                        .device_type = route->device_type,
-                        .route_len = route->route_len + 1,
-                        .avg_rssi_2 = (route->avg_rssi_2 + rssi_2) / 2,
-                    };
-                    for (int i = 0; i < next_hop_count; i++) {
-                        LOG_INF("Forwarded ROUTE_INFO for device %s ID:%d to next hop %d", device_type_str(route->hdr.device_type), route->device_id, next_hop_id[i]);
-                        send_route_info(&forward_pkt, next_hop_id[i], route->hdr.device_type, route->hdr.status);
-                    }
+                // Pass the route info to upstream devices if the route is updated successfully
+                if (status == STATUS_SUCCESS) {
+                    build_route_info_and_send(dst_id, route->hdr.device_type, route, rssi_2, false);
                 }
             } 
         }
@@ -1820,7 +1858,7 @@ void handle_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, int16_t
         return;
     }
 
-    LOG_INF("----> Received ROUTE_INFO_ACK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(ack->hdr.device_type), dst_id, device_type_str(ack->device_id), ack->device_id, (rssi_2 / 2), ack->hdr.status);
+    LOG_INF("----> Received ROUTE_INFO_ACK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(ack->hdr.device_type), dst_id, device_type_str(ack->device_type), ack->device_id, (rssi_2 / 2), ack->hdr.status);
 
     /* Remove the tracker. */
     tracker_remove_by_tracking_id(ack->hdr.tracking_id);
