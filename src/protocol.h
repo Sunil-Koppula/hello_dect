@@ -285,6 +285,43 @@ typedef struct {
 
 #define DATA_CHUNK_ACK_PACKET_SIZE sizeof(data_chunk_ack_t)
 
+/* DATA RECEIVED Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t data_id;				/* ID of the data being received */
+} __attribute__((packed)) data_receive_t;
+
+#define DATA_RECEIVE_PACKET_SIZE sizeof(data_receive_t)
+
+/* CONFIG Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t dst_device_id;			/* short device ID of the device being configured */
+	uint8_t dst_device_type;		/* device_type_t of the device being configured */
+	uint8_t config[SEND_DATA_MAX];	/* config data */
+} __attribute__((packed)) config_t;
+
+#define CONFIG_PACKET_SIZE sizeof(config_t)
+
+/* CONFIG ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t dst_device_id;			/* short device ID of the device being configured */
+	uint8_t dst_device_type;		/* device_type_t of the device being configured */
+} __attribute__((packed)) config_ack_t;
+
+#define CONFIG_ACK_PACKET_SIZE sizeof(config_ack_t)
+
+/* CONFIG RECEIVED Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t dst_device_id;			/* short device ID of the device being configured */
+	uint8_t dst_device_type;		/* device_type_t of the device being configured */
+} __attribute__((packed)) config_received_t;
+
+#define CONFIG_RECEIVED_PACKET_SIZE sizeof(config_received_t)
+
 /* Get device type as string */
 static inline const char *device_type_str(device_type_t type)
 {

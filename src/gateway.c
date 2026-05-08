@@ -167,6 +167,22 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			handle_data_chunk_ack((const data_chunk_ack_t *)data, sender_id, rssi_2);
 			break;
 
+		case PACKET_DATA_RECEIVED:
+			handle_data_received((const data_receive_t *)data, sender_id, rssi_2);
+			break;
+		
+		case PACKET_CONFIG:
+			handle_config((const config_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_CONFIG_ACK:
+			handle_config_ack((const config_ack_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_CONFIG_RECEIVED:
+			handle_config_recieved((const config_t *)data, sender_id, rssi_2);
+			break;
+
 		default:
 			break;
 	}

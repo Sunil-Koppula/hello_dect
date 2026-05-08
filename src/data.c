@@ -51,16 +51,19 @@ static uint32_t slot_psram_addr(int idx)
 	return DATA_PSRAM_BASE + ((uint32_t)idx * DATA_MAX_TRANSFER_SIZE);
 }
 
-static int find_slot(uint16_t gen_device_id, uint8_t data_id)
+static int find_slot(uint16_t gen_device_id, uint8_t data_id, int *idx_out)
 {
 	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
 		if (slots[i].active && slots[i].gen_device_id == gen_device_id && slots[i].data_id == data_id) {
 			if (slots[i].upstream_ready) {
+				*idx_out = i;
 				return -2; // Special code meaning "slot already active and ready for upstream
 			}
+			*idx_out = i;
 			return i;
 		}
 	}
+	*idx_out = -1;
 	return -1;
 }
 
@@ -113,9 +116,10 @@ static int send_next_chunk(uint16_t dst_id, uint8_t dst_type)
 
 static uint8_t validate_slot(const data_init_t *pkt)
 {
-	int idx = find_slot(pkt->gen_device_id, pkt->hdr.priority);
-	if (idx < 0) {
-		if (idx == -2) {
+	int idx;
+	int ret = find_slot(pkt->gen_device_id, pkt->hdr.priority, &idx);
+	if (ret < 0) {
+		if (ret == -2) {
 			LOG_WRN("DATA_INIT rejected: slot already active and ready for upstream for gen %d prio %d", pkt->gen_device_id, pkt->hdr.priority);
 			return STATUS_ALREADY_EXISTS;
 		}
@@ -146,8 +150,9 @@ static uint8_t validate_slot(const data_init_t *pkt)
 
 static uint8_t validate_data_chunk(const data_chunk_t *pkt)
 {
-	int idx = find_slot(pkt->gen_device_id, pkt->data_id);
-	if (idx < 0) {
+	int idx;
+	int ret = find_slot(pkt->gen_device_id, pkt->data_id, &idx);
+	if (ret < 0) {
 		LOG_WRN("DATA_CHUNK rejected: no active slot for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
 		return STATUS_NOT_FOUND;
 	}
@@ -267,6 +272,54 @@ int send_data_chunk_ack(data_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type
 	pkt->hdr.device_id = dst_id;
 
 	LOG_INF("----> Sending DATA_CHUNK_ACK to device %s ID:%d for SENSOR ID:%d (Chunk: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->chunk_index);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+int send_data_received(data_receive_t *pkt, uint16_t dst_id, uint8_t dst_type)
+{
+	pkt->hdr.packet_type = PACKET_DATA_RECEIVED;
+	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.priority = PACKET_PRIORITY_HIGH;
+	pkt->hdr.tracking_id = tracker_next_id();
+	pkt->hdr.device_id = dst_id;
+
+	LOG_INF("----> Sending DATA_RECEIVED to device %s ID:%d for SENSOR ID:%d data_id %d", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
+{
+	pkt->hdr.packet_type = PACKET_CONFIG;
+	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.priority = priority;
+	pkt->hdr.tracking_id = tracker_next_id();
+	pkt->hdr.device_id = dst_id;
+
+	LOG_INF("----> Sending CONFIG to device %s ID:%d", device_type_str(dst_type), dst_id);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
+{
+	pkt->hdr.packet_type = PACKET_CONFIG_ACK;
+	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.priority = priority;
+	pkt->hdr.tracking_id = tracking_id;
+	pkt->hdr.device_id = dst_id;
+
+	LOG_INF("----> Sending CONFIG_ACK to device %s ID:%d", device_type_str(dst_type), dst_id);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+int send_config_recieved(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
+{
+	pkt->hdr.packet_type = PACKET_CONFIG_RECEIVED;
+	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.priority = priority;
+	pkt->hdr.tracking_id = tracker_next_id();
+	pkt->hdr.device_id = dst_id;
+
+	LOG_INF("----> Sending CONFIG_REQUEST to device %s ID:%d", device_type_str(dst_type), dst_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -438,13 +491,48 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 	send_data_chunk_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 
 	// Send Data Recieved Packet to Sensor
-	int idx = find_slot(pkt->gen_device_id, pkt->data_id);
-	if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY && idx == -2) {
+	int idx;
+	int ret = find_slot(pkt->gen_device_id, pkt->data_id, &idx);
+	if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY && ret == -2) {
 		// Implement Data Received Packet.
 		LOG_ERR("Need to Send Data Received Packet to Sensor for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
-	} else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR && idx == -2) {
-		// Need to Upstream the data
-		LOG_ERR("Need to Upstream data for gen SENSOR ID:%d data_id %d", pkt->gen_device_id, pkt->data_id);
+		data_receive_t recv_pkt = {
+			.gen_device_id = pkt->gen_device_id,
+			.data_id = pkt->data_id,
+		};
+		// Find dst_id from route table using gen_device_id
+		dst_id = get_next_hop_device_id(pkt->gen_device_id);
+		if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
+			LOG_ERR("No route to gen_device_id %d, cannot send DATA_RECEIVED", pkt->gen_device_id);
+			return;
+		}
+		send_data_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
+	} else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR && ret == -2) {
+		infra_entry_t entry;
+		int err = storage_infra_get(0, &entry);
+		if (err) {
+			LOG_ERR("Failed to get infra entry from storage (%d), cannot upstream", err);
+			return;
+		}
+		sender.active = true;
+		sender.dst_id = entry.device_id;
+		sender.gen_device_id = pkt->gen_device_id;
+		sender.data_id = pkt->data_id;
+		sender.priority = pkt->hdr.priority;
+		sender.total_size = slots[idx].total_size;
+		sender.chunk_count = slots[idx].chunk_count;
+		sender.last_chunk_size = slots[idx].last_chunk_size;
+		sender.crc32 = slots[idx].crc32;
+		sender.next_chunk = 0;
+		data_init_t init_pkt = {
+			.gen_device_id = sender.gen_device_id,
+			.data_id = sender.data_id,
+			.total_size = sender.total_size,
+			.chunk_count = sender.chunk_count,
+			.last_chunk_size = sender.last_chunk_size,
+			.crc32 = sender.crc32,
+		};
+		send_data_init(&init_pkt, entry.device_id, entry.device_type, sender.priority);
 	}
 
 	return;
@@ -546,6 +634,73 @@ void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t
 	return;
 }
 
+void handle_data_received(const data_receive_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+	// Only Process if it's for this device
+	if (pkt->hdr.device_id != radio_get_device_id()) {
+		return;
+	}
+
+	// Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+	if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+		LOG_WRN("Unknown device type 0x%02x in DATA_RECEIVED from %d, rejecting", pkt->hdr.device_type, dst_id);
+		return;
+	}
+
+	LOG_INF("Received DATA_RECEIVED from %s ID:%d gen %d data_id %d", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id);
+
+	switch (PRODUCT_DEVICE_TYPE) {
+		case DEVICE_TYPE_GATEWAY:
+		{
+			// Gateway will never receive data received packet because only anchor can receive data received packet, so just ignore if received
+			return;
+		}
+		break;
+
+		case DEVICE_TYPE_ANCHOR:
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+				data_receive_t recv_pkt = {
+					.gen_device_id = pkt->gen_device_id,
+					.data_id = pkt->data_id,
+				};
+				// Find dst_id from route table using gen_device_id
+				dst_id = get_next_hop_device_id(pkt->gen_device_id);
+				if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
+					LOG_ERR("No route to gen_device_id %d, cannot forward DATA_RECEIVED", pkt->gen_device_id);
+					return;
+				}
+				send_data_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
+			} else {
+				// Reject data received packet except from gateway and anchor
+				return;
+			}
+		}
+		break;
+
+		case DEVICE_TYPE_SENSOR:
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+				LOG_INF("Gateway Received the Data");
+				return;
+			} else {
+				// Reject data received packet except from gateway and anchor
+				return;
+			}
+		}
+		break;
+
+		default:
+		{
+			// There are only 3 valid device types, reject any data received if this device has invalid type
+			return;
+		}
+		break;
+	}
+
+	return;
+}
+
 /* ===== Module init / tick ===== */
 
 // Helper to build dummy data in PSRAM slot 0 for testing.
@@ -567,7 +722,6 @@ static void build_dummy_data(uint16_t size)
 	sender.gen_device_id = radio_get_device_id();
 	sender.data_id = 0x01; // For testing purpose, data_id is hardcoded to 0x01,
 	sender.priority = PACKET_PRIORITY_MEDIUM;
-	sender.buf = NULL;  // Not used since we're writing directly to PSRAM for testing
 	sender.total_size = size;
 	sender.chunk_count = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
 	sender.last_chunk_size = (size % SEND_DATA_MAX) ? (size % SEND_DATA_MAX) : SEND_DATA_MAX;
@@ -627,4 +781,19 @@ void data_tick(void)
 			slot_free(i);
 		}
 	}
+}
+
+void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+	LOG_WRN("CONFIG from %s ID:%d (not implemented)", device_type_str(pkt->hdr.device_type), dst_id);
+}
+
+void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+	LOG_WRN("CONFIG_ACK from %s ID:%d (not implemented)", device_type_str(pkt->hdr.device_type), dst_id);
+}
+
+void handle_config_recieved(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+	LOG_WRN("CONFIG_RECEIVED from %s ID:%d (not implemented)", device_type_str(pkt->hdr.device_type), dst_id);
 }
