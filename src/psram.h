@@ -26,14 +26,17 @@
  * Selection logic for P2 vs P3 (size-based small/large transfers) is
  * deferred until small/large transfer types are added.
  */
-#define PSRAM_P1_BASE    0x000000
-#define PSRAM_P1_SIZE    (1 * 1024 * 1024)  /* 1 MB */
+#define PSRAM_TRACKER_BASE          0x000000
+#define PSRAM_TRACKER_SIZE          (32 * 1024)  /* 32 KB */
 
-#define PSRAM_P2_BASE    0x100000
-#define PSRAM_P2_SIZE    (1 * 1024 * 1024)  /* 1 MB */
+#define PSRAM_CONFIG_BASE           0x008000
+#define PSRAM_CONFIG_SIZE           (80 * 1024)  /* 80 KB */
 
-#define PSRAM_P3_BASE    0x200000
-#define PSRAM_P3_SIZE    (6 * 1024 * 1024)  /* 6 MB */
+#define PSRAM_DATA_BASE             0x100000
+#define PSRAM_DATA_SIZE             (1 * 1024 * 1024)  /* 1 MB */
+
+#define PSRAM_LARGE_DATA_BASE       0x200000
+#define PSRAM_LARGE_DATA_SIZE       (6 * 1024 * 1024)  /* 6 MB */
 
 /* Returns true if PSRAM was successfully initialized. */
 bool is_psram_initialized(void);

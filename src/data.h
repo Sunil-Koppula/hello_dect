@@ -7,7 +7,7 @@
 #include "protocol.h"
 #include "psram.h"
 
-#define DATA_PSRAM_BASE          PSRAM_P2_BASE
+#define DATA_PSRAM_BASE          PSRAM_DATA_BASE
 #define DATA_SLOT_COUNT          512
 #define DATA_MAX_TRANSFER_SIZE   256
 #define DATA_PSRAM_SIZE          (DATA_SLOT_COUNT * DATA_MAX_TRANSFER_SIZE)
@@ -40,9 +40,6 @@ int send_data_init_ack(data_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, 
 int send_data_chunk(data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
 int send_data_chunk_ack(data_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
 int send_data_received(data_receive_t *pkt, uint16_t dst_id, uint8_t dst_type);
-int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
-int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
-int send_config_recieved(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
 
 /* RX handlers — wire into each device's RX dispatch switch. */
 void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2);
@@ -50,11 +47,5 @@ void handle_data_init_ack(const data_init_ack_t *pkt, uint16_t dst_id, int16_t r
 void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_data_received(const data_receive_t *pkt, uint16_t dst_id, int16_t rssi_2);
-void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2);
-void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
-void handle_config_recieved(const config_t *pkt, uint16_t dst_id, int16_t rssi_2);
-
-/* Call from main loop to expire stale slots. */
-void data_tick(void);
 
 #endif /* DATA_H */

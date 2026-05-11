@@ -1175,21 +1175,10 @@ void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id,
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 if (pkt->hdr.status != STATUS_SUCCESS) {
-                    // Process only packets with status_success
+                    // Resend joined network packet. 
+                    // Implement later
                     return;
                 }
-                // For Testing Purpose: Send Data Init Packet to Connected Device
-                sender.dst_id = dst_id;
-                data_init_t data_pkt = {
-                    .gen_device_id = sender.gen_device_id,
-                    .data_id = 0x01, // For testing purpose, data_id is hardcoded to 0x01, 
-                    .total_size = sender.total_size,
-                    .chunk_count = sender.chunk_count,
-                    .last_chunk_size = sender.last_chunk_size,
-                    .crc32 = sender.crc32,
-                };
-                send_data_init(&data_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
-                return;
             } else {
                 // Reject joined network ack except from anchor and gateway
                 return;

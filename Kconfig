@@ -88,6 +88,12 @@ config DATA_LOG_LEVEL
 	help
 	   Choose the log level for the data module.
 
+config CONFIG_LOG_LEVEL
+	int "Config log level"
+	default 4
+	help
+	   Choose the log level for the config module.
+
 config PRODUCT_INFO_LOG_LEVEL
 	int "Product info log level"
 	default 4

@@ -13,11 +13,9 @@
 #include "psram.h"
 #include "product_info.h"
 #include "storage.h"
+#include "main_sub.h"
 
 LOG_MODULE_REGISTER(data, CONFIG_DATA_LOG_LEVEL);
-
-#define DATA_RETRY_TIMEOUT_MS  	500
-#define DATA_MAX_RETRIES       	5
 
 #define DATA_MAX_CHUNKS        	((DATA_MAX_TRANSFER_SIZE + SEND_DATA_MAX - 1) / SEND_DATA_MAX)
 #define CRC_VERIFY_STAGE_SIZE 	256
@@ -50,6 +48,9 @@ static uint32_t slot_psram_addr(int idx)
 {
 	return DATA_PSRAM_BASE + ((uint32_t)idx * DATA_MAX_TRANSFER_SIZE);
 }
+
+/* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------------**** Data Slots ****------------------------------------------------------------------------------- */
 
 static int find_slot(uint16_t gen_device_id, uint8_t data_id, int *idx_out)
 {
@@ -117,7 +118,7 @@ static int send_next_chunk(uint16_t dst_id, uint8_t dst_type)
 static uint8_t validate_slot(const data_init_t *pkt)
 {
 	int idx;
-	int ret = find_slot(pkt->gen_device_id, pkt->hdr.priority, &idx);
+	int ret = find_slot(pkt->gen_device_id, pkt->data_id, &idx);
 	if (ret < 0) {
 		if (ret == -2) {
 			LOG_WRN("DATA_INIT rejected: slot already active and ready for upstream for gen %d prio %d", pkt->gen_device_id, pkt->hdr.priority);
@@ -230,7 +231,7 @@ int send_data_init(data_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t 
 	pkt->hdr.device_id = dst_id;
 
 	// Add tracker entry for retries
-	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_INIT, DATA_RETRY_TIMEOUT_MS, DATA_MAX_RETRIES, pkt, sizeof(*pkt));
+	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_INIT, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
 	LOG_INF("----> Sending DATA_INIT to device %s ID:%d for SENSOR ID:%d", device_type_str(dst_type), dst_id, pkt->gen_device_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -257,7 +258,7 @@ int send_data_chunk(data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_
 	pkt->hdr.device_id = dst_id;
 
 	// Add tracker entry for retries
-	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_CHUNK, DATA_RETRY_TIMEOUT_MS, DATA_MAX_RETRIES, pkt, sizeof(*pkt));
+	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_DATA_CHUNK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
 	LOG_INF("----> Sending DATA_CHUNK to device %s ID:%d for SENSOR ID:%d (Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index));
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -284,42 +285,6 @@ int send_data_received(data_receive_t *pkt, uint16_t dst_id, uint8_t dst_type)
 	pkt->hdr.device_id = dst_id;
 
 	LOG_INF("----> Sending DATA_RECEIVED to device %s ID:%d for SENSOR ID:%d data_id %d", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
-	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
-}
-
-int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
-{
-	pkt->hdr.packet_type = PACKET_CONFIG;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
-	pkt->hdr.priority = priority;
-	pkt->hdr.tracking_id = tracker_next_id();
-	pkt->hdr.device_id = dst_id;
-
-	LOG_INF("----> Sending CONFIG to device %s ID:%d", device_type_str(dst_type), dst_id);
-	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
-}
-
-int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
-{
-	pkt->hdr.packet_type = PACKET_CONFIG_ACK;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
-	pkt->hdr.priority = priority;
-	pkt->hdr.tracking_id = tracking_id;
-	pkt->hdr.device_id = dst_id;
-
-	LOG_INF("----> Sending CONFIG_ACK to device %s ID:%d", device_type_str(dst_type), dst_id);
-	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
-}
-
-int send_config_recieved(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
-{
-	pkt->hdr.packet_type = PACKET_CONFIG_RECEIVED;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
-	pkt->hdr.priority = priority;
-	pkt->hdr.tracking_id = tracker_next_id();
-	pkt->hdr.device_id = dst_id;
-
-	LOG_INF("----> Sending CONFIG_REQUEST to device %s ID:%d", device_type_str(dst_type), dst_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -371,6 +336,7 @@ void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		case DEVICE_TYPE_SENSOR:
 		{
 			// Sensor's will not process or transfer any data, so reject any incoming data init 
+			return;
 		}
 		break;
 
@@ -701,56 +667,8 @@ void handle_data_received(const data_receive_t *pkt, uint16_t dst_id, int16_t rs
 	return;
 }
 
-/* ===== Module init / tick ===== */
-
-// Helper to build dummy data in PSRAM slot 0 for testing.
-// Fills the slot with a counter pattern (byte i = i & 0xFF).
-static void build_dummy_data(uint16_t size)
-{
-	if (sender.active) {
-		LOG_WRN("build_dummy_data: sender state is active, cannot build dummy data");
-		return;
-	}
-
-	if (size == 0 || size > DATA_MAX_TRANSFER_SIZE) {
-		LOG_WRN("build_dummy_data: invalid size %u", size);
-		return;
-	}
-
-	sender.active = true;
-	sender.dst_id = PRODUCT_CONNECTED_DEVICE_ID;
-	sender.gen_device_id = radio_get_device_id();
-	sender.data_id = 0x01; // For testing purpose, data_id is hardcoded to 0x01,
-	sender.priority = PACKET_PRIORITY_MEDIUM;
-	sender.total_size = size;
-	sender.chunk_count = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
-	sender.last_chunk_size = (size % SEND_DATA_MAX) ? (size % SEND_DATA_MAX) : SEND_DATA_MAX;
-	sender.next_chunk = 0;
-
-	uint8_t chunk[256];
-	uint32_t base = slot_psram_addr(0);
-	uint16_t written = 0;
-
-	while (written < size) {
-		uint16_t n = MIN((uint16_t)sizeof(chunk), (uint16_t)(size - written));
-		for (uint16_t i = 0; i < n; i++) {
-			chunk[i] = (uint8_t)((written + i) & 0xFF);
-		}
-		if (written == 0) {
-			sender.crc32 = crc32_ieee(chunk, n);
-		} else {
-			sender.crc32 = crc32_ieee_update(sender.crc32, chunk, n);
-		}
-		int err = psram_write(base + written, chunk, n);
-		if (err) {
-			LOG_ERR("build_dummy_data: psram_write @0x%06x failed (%d)", base + written, err);
-			return;
-		}
-		written += n;
-	}
-
-	LOG_INF("build_dummy_data: wrote %u bytes to PSRAM slot 0 (0x%06x)", size, base);
-}
+/* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------**** Module Init / Tick ****--------------------------------------------------------------------------- */
 
 int data_init(void)
 {
@@ -762,11 +680,6 @@ int data_init(void)
 	LOG_INF("Data module: %d slots x %d bytes at PSRAM 0x%06x-0x%06x",
 		DATA_SLOT_COUNT, DATA_MAX_TRANSFER_SIZE,
 		DATA_PSRAM_BASE, DATA_PSRAM_BASE + DATA_PSRAM_SIZE - 1);
-
-	if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
-		LOG_INF("***For testing, building dummy data in PSRAM slot 0 for potential sending...***");
-		build_dummy_data(256);  // For testing: build a 256B pattern in slot 0 for potential sending.
-	}
 
 	return 0;
 }
@@ -781,19 +694,4 @@ void data_tick(void)
 			slot_free(i);
 		}
 	}
-}
-
-void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
-{
-	LOG_WRN("CONFIG from %s ID:%d (not implemented)", device_type_str(pkt->hdr.device_type), dst_id);
-}
-
-void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
-{
-	LOG_WRN("CONFIG_ACK from %s ID:%d (not implemented)", device_type_str(pkt->hdr.device_type), dst_id);
-}
-
-void handle_config_recieved(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
-{
-	LOG_WRN("CONFIG_RECEIVED from %s ID:%d (not implemented)", device_type_str(pkt->hdr.device_type), dst_id);
 }

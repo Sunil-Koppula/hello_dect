@@ -1,0 +1,337 @@
+/*
+ * Runtime button handling for DK button1 and button2.
+ *
+ * Each button has a GPIO interrupt that posts a press event to a message
+ * queue. A dedicated low-priority thread drains the queue, applies a
+ * debounce delay, and invokes the registered handler.
+ *
+ * Press is detected on release (rising edge for active-low buttons).
+ */
+
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/sys/crc.h>
+#include "buttons.h"
+#include "../product_info.h"
+#include "../data.h"
+#include "../config.h"
+#include "../psram.h"
+#include "../radio.h"
+#include "../protocol.h"
+#include "../storage.h"
+
+LOG_MODULE_REGISTER(buttons, CONFIG_MAIN_LOG_LEVEL);
+
+#define BUTTON1_NODE DT_NODELABEL(button1)
+#define BUTTON2_NODE DT_NODELABEL(button2)
+
+#define DEBOUNCE_MS         50
+#define BUTTON_COUNT        2
+#define EVENT_QUEUE_DEPTH   8
+
+#define BUTTONS_THREAD_STACK_SIZE  1024
+#define BUTTONS_THREAD_PRIO        7
+
+struct button_entry {
+	const struct gpio_dt_spec spec;
+	struct gpio_callback cb;
+	button_handler_t handler;
+	int64_t last_press_ms;
+	int idx;          /* user-facing index: 1 or 2 */
+};
+
+typedef enum
+{
+    SENSOR_REPORT_CONFIG_FLAG_DEFAULT = 0x00, // Encrypted
+    SENSOR_REPORT_CONFIG_FLAG_NOT_ENCRYPTED = (1 << 0),
+    SENSOR_REPORT_CONFIG_FLAG_DEMO_MODE = (1 << 1),
+    SENSOR_REPORT_CONFIG_FLAG_VALID = (1 << 2)
+} sensor_report_config_flags_t;
+
+typedef struct
+{
+    int8_t temperature_max1;
+    int8_t temperature_min1;
+    uint8_t humidity_max1;
+    uint8_t humidity_min1;
+    int8_t temperature_max2;
+    int8_t temperature_min2;
+    uint8_t humidity_max2;
+    uint8_t humidity_min2;
+    uint16_t ultrasound_level_max;
+    uint8_t  ultrasound_center_frequency;
+    uint16_t vibration_level_max;
+    uint8_t  random_number;
+} sensor_config_info_3105_t;
+
+typedef struct {
+	uint8_t battery_level_min;
+	uint16_t sleep_time_sec;
+	sensor_report_config_flags_t config_flags;
+	sensor_config_info_3105_t config_info_3105;
+	uint16_t config_crc16;   /* must stay last — CRC covers everything before it */
+} __attribute__((packed)) sensor_config_t;
+
+static struct button_entry buttons[BUTTON_COUNT] = {
+	{ .spec = GPIO_DT_SPEC_GET(BUTTON1_NODE, gpios), .idx = 1 },
+	{ .spec = GPIO_DT_SPEC_GET(BUTTON2_NODE, gpios), .idx = 2 },
+};
+
+K_MSGQ_DEFINE(button_events, sizeof(int), EVENT_QUEUE_DEPTH, 4);
+
+K_THREAD_STACK_DEFINE(buttons_thread_stack, BUTTONS_THREAD_STACK_SIZE);
+static struct k_thread buttons_thread_data;
+
+static struct button_entry *find_button(int idx)
+{
+	for (int i = 0; i < BUTTON_COUNT; i++) {
+		if (buttons[i].idx == idx) {
+			return &buttons[i];
+		}
+	}
+	return NULL;
+}
+
+static void button_isr(const struct device *port, struct gpio_callback *cb, gpio_port_pins_t pins)
+{
+	ARG_UNUSED(port);
+	ARG_UNUSED(pins);
+
+	struct button_entry *b = CONTAINER_OF(cb, struct button_entry, cb);
+	int idx = b->idx;
+
+	/* Best-effort enqueue; drop if queue full to avoid blocking ISR. */
+	k_msgq_put(&button_events, &idx, K_NO_WAIT);
+}
+
+static void buttons_thread(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	int idx;
+
+	while (1) {
+		if (k_msgq_get(&button_events, &idx, K_FOREVER) != 0) {
+			continue;
+		}
+
+		struct button_entry *b = find_button(idx);
+		if (!b) {
+			continue;
+		}
+
+		int64_t now = k_uptime_get();
+		if (now - b->last_press_ms < DEBOUNCE_MS) {
+			continue;
+		}
+		b->last_press_ms = now;
+
+		if (b->handler) {
+			b->handler();
+		} else {
+			LOG_DBG("Button %d pressed (no handler registered)", idx);
+		}
+	}
+}
+
+static uint32_t slot_psram_addr(int idx)
+{
+	return DATA_PSRAM_BASE + ((uint32_t)idx * DATA_MAX_TRANSFER_SIZE);
+}
+
+static uint32_t config_slot_psram_addr(int idx)
+{
+	return CONFIG_PSRAM_BASE + ((uint32_t)idx * CONFIG_MAX_SIZE);
+}
+
+int button_register_handler(int idx, button_handler_t handler)
+{
+	struct button_entry *b = find_button(idx);
+	if (!b) {
+		LOG_ERR("button_register_handler: invalid index %d", idx);
+		return -EINVAL;
+	}
+	b->handler = handler;
+	return 0;
+}
+
+static void default_button1_handler(void)
+{
+	LOG_WRN("Data Button pressed and Sender initialized: %d", sender.active);
+	if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR && !sender.active) {
+		uint16_t size = 256;
+
+		infra_entry_t entry;
+		int err = storage_infra_get(0, &entry);
+		if (err) {
+			LOG_ERR("storage_infra_get failed (%d)", err);
+			return;
+		}
+
+		sender.active = true;
+		sender.dst_id = entry.device_id;
+		sender.gen_device_id = radio_get_device_id();
+		sender.data_id = 0x01; // For testing purpose, data_id is hardcoded to 0x01,
+		sender.priority = PACKET_PRIORITY_LOW;
+		sender.total_size = size;
+		sender.chunk_count = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
+		sender.last_chunk_size = (size % SEND_DATA_MAX) ? (size % SEND_DATA_MAX) : SEND_DATA_MAX;
+		sender.next_chunk = 0;
+
+		uint8_t chunk[256];
+		uint32_t base = slot_psram_addr(0);
+		uint16_t written = 0;
+
+		while (written < size) {
+			uint16_t n = MIN((uint16_t)sizeof(chunk), (uint16_t)(size - written));
+			for (uint16_t i = 0; i < n; i++) {
+				chunk[i] = (uint8_t)((written + i) & 0xFF);
+			}
+			if (written == 0) {
+				sender.crc32 = crc32_ieee(chunk, n);
+			} else {
+				sender.crc32 = crc32_ieee_update(sender.crc32, chunk, n);
+			}
+			int err = psram_write(base + written, chunk, n);
+			if (err) {
+				LOG_ERR("build_dummy_data: psram_write @0x%06x failed (%d)", base + written, err);
+				return;
+			}
+			written += n;
+		}
+
+		data_init_t init_pkt = {
+			.gen_device_id = sender.gen_device_id,
+			.data_id = sender.data_id,
+			.total_size = sender.total_size,
+			.chunk_count = sender.chunk_count,
+			.last_chunk_size = sender.last_chunk_size,
+			.crc32 = sender.crc32,
+		};
+		send_data_init(&init_pkt, sender.dst_id, entry.device_type, sender.priority);
+	}
+}
+
+static void default_button2_handler(void)
+{
+	LOG_INF("Button 2 pressed");
+	if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
+		int idx = 0; // For testing, always use config slot 0
+		if (idx < 0) {
+			LOG_WRN("No free data slot available");
+			return;
+		}
+		config_slots[idx].active = true;
+		config_slots[idx].is_sent = true;
+
+		mesh_entry_t entry;
+		int err = storage_mesh_get(1, &entry);
+		if (err) {
+			LOG_ERR("storage_mesh_get failed (%d)", err);
+			config_slots[idx].active = false;
+			return;
+		}
+		config_slots[idx].dst_device_id = entry.device_id;
+		config_slots[idx].dst_device_type = entry.device_type;
+
+		// Generate config for testing
+		sensor_config_t config = {
+			.battery_level_min = 20,
+			.sleep_time_sec = 60,
+			.config_flags = SENSOR_REPORT_CONFIG_FLAG_DEFAULT,
+			.config_info_3105 = {
+				.temperature_max1 = 30,
+				.temperature_min1 = 15,
+				.humidity_max1 = 70,
+				.humidity_min1 = 30,
+				.temperature_max2 = 28,
+				.temperature_min2 = 18,
+				.humidity_max2 = 65,
+				.humidity_min2 = 35,
+				.ultrasound_level_max = 1000,
+				.ultrasound_center_frequency = 40,
+				.vibration_level_max = 500,
+				.random_number = 0xFF,
+			},
+		};
+		// CRC16-CCITT over everything before the trailing config_crc16 field.
+		config.config_crc16 = crc16_ccitt(0xFFFF, (const uint8_t *)&config, sizeof(config) - sizeof(config.config_crc16));
+		
+		config_slots[idx].config_len = sizeof(config);
+		config_slots[idx].config_crc32 = crc32_ieee((const uint8_t *)&config, sizeof(config));
+
+		uint32_t addr = config_slot_psram_addr(idx);
+		err = psram_write(addr, &config, sizeof(config));
+		if (err) {
+			LOG_ERR("psram_write @0x%06x failed (%d)", addr, err);
+			config_slots[idx].active = false;
+			return;
+		}
+
+		// Build config packet and send
+		config_t config_pkt = {
+			.dst_device_id = config_slots[idx].dst_device_id,
+			.dst_device_type = config_slots[idx].dst_device_type,
+			.config_len = config_slots[idx].config_len,
+			.config_crc32 = config_slots[idx].config_crc32,
+		};
+		err = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
+		if (err) {
+			LOG_ERR("psram_read @0x%06x failed (%d)", addr, err);
+			config_slots[idx].active = false;
+			return;
+		}
+		uint16_t dst_id = get_next_hop_device_id(config_slots[idx].dst_device_id);
+		send_config(&config_pkt, dst_id, DEVICE_TYPE_ANCHOR, PACKET_PRIORITY_HIGH);	
+	}
+}
+
+int buttons_init(void)
+{
+	button_register_handler(1, default_button1_handler);
+	button_register_handler(2, default_button2_handler);
+
+	for (int i = 0; i < BUTTON_COUNT; i++) {
+		struct button_entry *b = &buttons[i];
+
+		if (!gpio_is_ready_dt(&b->spec)) {
+			LOG_ERR("Button %d GPIO not ready", b->idx);
+			return -ENODEV;
+		}
+
+		int err = gpio_pin_configure_dt(&b->spec, GPIO_INPUT);
+		if (err) {
+			LOG_ERR("Button %d configure failed, err %d", b->idx, err);
+			return err;
+		}
+
+		/* Trigger on release (inactive edge for active-low button). */
+		err = gpio_pin_interrupt_configure_dt(&b->spec, GPIO_INT_EDGE_TO_INACTIVE);
+		if (err) {
+			LOG_ERR("Button %d interrupt configure failed, err %d", b->idx, err);
+			return err;
+		}
+
+		gpio_init_callback(&b->cb, button_isr, BIT(b->spec.pin));
+		err = gpio_add_callback(b->spec.port, &b->cb);
+		if (err) {
+			LOG_ERR("Button %d add_callback failed, err %d", b->idx, err);
+			return err;
+		}
+	}
+
+	k_thread_create(&buttons_thread_data, buttons_thread_stack,
+			K_THREAD_STACK_SIZEOF(buttons_thread_stack),
+			buttons_thread, NULL, NULL, NULL,
+			BUTTONS_THREAD_PRIO, 0, K_NO_WAIT);
+	k_thread_name_set(&buttons_thread_data, "buttons");
+
+	LOG_INF("Buttons initialized (button1, button2)");
+	return 0;
+}
+
+

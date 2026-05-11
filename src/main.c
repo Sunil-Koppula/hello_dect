@@ -16,6 +16,7 @@
 #include "psram.h"
 #include "serial.h"
 #include "testing/factory_reset.h"
+#include "testing/buttons.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 
@@ -48,6 +49,7 @@ int main(void)
 
 	/* Check for factory reset (hold Button 1 for 3s at boot). */
 	factory_reset_init();
+	buttons_init();
 
 	err = nrf_modem_lib_init();
 	if (err) {

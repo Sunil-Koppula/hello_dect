@@ -18,7 +18,7 @@
  *   Used: 136 × 210 = 28,560 bytes (~28KB)
  *   Allocated: 32KB (0x8000) — rest of P1 reserved for future use
  */
-#define TRACKER_PSRAM_BASE   PSRAM_P1_BASE
+#define TRACKER_PSRAM_BASE   PSRAM_TRACKER_BASE
 #define TRACKER_PSRAM_SIZE   0x8000  /* 32KB */
 
 /* Tracked device entry. */

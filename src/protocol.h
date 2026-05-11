@@ -294,12 +294,16 @@ typedef struct {
 
 #define DATA_RECEIVE_PACKET_SIZE sizeof(data_receive_t)
 
+#define MAX_CONFIG_SIZE 128
+
 /* CONFIG Packet */
 typedef struct {
 	packet_header_t hdr;
-	uint16_t dst_device_id;			/* short device ID of the device being configured */
-	uint8_t dst_device_type;		/* device_type_t of the device being configured */
-	uint8_t config[SEND_DATA_MAX];	/* config data */
+	uint16_t dst_device_id;				/* short device ID of the device being configured */
+	uint8_t dst_device_type;			/* device_type_t of the device being configured */
+	uint8_t config_len; 				/* length of the config data */
+	uint32_t config_crc32;				/* CRC32 of the config data for integrity checking */
+	uint8_t config[MAX_CONFIG_SIZE];	/* config data */
 } __attribute__((packed)) config_t;
 
 #define CONFIG_PACKET_SIZE sizeof(config_t)
@@ -307,8 +311,8 @@ typedef struct {
 /* CONFIG ACK Packet */
 typedef struct {
 	packet_header_t hdr;
-	uint16_t dst_device_id;			/* short device ID of the device being configured */
-	uint8_t dst_device_type;		/* device_type_t of the device being configured */
+	uint16_t dst_device_id;				/* short device ID of the device being configured */
+	uint8_t dst_device_type;			/* device_type_t of the device being configured */
 } __attribute__((packed)) config_ack_t;
 
 #define CONFIG_ACK_PACKET_SIZE sizeof(config_ack_t)

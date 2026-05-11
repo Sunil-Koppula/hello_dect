@@ -22,6 +22,7 @@
 #include "queue.h"
 #include "tracker.h"
 #include "data.h"
+#include "config.h"
 
 LOG_MODULE_REGISTER(anchor, CONFIG_ANCHOR_LOG_LEVEL);
 
@@ -61,6 +62,7 @@ static int anchor_init(void)
 
 	tracker_init();
 	data_init();
+	config_init();
 
 	send_pair_request();
 
@@ -155,7 +157,7 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 		break;
 
 	case PACKET_CONFIG_RECEIVED:
-		handle_config_recieved((const config_t *)data, sender_id, rssi_2);
+		handle_config_received((const config_received_t *)data, sender_id, rssi_2);
 		break;
 
 	default:

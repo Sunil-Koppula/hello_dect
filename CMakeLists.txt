@@ -22,12 +22,14 @@ target_sources(app PRIVATE
   src/tracker.c
   src/psram.c
   src/data.c
+  src/config.c
   src/spi_bus.c
   src/serial.c
 )
 
 # Testing utilities
 target_sources(app PRIVATE src/testing/factory_reset.c)
+target_sources(app PRIVATE src/testing/buttons.c)
 
 # Storage backend: NVS flash or EEPROM
 if(CONFIG_USE_NVS_STORAGE)
