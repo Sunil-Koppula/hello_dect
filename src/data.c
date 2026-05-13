@@ -309,6 +309,7 @@ void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
 	data_init_ack_t ack = {
 		.gen_device_id = pkt->gen_device_id,
+		.data_id = pkt->data_id,
 	};
 	
 	if (pkt->total_size == 0 || pkt->total_size > DATA_MAX_TRANSFER_SIZE || pkt->chunk_count == 0 || pkt->chunk_count > DATA_MAX_CHUNKS || pkt->last_chunk_size == 0 || pkt->last_chunk_size > SEND_DATA_MAX) {
@@ -386,7 +387,7 @@ void handle_data_init_ack(const data_init_ack_t *pkt, uint16_t dst_id, int16_t r
 			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
 				if (pkt->hdr.status == STATUS_SUCCESS) {
 					// Start sending data chunks if status is success
-					if (!sender.active || sender.dst_id != dst_id) {
+					if (!sender.active || sender.dst_id != dst_id || sender.gen_device_id != pkt->gen_device_id || sender.data_id != pkt->data_id) {
 						LOG_WRN("DATA_INIT_ACK from %d but sender inactive or dst mismatch", dst_id);
 						return;
 					}
@@ -427,6 +428,7 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
 	data_chunk_ack_t ack = {
 		.gen_device_id = pkt->gen_device_id,
+		.data_id = pkt->data_id,
 		.chunk_index = pkt->chunk_index,
 	};
 
@@ -445,6 +447,12 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 			}
 		}
 		break;
+
+		case DEVICE_TYPE_SENSOR:
+		{
+			// Sensor's will not process or transfer any data, so reject any incoming data chunk 
+			return;
+		}
 		
 		default:
 		{
@@ -523,8 +531,8 @@ void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
 	// Validate that the ack is for the current active sender transfer, if not ignore the packet
-	if (!sender.active || sender.gen_device_id != pkt->gen_device_id) {
-		LOG_WRN("DATA_CHUNK_ACK ignored: sender inactive or gen mismatch (got %d, have %d)", pkt->gen_device_id, sender.gen_device_id);
+	if (!sender.active || sender.gen_device_id != pkt->gen_device_id || sender.data_id != pkt->data_id || sender.dst_id != dst_id) {
+		LOG_WRN("DATA_CHUNK_ACK ignored: sender inactive or gen/data/dst mismatch (got %d/%d/%d, have %d/%d/%d)", pkt->gen_device_id, pkt->data_id, dst_id, sender.gen_device_id, sender.data_id, sender.dst_id);
 		return;
 	}
 
@@ -548,8 +556,8 @@ void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
 				// If status is not found, resend the data init
-				if (pkt->hdr.status == STATUS_NOT_FOUND) {
-					LOG_WRN("Received DATA_CHUNK_ACK with NOT_FOUND, resending DATA_INIT");
+				if (pkt->hdr.status == STATUS_NOT_FOUND || pkt->hdr.status == STATUS_RESOURCE_UNAVAILABLE || pkt->hdr.status == STATUS_CRC_FAIL) {
+					LOG_WRN("Received DATA_CHUNK_ACK with NOT_FOUND, RESOURCE_UNAVAILABLE, or CRC_FAIL, resending DATA_INIT");
 					data_init_t init_pkt = {
 						.gen_device_id = sender.gen_device_id,
 						.data_id = sender.data_id,
@@ -560,7 +568,7 @@ void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t
 					};
 					send_data_init(&init_pkt, dst_id, pkt->hdr.device_type, sender.priority);
 					return;
-				} else if (pkt->hdr.status == STATUS_ALREADY_EXISTS || pkt->hdr.status == STATUS_INVALID_PARAMETER) {
+				} else if (pkt->hdr.status == STATUS_FAILURE || pkt->hdr.status == STATUS_INVALID_PARAMETER) {
 					// Rebuild same chunk and resend
 					LOG_WRN("Received DATA_CHUNK_ACK with status 0x%02x, resending chunk %d", pkt->hdr.status, pkt->chunk_index);
 					uint8_t idx = pkt->chunk_index;
@@ -578,7 +586,7 @@ void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t
 						return;
 					}
 					send_data_chunk(&chunk_pkt, dst_id, pkt->hdr.device_type, sender.priority);
-				} else if (pkt->hdr.status == STATUS_SUCCESS) {
+				} else if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
 					// Send next chunk if status is success
 					send_next_chunk(dst_id, pkt->hdr.device_type);
 				}

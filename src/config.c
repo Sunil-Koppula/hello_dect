@@ -275,7 +275,7 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
 				int idx;
 				int ret = find_config_slot(pkt->dst_device_id, &idx);
-				if (pkt->hdr.status == STATUS_SUCCESS) {
+				if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
 					// free slot
 					if (ret >= 0) {
 						LOG_INF("CONFIG_ACK successful, freeing config slot %d for device %s ID:%d", idx, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
@@ -415,6 +415,21 @@ void config_tick(void)
     for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
         if (config_slots[i].active && !config_slots[i].is_sent && PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
             // Downstream the packet to sensor
+            uint32_t addr = config_slot_psram_addr(i);
+            config_t config_pkt = {
+                .dst_device_id = config_slots[i].dst_device_id,
+                .dst_device_type = config_slots[i].dst_device_type,
+                .config_len = config_slots[i].config_len,
+                .config_crc32 = config_slots[i].config_crc32,
+            };
+            int err = psram_read(addr, config_pkt.config, config_slots[i].config_len);
+            if (err) {
+                LOG_ERR("psram_read @0x%06x failed (%d), cannot send config", addr, err);
+                continue;
+            }
+            uint16_t dst_id = get_next_hop_device_id(config_slots[i].dst_device_id);
+            send_config(&config_pkt, dst_id, config_slots[i].dst_device_type, PACKET_PRIORITY_HIGH);
+            config_slots[i].is_sent = true;
         }
     }
 }

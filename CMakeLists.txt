@@ -23,6 +23,7 @@ target_sources(app PRIVATE
   src/psram.c
   src/data.c
   src/config.c
+  src/large_data.c
   src/spi_bus.c
   src/serial.c
 )

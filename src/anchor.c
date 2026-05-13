@@ -22,6 +22,7 @@
 #include "queue.h"
 #include "tracker.h"
 #include "data.h"
+#include "large_data.h"
 #include "config.h"
 
 LOG_MODULE_REGISTER(anchor, CONFIG_ANCHOR_LOG_LEVEL);
@@ -62,6 +63,7 @@ static int anchor_init(void)
 
 	tracker_init();
 	data_init();
+	large_data_init();
 	config_init();
 
 	send_pair_request();
@@ -160,6 +162,26 @@ static void anchor_process_rx(const uint8_t *data, uint16_t sender_id, int16_t r
 		handle_config_received((const config_received_t *)data, sender_id, rssi_2);
 		break;
 
+	case PACKET_LARGE_DATA_INIT:
+		handle_large_data_init((const large_data_init_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_LARGE_DATA_INIT_ACK:
+		handle_large_data_init_ack((const large_data_init_ack_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_LARGE_DATA_CHUNK:
+		handle_large_data_chunk((const large_data_chunk_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_LARGE_DATA_CHUNK_ACK:
+		handle_large_data_chunk_ack((const large_data_chunk_ack_t *)data, sender_id, rssi_2);
+		break;
+
+	case PACKET_LARGE_DATA_RECEIVED:
+		handle_large_data_received((const large_data_receive_t *)data, sender_id, rssi_2);
+		break;
+
 	default:
 		break;
 	}
@@ -238,6 +260,8 @@ void anchor_main(void)
 			mesh_tick();
 			tracker_tick(tracker_default_expired_cb);
 			data_tick();
+			large_data_tick();
+			config_tick();
 			known_devices_tick();
 			// mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;

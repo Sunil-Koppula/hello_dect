@@ -18,6 +18,7 @@
 #include "queue.h"
 #include "tracker.h"
 #include "data.h"
+#include "large_data.h"
 #include "config.h"
 
 LOG_MODULE_REGISTER(gateway, CONFIG_GATEWAY_LOG_LEVEL);
@@ -30,6 +31,7 @@ static int gateway_init(void)
 	tracker_init();
 	mesh_time_init();
 	data_init();
+	large_data_init();
 	config_init();
 
 	LOG_INF("Gateway init: infra=%d sensors=%d mesh=%d",
@@ -185,6 +187,26 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			handle_config_received((const config_received_t *)data, sender_id, rssi_2);
 			break;
 
+		case PACKET_LARGE_DATA_INIT:
+			handle_large_data_init((const large_data_init_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_LARGE_DATA_INIT_ACK:
+			handle_large_data_init_ack((const large_data_init_ack_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_LARGE_DATA_CHUNK:
+			handle_large_data_chunk((const large_data_chunk_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_LARGE_DATA_CHUNK_ACK:
+			handle_large_data_chunk_ack((const large_data_chunk_ack_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_LARGE_DATA_RECEIVED:
+			handle_large_data_received((const large_data_receive_t *)data, sender_id, rssi_2);
+			break;
+
 		default:
 			break;
 	}
@@ -260,6 +282,7 @@ void gateway_main(void)
 		case MAIN_SUB_TRACKER:
 			tracker_tick(tracker_default_expired_cb);
 			data_tick();
+			large_data_tick();
 			known_devices_tick();
 			// mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
