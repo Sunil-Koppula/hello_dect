@@ -39,27 +39,24 @@ static int sensor_init(void)
 	config_init();
 
 	/* Check EEPROM partition 1 — sensor can pair with only one device. */
-	if (storage_infra_count() > 0) {
-		infra_entry_t entry;
-		int err = storage_infra_get(0, &entry);
-
-		if (err == 0) {
-			paired_device_id = entry.device_id;
-			paired_device_type = entry.device_type;
-			LOG_INF("Already paired with %s ID:%d (hop:%d)", device_type_str(entry.device_type), entry.device_id, entry.hop_num);
+	if (infra_known_device_count > 0) {
+			paired_device_id = infra_known_devices[0].device_id;
+			paired_device_type = infra_known_devices[0].device_type;
+			infra_entry_t entry;
+			int err = storage_infra_get(0, &entry);
+			if (err) {
+				LOG_ERR("Failed to read infra entry, err %d", err);
+				return err;
+			}
+			LOG_INF("Already paired with %s ID:%d (hop:%d)", device_type_str(paired_device_type), paired_device_id, entry.hop_num);
 			product_info_update_hop();
-			update_known_devices();
 			ping_known_devices();
 			return 0;
-		}
-
 	}
 
 	/* Not paired — start pairing. */
-	LOG_INF("Sensor not paired, sending PAIR_REQUEST");
-
+	LOG_INF("Sensor not paired!");
 	send_pair_request();
-
 	return 0;
 }
 

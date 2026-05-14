@@ -34,41 +34,6 @@ static int gateway_init(void)
 	large_data_init();
 	config_init();
 
-	LOG_INF("Gateway init: infra=%d sensors=%d mesh=%d",
-		storage_infra_count(), storage_sensor_count(), storage_mesh_count());
-
-	if (storage_infra_count() > 0) {
-		LOG_INF("------------DEVICES IN INFRA STORAGE------------");
-
-		for (int i = 0; i < storage_infra_count(); i++) {
-			infra_entry_t entry;
-			int err = storage_infra_get(i, &entry);
-			if (err) {
-				LOG_ERR("Failed to read infra entry %d, err %d", i, err);
-				continue;
-			}
-			int16_t rssi_signed = (int16_t)entry.rssi_2;
-			LOG_INF("%d: %s ID:%d (hop:%d and RSSI:%d.%d)", i,
-				device_type_str(entry.device_type),
-				entry.device_id, entry.hop_num,
-				rssi_signed / 2, (rssi_signed < 0 ? -rssi_signed : rssi_signed) & 0b1 ? 5 : 0);
-		}
-	}
-
-	if (storage_sensor_count() > 0) {
-		LOG_INF("------------DEVICES IN SENSOR STORAGE------------");
-
-		for (int i = 0; i < storage_sensor_count(); i++) {
-			sensor_entry_t entry;
-			int err = storage_sensor_get(i, &entry);
-			if (err) {
-				LOG_ERR("Failed to read sensor entry %d, err %d", i, err);
-				continue;
-			}
-			LOG_INF("%d: %s ID:%d", i, device_type_str(3), entry.device_id);
-		}
-	}
-
 	if (storage_mesh_count() > 0) {
 		LOG_INF("------------DEVICES IN MESH STORAGE------------");
 

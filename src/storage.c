@@ -18,10 +18,13 @@ LOG_MODULE_REGISTER(storage, CONFIG_STORAGE_LOG_LEVEL);
 static const struct device *eeprom_dev = DEVICE_DT_GET(DT_NODELABEL(eeprom));
 
 /* Cached entry counts (avoid reading header every time). */
-static uint16_t infra_count;
-static uint16_t sensor_count;
+uint8_t infra_known_device_count;
+uint8_t sensor_known_device_count;
 static uint16_t mesh_count;
 static uint16_t route_count;
+
+infra_known_entry_t  infra_known_devices[MAX_ANCHORS];
+sensor_known_entry_t sensor_known_devices[MAX_SENSORS];
 
 /* ---- Internal helpers ---- */
 
@@ -76,22 +79,26 @@ int storage_init(void)
 {
 	int err;
 
+	uint16_t count;
+
 	if (!device_is_ready(eeprom_dev)) {
 		LOG_ERR("EEPROM device not ready");
 		return -ENODEV;
 	}
 
-	err = read_header(STORAGE_PART1_OFFSET, &infra_count);
+	err = read_header(STORAGE_PART1_OFFSET, &count);
 	if (err) {
 		LOG_ERR("Failed to read partition 1 header, err %d", err);
 		return err;
 	}
-
-	err = read_header(STORAGE_PART2_OFFSET, &sensor_count);
+	infra_known_device_count = (uint8_t)count;
+	
+	err = read_header(STORAGE_PART2_OFFSET, &count);
 	if (err) {
 		LOG_ERR("Failed to read partition 2 header, err %d", err);
 		return err;
 	}
+	sensor_known_device_count = (uint8_t)count;
 
 	err = read_header(STORAGE_PART3_OFFSET, &mesh_count);
 	if (err) {
@@ -103,6 +110,41 @@ int storage_init(void)
 	if (err) {
 		LOG_ERR("Failed to read partition 4 header, err %d", err);
 		return err;
+	}
+
+	// Update Known infrastructure devices from storage
+	LOG_INF("----------Loading %d infra entries from storage----------", infra_known_device_count);
+	for (uint8_t i = 0; i < infra_known_device_count; i++) {
+		infra_entry_t entry;
+		err = storage_infra_get(i, &entry);
+		if (err) {
+			LOG_ERR("		Failed to read infra entry %d, err %d", i, err);
+			infra_known_devices[i].device_id = 0xFFFF; /* Mark invalid */
+			continue;
+		}
+		LOG_WRN("		Infra entry %d %s ID:%d from storage", i, device_type_str(entry.device_type), entry.device_id);
+		infra_known_devices[i].device_type = entry.device_type;
+		infra_known_devices[i].device_id = entry.device_id;
+		infra_known_devices[i].last_comm_ms = 0;
+		infra_known_devices[i].comm_failures = 0;
+		infra_known_devices[i].is_ping_packet_sent = false;
+	}
+
+	// Update Known Sensors devices from storage
+	LOG_INF("----------Loading %d sensor entries from storage----------", sensor_known_device_count);
+	for (uint8_t i = 0; i < sensor_known_device_count; i++) {
+		sensor_entry_t entry;
+		err = storage_sensor_get(i, &entry);
+		if (err) {
+			LOG_ERR("		Failed to read sensor entry %d, err %d", i, err);
+			sensor_known_devices[i].device_id = 0xFFFF; /* Mark invalid */
+			continue;
+		}
+		LOG_WRN("		Sensor entry %d %s ID:%d from storage", i, device_type_str(DEVICE_TYPE_SENSOR), entry.device_id);
+		sensor_known_devices[i].device_id = entry.device_id;
+		sensor_known_devices[i].last_comm_ms = 0;
+		sensor_known_devices[i].comm_failures = 0;
+		sensor_known_devices[i].is_ping_packet_sent = false;
 	}
 
 	// Update Known routes from storage
@@ -124,42 +166,128 @@ int storage_init(void)
 	}
 
 	LOG_INF("Storage init: infra=%d sensors=%d mesh=%d routes=%d",
-		infra_count, sensor_count, mesh_count, route_count);
+		infra_known_device_count, sensor_known_device_count, mesh_count, route_count);
 
 	return 0;
 }
 
 /* ---- Partition 1: Infrastructure ---- */
 
+/* Sort infra entries: primary key hop_num ascending (closer to gateway first),
+ * secondary key RSSI descending (stronger signal first). Best entry at index 0.
+ * Writes the sorted order back to EEPROM. */
+static int sort_infra_devices(void)
+{
+	if (infra_known_device_count < 2) {
+		return 0;
+	}
+
+	infra_entry_t entry[MAX_ANCHORS];
+
+	for (uint8_t i = 0; i < infra_known_device_count; i++) {
+		int err = storage_infra_get(i, &entry[i]);
+		if (err) {
+			LOG_ERR("Failed to read infra entry %d for sorting, err %d", i, err);
+			return err;
+		}
+	}
+
+	/* Bubble sort: hop_num ascending, then signed RSSI descending. */
+	for (uint8_t i = 0; i < infra_known_device_count - 1; i++) {
+		for (uint8_t j = 0; j < infra_known_device_count - i - 1; j++) {
+			bool swap = false;
+			if (entry[j].hop_num > entry[j + 1].hop_num) {
+				swap = true;
+			} else if (entry[j].hop_num == entry[j + 1].hop_num &&
+				   (int16_t)entry[j].rssi_2 < (int16_t)entry[j + 1].rssi_2) {
+				swap = true;
+			}
+			if (swap) {
+				infra_entry_t temp = entry[j];
+				entry[j] = entry[j + 1];
+				entry[j + 1] = temp;
+			}
+		}
+	}
+
+	/* Write the sorted order back to EEPROM. */
+	for (uint8_t i = 0; i < infra_known_device_count; i++) {
+		int err = write_entry(STORAGE_PART1_OFFSET, i, &entry[i], sizeof(entry[i]));
+		if (err) {
+			LOG_ERR("Failed to write infra entry %d after sort, err %d", i, err);
+			return err;
+		}
+	}
+
+	/* Mirror the new order into the in-RAM table, preserving each device's
+	 * runtime stats (last_comm_ms, comm_failures, is_ping_packet_sent). */
+	infra_known_entry_t reordered[MAX_ANCHORS];
+
+	for (uint8_t i = 0; i < infra_known_device_count; i++) {
+		bool found = false;
+		for (uint8_t j = 0; j < infra_known_device_count; j++) {
+			if (infra_known_devices[j].device_id == entry[i].device_id) {
+				reordered[i] = infra_known_devices[j];
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			/* New device just added — initialize runtime fields. */
+			reordered[i].device_type = entry[i].device_type;
+			reordered[i].device_id = entry[i].device_id;
+			reordered[i].last_comm_ms = 0;
+			reordered[i].comm_failures = 0;
+			reordered[i].is_ping_packet_sent = false;
+		}
+	}
+
+	for (uint8_t i = 0; i < infra_known_device_count; i++) {
+		infra_known_devices[i] = reordered[i];
+	}
+
+	return 0;
+}
+
 int storage_infra_add(const infra_entry_t *entry)
 {
-	if (infra_count >= MAX_ANCHORS) {
+	if (infra_known_device_count >= MAX_ANCHORS) {
 		LOG_WRN("Infra partition full");
 		return -ENOMEM;
 	}
 
-	int err = write_entry(STORAGE_PART1_OFFSET, infra_count, entry, sizeof(*entry));
-
+	int err = write_entry(STORAGE_PART1_OFFSET, infra_known_device_count, entry, sizeof(*entry));
 	if (err) {
 		return err;
 	}
 
-	infra_count++;
-	return write_header(STORAGE_PART1_OFFSET, infra_count);
+	infra_known_device_count++;
+
+	err = write_header(STORAGE_PART1_OFFSET, infra_known_device_count);
+	if (err) {
+		return err;
+	}
+
+	return sort_infra_devices();
 }
 
 int storage_infra_update(uint16_t index, const infra_entry_t *entry)
 {
-	if (index >= infra_count) {
+	if (index >= infra_known_device_count) {
 		return -EINVAL;
 	}
 
-	return write_entry(STORAGE_PART1_OFFSET, index, entry, sizeof(*entry));
+	int err = write_entry(STORAGE_PART1_OFFSET, index, entry, sizeof(*entry));
+	if (err) {
+		return err;
+	}
+
+	return sort_infra_devices();
 }
 
 int storage_infra_get(uint16_t index, infra_entry_t *entry)
 {
-	if (index >= infra_count) {
+	if (index >= infra_known_device_count) {
 		return -EINVAL;
 	}
 
@@ -168,12 +296,12 @@ int storage_infra_get(uint16_t index, infra_entry_t *entry)
 
 int storage_infra_remove(uint16_t index)
 {
-	if (index >= infra_count) {
+	if (index >= infra_known_device_count) {
 		return -EINVAL;
 	}
 
 	/* Shift entries after index up by one. */
-	for (uint16_t i = index + 1; i < infra_count; i++) {
+	for (uint16_t i = index + 1; i < infra_known_device_count; i++) {
 		infra_entry_t entry;
 		int err = storage_infra_get(i, &entry);
 		if (err) {
@@ -185,18 +313,22 @@ int storage_infra_remove(uint16_t index)
 		}
 	}
 
-	infra_count--;
-	return write_header(STORAGE_PART1_OFFSET, infra_count);
+	infra_known_device_count--;
+	int err = write_header(STORAGE_PART1_OFFSET, infra_known_device_count);
+	if (err) {
+		return err;
+	}
+	return sort_infra_devices();
 }
 
 int storage_infra_count(void)
 {
-	return infra_count;
+	return infra_known_device_count;
 }
 
 int storage_infra_clear(void)
 {
-	infra_count = 0;
+	infra_known_device_count = 0;
 	return write_header(STORAGE_PART1_OFFSET, 0);
 }
 
@@ -204,24 +336,34 @@ int storage_infra_clear(void)
 
 int storage_sensor_add(const sensor_entry_t *entry)
 {
-	if (sensor_count >= MAX_SENSORS) {
+	if (sensor_known_device_count >= MAX_SENSORS) {
 		LOG_WRN("Sensor partition full");
 		return -ENOMEM;
 	}
 
-	int err = write_entry(STORAGE_PART2_OFFSET, sensor_count, entry, sizeof(*entry));
+	int err = write_entry(STORAGE_PART2_OFFSET, sensor_known_device_count, entry, sizeof(*entry));
 
 	if (err) {
 		return err;
 	}
 
-	sensor_count++;
-	return write_header(STORAGE_PART2_OFFSET, sensor_count);
+	sensor_known_device_count++;
+	err = write_header(STORAGE_PART2_OFFSET, sensor_known_device_count);
+	if (err) {
+		return err;
+	}
+
+	// Mirror to in-RAM table
+	sensor_known_devices[sensor_known_device_count - 1].device_id = entry->device_id;
+	sensor_known_devices[sensor_known_device_count - 1].last_comm_ms = 0;
+	sensor_known_devices[sensor_known_device_count - 1].comm_failures = 0;
+	sensor_known_devices[sensor_known_device_count - 1].is_ping_packet_sent = false;
+	return 0;
 }
 
 int storage_sensor_update(uint16_t index, const sensor_entry_t *entry)
 {
-	if (index >= sensor_count) {
+	if (index >= sensor_known_device_count) {
 		return -EINVAL;
 	}
 
@@ -230,7 +372,7 @@ int storage_sensor_update(uint16_t index, const sensor_entry_t *entry)
 
 int storage_sensor_get(uint16_t index, sensor_entry_t *entry)
 {
-	if (index >= sensor_count) {
+	if (index >= sensor_known_device_count) {
 		return -EINVAL;
 	}
 
@@ -239,17 +381,17 @@ int storage_sensor_get(uint16_t index, sensor_entry_t *entry)
 
 int storage_sensor_count(void)
 {
-	return sensor_count;
+	return sensor_known_device_count;
 }
 
 int storage_sensor_remove(uint16_t index)
 {
-	if (index >= sensor_count) {
+	if (index >= sensor_known_device_count) {
 		return -EINVAL;
 	}
 
 	/* Shift entries after index up by one. */
-	for (uint16_t i = index + 1; i < sensor_count; i++) {
+	for (uint16_t i = index + 1; i < sensor_known_device_count; i++) {
 		sensor_entry_t entry;
 		int err = storage_sensor_get(i, &entry);
 		if (err) {
@@ -261,13 +403,22 @@ int storage_sensor_remove(uint16_t index)
 		}
 	}
 
-	sensor_count--;
-	return write_header(STORAGE_PART2_OFFSET, sensor_count);
+	sensor_known_device_count--;
+	int err = write_header(STORAGE_PART2_OFFSET, sensor_known_device_count);
+	if (err) {
+		return err;
+	}
+
+	// Mirror the shift in the in-RAM table
+	for (uint8_t i = index; i < sensor_known_device_count; i++) {
+		sensor_known_devices[i] = sensor_known_devices[i + 1];
+	}
+	return 0;
 }
 
 int storage_sensor_clear(void)
 {
-	sensor_count = 0;
+	sensor_known_device_count = 0;
 	return write_header(STORAGE_PART2_OFFSET, 0);
 }
 

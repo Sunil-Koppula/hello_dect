@@ -52,6 +52,18 @@ typedef struct {
 	uint16_t rssi_2;           /* RSSI */
 } __attribute__((packed)) infra_entry_t;
 
+// Stored in Internal RAM for fast access
+typedef struct {
+	uint8_t  device_type;      /* device_type_t */
+	uint16_t device_id;        /* short device ID */
+	uint64_t last_comm_ms;     /* timestamp of last communication with this device */
+	uint8_t comm_failures;     /* consecutive communication failures */
+	bool is_ping_packet_sent; /* whether a ping packet has been sent to this device after the last communication */
+} infra_known_entry_t;
+
+extern infra_known_entry_t infra_known_devices[MAX_ANCHORS];
+extern uint8_t infra_known_device_count;
+
 /*
  * Partition 2 entry: Connected sensors.
  * Stored by: Gateway, Anchor.
@@ -60,6 +72,17 @@ typedef struct {
 	uint16_t device_id;        /* sensor short device ID */
 	uint16_t version;          /* sensor firmware version */
 } __attribute__((packed)) sensor_entry_t;
+
+// Stored in Internal RAM for fast access
+typedef struct {
+	uint16_t device_id;        /* sensor short device ID */
+	uint64_t last_comm_ms;     /* timestamp of last communication with this sensor */
+	uint8_t comm_failures;     /* consecutive communication failures */
+	bool is_ping_packet_sent; /* whether a ping packet has been sent to this sensor after the last communication */
+} sensor_known_entry_t;
+
+extern sensor_known_entry_t sensor_known_devices[MAX_SENSORS];
+extern uint8_t sensor_known_device_count;
 
 /*
  * Partition 3 entry: Full mesh network table.

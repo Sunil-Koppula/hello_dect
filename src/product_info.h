@@ -11,30 +11,18 @@
 #define MAX_COMM_FAILURES    3
 
 /* Runtime device type (set by product_info_init from GPIO pins). */
-extern device_type_t PRODUCT_DEVICE_TYPE;
+extern device_type_t DEVICE_TYPE;
 
 /* 64-bit serial number: 0x00{device_id_16}00DEADBEEF */
-extern uint64_t PRODUCT_SERIAL_NUMBER;
+extern uint64_t SERIAL_NUMBER;
 
 /* Device hop number from gateway.
  * Gateway = 0, Anchor = min(infra hop) + 1, Sensor = 0xFF (no hop). */
-extern uint8_t PRODUCT_HOP_NUMBER;
+extern uint8_t DEVICE_HOP_NUMBER;
 
 /* Connected (upstream parent) device ID.
  * Gateway = 0, Anchor = best infra device ID, Sensor = paired device ID. */
-extern uint16_t PRODUCT_CONNECTED_DEVICE_ID;
-
-/* Connected Devices Information */
-typedef struct {
-    uint8_t device_type;
-    uint16_t device_id;
-    uint64_t last_comm_ms;
-    uint8_t comm_failures;
-    bool is_ping_packet_sent;
-} known_device_t;
-
-extern known_device_t known_devices[MAX_KNOWN_DEVICES];
-extern uint8_t known_device_count;
+extern uint16_t CONNECTED_DEVICE_ID;
 
 /* Known Routes Information */
 typedef struct {
@@ -57,9 +45,6 @@ void update_known_devices(void);
 
 /* Check if a device is known (connected or paired). */
 bool is_known_device(uint16_t device_id);
-
-/* Get index of a known device by ID, or -1 if not found. */
-int known_device_idx(uint16_t device_id);
 
 /* Tick function to update known devices' last communication time. */
 void known_devices_tick(void);

@@ -40,8 +40,6 @@ int main(void)
 		return err;
 	}
 
-	update_known_devices();
-
 	err = psram_init();
 	if (err) {
 		LOG_WRN("PSRAM init failed, err %d (tracker will not work)", err);
@@ -113,7 +111,7 @@ int main(void)
 		LOG_ERR("nrf_modem_dect_phy_capability_get failed, err %d", err);
 	}
 
-	switch (PRODUCT_DEVICE_TYPE) {
+	switch (DEVICE_TYPE) {
 	case DEVICE_TYPE_GATEWAY:
 		gateway_main();
 		break;

@@ -29,45 +29,20 @@ LOG_MODULE_REGISTER(anchor, CONFIG_ANCHOR_LOG_LEVEL);
 
 static int anchor_init(void)
 {
-	int infra = storage_infra_count();
-	LOG_WRN("Anchor init: found %d infra entries", infra);
-
-	LOG_INF("Anchor init: infra=%d sensors=%d", infra, storage_sensor_count());
-
-	/* If we already have upstream infra connections, we're paired. */
-	if (infra > 0) {
-		infra_entry_t entry;
-		LOG_INF("Already paired with: ");
-
-		for (int i = 0; i < infra; i++) {
-			int err = storage_infra_get(i, &entry);
-			if (err) {
-				LOG_ERR("Failed to read infra entry %d, err %d", i, err);
-				continue;
-			}
-			LOG_INF("Infra entry %d: %s ID:%d (hop:%d)", i,
-				device_type_str(entry.device_type),
-				entry.device_id, entry.hop_num);
-		}
-
-		product_info_update_hop();
-		update_known_devices();
-
-		if (infra >= MAX_ANCHORS) {
-			ping_known_devices();
-			return 0;
-		}
-	}
-
-	LOG_INF("Sending PAIR REQUEST!");
-
 	tracker_init();
 	data_init();
 	large_data_init();
 	config_init();
 
-	send_pair_request();
+	if (infra_known_device_count > 0) {
+		product_info_update_hop();
+		if (infra_known_device_count >= MAX_ANCHORS) {
+			ping_known_devices();
+			return 0;
+		}
+	}
 
+	send_pair_request();
 	return 0;
 }
 

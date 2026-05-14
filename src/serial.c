@@ -72,7 +72,7 @@ static void at_error(void)
 
 static const char *device_type_name(void)
 {
-	switch (PRODUCT_DEVICE_TYPE) {
+	switch (DEVICE_TYPE) {
 	case DEVICE_TYPE_GATEWAY: return "GATEWAY";
 	case DEVICE_TYPE_ANCHOR:  return "ANCHOR";
 	case DEVICE_TYPE_SENSOR:  return "SENSOR";
@@ -117,7 +117,7 @@ static void cmd_sn(const char *args)
 {
 	(void)args;
 	char resp[AT_RESP_MAX];
-	uint64_t sn = PRODUCT_SERIAL_NUMBER;
+	uint64_t sn = SERIAL_NUMBER;
 	snprintf(resp, sizeof(resp), "+SN: 0x%08x%08x",
 		 (unsigned)(sn >> 32), (unsigned)(sn & 0xFFFFFFFF));
 	at_send_line(resp);
@@ -128,7 +128,7 @@ static void cmd_hop(const char *args)
 {
 	(void)args;
 	char resp[AT_RESP_MAX];
-	snprintf(resp, sizeof(resp), "+HOP: %u", PRODUCT_HOP_NUMBER);
+	snprintf(resp, sizeof(resp), "+HOP: %u", DEVICE_HOP_NUMBER);
 	at_send_line(resp);
 	at_ok();
 }

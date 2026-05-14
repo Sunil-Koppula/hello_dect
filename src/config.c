@@ -100,7 +100,7 @@ static uint8_t validate_config(const config_t *pkt)
 int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.device_type = DEVICE_TYPE;
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
@@ -115,7 +115,7 @@ int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priori
 int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG_ACK;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.device_type = DEVICE_TYPE;
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
@@ -127,7 +127,7 @@ int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_
 int send_config_received(config_received_t *pkt, uint16_t dst_id, uint8_t dst_type)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG_RECEIVED;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.device_type = DEVICE_TYPE;
 	pkt->hdr.priority = PACKET_PRIORITY_HIGH;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
@@ -166,7 +166,7 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		return;
 	}
 
-	switch (PRODUCT_DEVICE_TYPE) {
+	switch (DEVICE_TYPE) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			// Gateway will not process any config, so reject any incoming config packet
@@ -198,7 +198,7 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
 	send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 
-	if (ack.hdr.status == STATUS_SUCCESS && PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+	if (ack.hdr.status == STATUS_SUCCESS && DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
 		// Send config received packet to confirm the config is received and processed
 		config_received_t recv_pkt = {
 			.dst_device_id = pkt->dst_device_id,
@@ -228,7 +228,7 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 	// Remove tracker
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
-	switch (PRODUCT_DEVICE_TYPE) {
+	switch (DEVICE_TYPE) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
@@ -326,7 +326,7 @@ void handle_config_received(const config_received_t *pkt, uint16_t dst_id, int16
 
 	LOG_INF("Received CONFIG_RECEIVED from %s ID:%d for %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
 
-	switch (PRODUCT_DEVICE_TYPE) {
+	switch (DEVICE_TYPE) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
@@ -413,7 +413,7 @@ int config_init(void)
 void config_tick(void)
 {
     for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
-        if (config_slots[i].active && !config_slots[i].is_sent && PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+        if (config_slots[i].active && !config_slots[i].is_sent && DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
             // Downstream the packet to sensor
             uint32_t addr = config_slot_psram_addr(i);
             config_t config_pkt = {

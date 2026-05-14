@@ -42,7 +42,7 @@ int send_pair_request(void)
     pair_request_t packet = {
         .hdr = {
             .packet_type = PACKET_PAIR_REQUEST,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracker_next_id(),
             .device_id = 0,
@@ -65,16 +65,16 @@ int send_pair_response(uint16_t dst_id,uint8_t dst_type ,uint8_t tracking_id, ui
     pair_response_t packet = {
         .hdr = {
             .packet_type = PACKET_PAIR_RESPONSE,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracking_id,
             .device_id = dst_id,
             .status = status,
         },
-        .hop_num = PRODUCT_HOP_NUMBER,
+        .hop_num = DEVICE_HOP_NUMBER,
     };
 
-    LOG_INF("----> Sending PAIR_RESPONSE to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, PRODUCT_HOP_NUMBER, status);
+    LOG_INF("----> Sending PAIR_RESPONSE to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, DEVICE_HOP_NUMBER, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -85,20 +85,20 @@ int send_pair_confirm(uint16_t dst_id, uint8_t dst_type, uint8_t status)
     pair_confirm_t packet = {
         .hdr = {
             .packet_type = PACKET_PAIR_CONFIRM,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracker_next_id(),
             .device_id = dst_id,
             .status = status,
         },
         .version = FIRMWARE_VERSION,
-        .hop_num = PRODUCT_HOP_NUMBER,
+        .hop_num = DEVICE_HOP_NUMBER,
     };
 
     // Add tracker entry for retries
     tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_PAIR_CONFIRM, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
-    LOG_INF("----> Sending PAIR_CONFIRM to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, PRODUCT_HOP_NUMBER, status);
+    LOG_INF("----> Sending PAIR_CONFIRM to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, DEVICE_HOP_NUMBER, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -108,16 +108,16 @@ int send_pair_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_
     pair_ack_t packet = {
         .hdr = {
             .packet_type = PACKET_PAIR_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracking_id,
             .device_id = dst_id,
             .status = status,
         },
-        .hop_num = PRODUCT_HOP_NUMBER,
+        .hop_num = DEVICE_HOP_NUMBER,
     };
 
-    LOG_INF("----> Sending PAIR_ACK to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, PRODUCT_HOP_NUMBER, status);
+    LOG_INF("----> Sending PAIR_ACK to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, DEVICE_HOP_NUMBER, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -127,7 +127,7 @@ int send_joined_network(const joined_network_t *pkt, uint16_t dst_id, uint8_t ds
     joined_network_t packet = {
         .hdr = {
             .packet_type = PACKET_JOINED_NETWORK,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracker_next_id(),
             .device_id = dst_id,
@@ -155,7 +155,7 @@ int send_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id, ui
     joined_network_ack_t packet = {
         .hdr = {
             .packet_type = PACKET_JOINED_NETWORK_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracking_id,
             .device_id = dst_id,
@@ -175,13 +175,13 @@ int send_ping_device(uint16_t dst_id, uint8_t dst_type, uint8_t status)
     ping_device_t packet = {
         .hdr = {
             .packet_type = PACKET_PING_DEVICE,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_LOW,
             .tracking_id = tracker_next_id(),
             .device_id = dst_id,
             .status = status,
         },
-        .hop_num = PRODUCT_HOP_NUMBER,
+        .hop_num = DEVICE_HOP_NUMBER,
         .version = FIRMWARE_VERSION,
         .timestamp = mesh_time_get() + 15,
     };
@@ -199,13 +199,13 @@ int send_ping_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_
     ping_ack_t packet = {
         .hdr = {
             .packet_type = PACKET_PING_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_LOW,
             .tracking_id = tracking_id,
             .device_id = dst_id,
             .status = status,
         },
-        .hop_num = PRODUCT_HOP_NUMBER,
+        .hop_num = DEVICE_HOP_NUMBER,
         .version = FIRMWARE_VERSION,
         .timestamp = mesh_time_get() + 15,
     };
@@ -220,7 +220,7 @@ int send_device_updated(const device_updated_t *pkt, uint16_t dst_id, uint8_t ds
     device_updated_t packet = {
         .hdr = {
             .packet_type = PACKET_DEVICE_UPDATED,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_LOW,
             .tracking_id = tracker_next_id(),
             .device_id = dst_id,
@@ -248,7 +248,7 @@ int send_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id, ui
     device_updated_ack_t packet = {
         .hdr = {
             .packet_type = PACKET_DEVICE_UPDATED_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_LOW,
             .tracking_id = tracking_id,
             .device_id = dst_id,
@@ -271,7 +271,7 @@ int send_repair_request(uint16_t dst_id, uint8_t dst_type)
     repair_request_t packet = {
         .hdr = {
             .packet_type = PACKET_REPAIR_REQUEST,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracker_next_id(),
             .device_id = dst_id,
@@ -280,7 +280,7 @@ int send_repair_request(uint16_t dst_id, uint8_t dst_type)
         .random_num = random_num,
         .hash = hash,
         .version = FIRMWARE_VERSION,
-        .hop_num = PRODUCT_HOP_NUMBER,
+        .hop_num = DEVICE_HOP_NUMBER,
     };
 
     // Add tracker entry for retries
@@ -296,14 +296,14 @@ int send_repair_response(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id,
     repair_response_t packet = {
         .hdr = {
             .packet_type = PACKET_REPAIR_RESPONSE,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracking_id,
             .device_id = dst_id,
             .status = status,
         },
         .version = FIRMWARE_VERSION,
-        .hop_num = PRODUCT_HOP_NUMBER,
+        .hop_num = DEVICE_HOP_NUMBER,
     };
 
     LOG_INF("----> Sending REPAIR_RESPONSE to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
@@ -316,7 +316,7 @@ int send_route_info(const route_info_t *pkt, uint16_t dst_id, uint8_t dst_type, 
     route_info_t packet = {
         .hdr = {
             .packet_type = PACKET_ROUTE_INFO,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_MEDIUM,
             .tracking_id = tracker_next_id(),
             .device_id = dst_id,
@@ -341,7 +341,7 @@ int send_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, uint8_t ds
     route_info_ack_t packet = {
         .hdr = {
             .packet_type = PACKET_ROUTE_INFO_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
+            .device_type = DEVICE_TYPE,
             .priority = PACKET_PRIORITY_MEDIUM,
             .tracking_id = tracking_id,
             .device_id = dst_id,

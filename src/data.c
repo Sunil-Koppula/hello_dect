@@ -225,7 +225,7 @@ static uint8_t validate_data_chunk(const data_chunk_t *pkt)
 int send_data_init(data_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
 {
 	pkt->hdr.packet_type = PACKET_DATA_INIT;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.device_type = DEVICE_TYPE;
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
@@ -240,7 +240,7 @@ int send_data_init(data_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t 
 int send_data_init_ack(data_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
 	pkt->hdr.packet_type = PACKET_DATA_INIT_ACK;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.device_type = DEVICE_TYPE;
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
@@ -252,7 +252,7 @@ int send_data_init_ack(data_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, 
 int send_data_chunk(data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
 {
 	pkt->hdr.packet_type = PACKET_DATA_CHUNK;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.device_type = DEVICE_TYPE;
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
@@ -267,7 +267,7 @@ int send_data_chunk(data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_
 int send_data_chunk_ack(data_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
 	pkt->hdr.packet_type = PACKET_DATA_CHUNK_ACK;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.device_type = DEVICE_TYPE;
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
@@ -279,7 +279,7 @@ int send_data_chunk_ack(data_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type
 int send_data_received(data_receive_t *pkt, uint16_t dst_id, uint8_t dst_type)
 {
 	pkt->hdr.packet_type = PACKET_DATA_RECEIVED;
-	pkt->hdr.device_type = PRODUCT_DEVICE_TYPE;
+	pkt->hdr.device_type = DEVICE_TYPE;
 	pkt->hdr.priority = PACKET_PRIORITY_HIGH;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
@@ -319,7 +319,7 @@ void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		return;
 	}
 
-	switch (PRODUCT_DEVICE_TYPE) {
+	switch (DEVICE_TYPE) {
 		case DEVICE_TYPE_GATEWAY:
 		case DEVICE_TYPE_ANCHOR:
 		{
@@ -373,7 +373,7 @@ void handle_data_init_ack(const data_init_ack_t *pkt, uint16_t dst_id, int16_t r
 	// Remove tracker
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
-	switch (PRODUCT_DEVICE_TYPE) {
+	switch (DEVICE_TYPE) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			// Gateway will never receive data init ack because only anchor and sensor can receive data init ack, so just ignore if received
@@ -432,7 +432,7 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		.chunk_index = pkt->chunk_index,
 	};
 
-	switch (PRODUCT_DEVICE_TYPE)
+	switch (DEVICE_TYPE)
 	{
 		case DEVICE_TYPE_GATEWAY:
 		case DEVICE_TYPE_ANCHOR:
@@ -467,7 +467,7 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 	// Send Data Recieved Packet to Sensor
 	int idx;
 	int ret = find_slot(pkt->gen_device_id, pkt->data_id, &idx);
-	if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_GATEWAY && ret == -2) {
+	if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY && ret == -2) {
 		// Implement Data Received Packet.
 		LOG_ERR("Need to Send Data Received Packet to Sensor for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
 		data_receive_t recv_pkt = {
@@ -481,7 +481,7 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 			return;
 		}
 		send_data_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
-	} else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR && ret == -2) {
+	} else if (DEVICE_TYPE == DEVICE_TYPE_ANCHOR && ret == -2) {
 		infra_entry_t entry;
 		int err = storage_infra_get(0, &entry);
 		if (err) {
@@ -542,7 +542,7 @@ void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t
 		return;
 	}
 
-	switch (PRODUCT_DEVICE_TYPE)
+	switch (DEVICE_TYPE)
 	{
 		case DEVICE_TYPE_GATEWAY:
 		{
@@ -623,7 +623,7 @@ void handle_data_received(const data_receive_t *pkt, uint16_t dst_id, int16_t rs
 
 	LOG_INF("Received DATA_RECEIVED from %s ID:%d gen %d data_id %d", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id);
 
-	switch (PRODUCT_DEVICE_TYPE) {
+	switch (DEVICE_TYPE) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			// Gateway will never receive data received packet because only anchor can receive data received packet, so just ignore if received
