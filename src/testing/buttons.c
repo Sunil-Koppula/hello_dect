@@ -291,7 +291,7 @@ static void default_button2_handler(void)
 	} else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
 		LOG_WRN("Large Data Button pressed");
 		// For testing, always use slot 0 and send large data to gateway
-		uint32_t size = 1 * 1024; // 10KB large data
+		uint32_t size = 200 * 1024; // 200KB large data
 
 		infra_entry_t entry;
 		int err = storage_infra_get(0, &entry);

@@ -82,6 +82,12 @@ config MESH_LOG_LEVEL
 	help
 	   Choose the log level for the mesh module.
 
+config MESH_TX_LOG_LEVEL
+	int "Mesh TX log level"
+	default 4
+	help
+	   Choose the log level for the mesh transmission module.
+
 config DATA_LOG_LEVEL
 	int "Data log level"
 	default 4

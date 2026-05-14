@@ -42,6 +42,9 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
 void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 
+/* Compute hash. */
+uint32_t compute_pair_hash(uint16_t dev_id, uint32_t random_num);
+
 /* Call each main loop cycle to check response collection timer. */
 void mesh_tick(void);
 

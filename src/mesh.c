@@ -36,30 +36,6 @@ static int resp_candidate_count;
 static struct nbtimeout collect_timer;
 static bool collecting;
 
-/* Mesh time — milliseconds since the gateway started.
- * mesh_time_get() returns mesh_time_offset + k_uptime_get(), so the value
- * keeps advancing locally between syncs. On the gateway, the offset is set
- * once at startup. On anchors/sensors, the offset is rewritten each time
- * a SYNC_TIME packet arrives.
- */
-static int64_t mesh_time_offset;
-
-/* Generate random number for pairing. */
-static uint32_t generate_random_number(void)
-{
-    uint32_t random_num;
-    sys_rand_get(&random_num, sizeof(random_num));
-    return random_num;
-}
-
-/* Compute hash. */
-static uint32_t compute_pair_hash(uint16_t dev_id, uint32_t random_num)
-{
-    uint32_t hash = (uint32_t)dev_id ^ random_num;
-    hash = ((hash << 13) | (hash >> 19)) ^ (hash * 0x02152001);
-    return hash;
-}
-
 /* Check Infra Storage */
 static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool all_slots)
 {
@@ -202,331 +178,85 @@ static void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t ve
     }
 }
 
-/* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
-/* -------------------------------------------------------------------------------**** TX Helpers ****------------------------------------------------------------------------------- */
-
-/* Send pairing request packet. */
-int send_pair_request(void)
+/* Simple bubble sort candidates by hop (ascending), then RSSI (descending). */
+static void sort_candidates(void)
 {
-    uint32_t random_num = generate_random_number();
-    uint32_t hash = compute_pair_hash(radio_get_device_id(), random_num);
+    for (int i = 0; i < resp_candidate_count - 1; i++) {
+        for (int j = 0; j < resp_candidate_count - i - 1; j++) {
+            bool swap = false;
 
-    pair_request_t packet = {
-        .hdr = {
-            .packet_type = PACKET_PAIR_REQUEST,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
-            .tracking_id = tracker_next_id(),
-            .device_id = 0,
-            .status = STATUS_SUCCESS,
-        },
-        .random_num = random_num,
-        .hash = hash,
-    };
+            if (resp_candidates[j].hop_num > resp_candidates[j + 1].hop_num) {
+                swap = true;
+            } else if (resp_candidates[j].hop_num == resp_candidates[j + 1].hop_num &&
+                       resp_candidates[j].rssi_2 < resp_candidates[j + 1].rssi_2) {
+                /* Same hop — prefer better (higher) RSSI. */
+                swap = true;
+            }
 
-    // Add tracker entry for retries
-    tracker_add(radio_get_device_id(), 0, packet.hdr.tracking_id, PACKET_PAIR_REQUEST, 5 * PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
-
-    LOG_INF("----> Sending PAIR_REQUEST");
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+            if (swap) {
+                struct response_candidate tmp = resp_candidates[j];
+                resp_candidates[j] = resp_candidates[j + 1];
+                resp_candidates[j + 1] = tmp;
+            }
+        }
+    }
 }
 
-/* Send pairing response packet. */
-int send_pair_response(uint16_t dst_id,uint8_t dst_type ,uint8_t tracking_id, uint8_t status)
+/* Select best candidates and send PAIR_CONFIRM to each. */
+static void select_and_confirm(void)
 {
-    pair_response_t packet = {
-        .hdr = {
-            .packet_type = PACKET_PAIR_RESPONSE,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
-            .tracking_id = tracking_id,
-            .device_id = dst_id,
-            .status = status,
-        },
-        .hop_num = PRODUCT_HOP_NUMBER,
-    };
+    if (resp_candidate_count == 0) {
+        LOG_WRN("No candidates collected during window");
+        return;
+    }
 
-    LOG_INF("----> Sending PAIR_RESPONSE to device %s ID:%d with hop_num %d", device_type_str(dst_type), dst_id, PRODUCT_HOP_NUMBER);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    sort_candidates();
+
+    int available = MAX_ANCHORS - storage_infra_count();
+    LOG_WRN("Infra storage has %d available slots for pairing and %d paired count", available, storage_infra_count());
+
+    if (available <= 0) {
+        LOG_WRN("Infra storage full, cannot pair with any candidates");
+        return;
+    }
+
+    int to_confirm = (resp_candidate_count < available) ? resp_candidate_count : available;
+
+    LOG_INF("Selecting %d of %d candidates (sorted by hop then RSSI)", to_confirm, resp_candidate_count);
+
+    for (int i = 0; i < to_confirm; i++) {
+        struct response_candidate *c = &resp_candidates[i];
+
+        /* Skip if already stored. */
+        uint8_t status = check_infra_storage(c->sender_id, c->device_type, true);
+
+        if (status == STATUS_ALREADY_EXISTS) {
+            LOG_INF("Candidate %s ID:%d already paired, skipping", device_type_str(c->device_type), c->sender_id);
+            continue;
+        }
+
+        if (status == STATUS_STORAGE_FULL) {
+            LOG_WRN("Infra storage full, stopping selection");
+            break;
+        }
+
+        if (PRODUCT_HOP_NUMBER == 0xFF && c->hop_num == 0xFF) {
+            LOG_WRN("Candidate %s ID:%d has no upstream link or has invalid hop number %d, skipping", device_type_str(c->device_type), c->sender_id, c->hop_num);
+            continue;
+        }
+
+        send_pair_confirm(c->sender_id, c->device_type, STATUS_SUCCESS);
+
+        if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+            // Sensor only pairs with one anchor, so stop after the first confirmation
+            break;
+        }
+    }
 }
 
-/* Send pairing confirm packet. */
-int send_pair_confirm(uint16_t dst_id, uint8_t dst_type, uint8_t status)
+bool mesh_is_collecting(void)
 {
-
-    pair_confirm_t packet = {
-        .hdr = {
-            .packet_type = PACKET_PAIR_CONFIRM,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
-            .tracking_id = tracker_next_id(),
-            .device_id = dst_id,
-            .status = status,
-        },
-        .version = FIRMWARE_VERSION,
-        .hop_num = PRODUCT_HOP_NUMBER,
-    };
-
-    // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_PAIR_CONFIRM, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
-
-    LOG_INF("----> Sending PAIR_CONFIRM to device %s ID:%d with hop_num %d", device_type_str(dst_type), dst_id, PRODUCT_HOP_NUMBER);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send pairing acknowledgment packet. */
-int send_pair_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status)
-{
-    pair_ack_t packet = {
-        .hdr = {
-            .packet_type = PACKET_PAIR_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
-            .tracking_id = tracking_id,
-            .device_id = dst_id,
-            .status = status,
-        },
-        .hop_num = PRODUCT_HOP_NUMBER,
-    };
-
-    LOG_INF("----> Sending PAIR_ACK to device %s ID:%d with hop_num %d", device_type_str(dst_type), dst_id, PRODUCT_HOP_NUMBER);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send joined network packet. */
-int send_joined_network(const joined_network_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t status)
-{
-    joined_network_t packet = {
-        .hdr = {
-            .packet_type = PACKET_JOINED_NETWORK,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
-            .tracking_id = tracker_next_id(),
-            .device_id = dst_id,
-            .status = status,
-        },
-        .device_type = pkt->device_type,
-        .device_id = pkt->device_id,
-        .serial_num = pkt->serial_num,
-        .version = pkt->version,
-        .connected_device_id = pkt->connected_device_id,
-        .hop_num = pkt->hop_num,
-        .sensor_count = pkt->sensor_count,
-    };
-
-    // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_JOINED_NETWORK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
-
-    LOG_INF("----> Sending JOINED_NETWORK to device %s ID:%d for device %s ID:%d", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send joined network acknowledgment packet. */
-int send_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status)
-{
-    joined_network_ack_t packet = {
-        .hdr = {
-            .packet_type = PACKET_JOINED_NETWORK_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
-            .tracking_id = tracking_id,
-            .device_id = dst_id,
-            .status = status,
-        },
-        .dst_device_id = pkt->dst_device_id,
-        .dst_device_type = pkt->dst_device_type,
-    };
-
-    LOG_INF("----> Sending JOINED_NETWORK_ACK to device %s ID:%d for device %s ID:%d", device_type_str(dst_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send ping device packet. */
-int send_ping_device(uint16_t dst_id, uint8_t dst_type, uint8_t status)
-{
-    ping_device_t packet = {
-        .hdr = {
-            .packet_type = PACKET_PING_DEVICE,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_LOW,
-            .tracking_id = tracker_next_id(),
-            .device_id = dst_id,
-            .status = status,
-        },
-        .hop_num = PRODUCT_HOP_NUMBER,
-        .version = FIRMWARE_VERSION,
-        .timestamp = mesh_time_get() + 15,
-    };
-
-    // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_PING_DEVICE, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
-
-    LOG_INF("----> Sending PING_DEVICE to device %s ID:%d", device_type_str(dst_type), dst_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send ping acknowledgment packet. */
-int send_ping_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status)
-{
-    ping_ack_t packet = {
-        .hdr = {
-            .packet_type = PACKET_PING_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_LOW,
-            .tracking_id = tracking_id,
-            .device_id = dst_id,
-            .status = status,
-        },
-        .hop_num = PRODUCT_HOP_NUMBER,
-        .version = FIRMWARE_VERSION,
-        .timestamp = mesh_time_get() + 15,
-    };
-
-    LOG_INF("----> Sending PING_ACK to device %s ID:%d", device_type_str(dst_type), dst_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send device updated packet. */
-int send_device_updated(const device_updated_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t status)
-{
-    device_updated_t packet = {
-        .hdr = {
-            .packet_type = PACKET_DEVICE_UPDATED,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_LOW,
-            .tracking_id = tracker_next_id(),
-            .device_id = dst_id,
-            .status = status,
-        },
-        .device_type = pkt->device_type,
-        .device_id = pkt->device_id,
-        .serial_num = pkt->serial_num,
-        .version = pkt->version,
-        .connected_device_id = pkt->connected_device_id,
-        .hop_num = pkt->hop_num,
-        .sensor_count = pkt->sensor_count,
-    };
-
-    // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_DEVICE_UPDATED, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
-
-    LOG_INF("----> Sending DEVICE_UPDATED to device %s ID:%d for device %s ID:%d", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send device updated acknowledgment packet. */
-int send_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status)
-{
-    device_updated_ack_t packet = {
-        .hdr = {
-            .packet_type = PACKET_DEVICE_UPDATED_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_LOW,
-            .tracking_id = tracking_id,
-            .device_id = dst_id,
-            .status = status,
-        },
-        .dst_device_id = pkt->dst_device_id,
-        .dst_device_type = pkt->dst_device_type,
-    };
-
-    LOG_INF("----> Sending DEVICE_UPDATED_ACK to device %s ID:%d for device %s ID:%d", device_type_str(dst_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send repair request packet. */
-int send_repair_request(uint16_t dst_id, uint8_t dst_type)
-{
-    uint32_t random_num = generate_random_number();
-    uint32_t hash = compute_pair_hash(radio_get_device_id(), random_num);
-
-    repair_request_t packet = {
-        .hdr = {
-            .packet_type = PACKET_REPAIR_REQUEST,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
-            .tracking_id = tracker_next_id(),
-            .device_id = dst_id,
-            .status = STATUS_SUCCESS,
-        },
-        .random_num = random_num,
-        .hash = hash,
-        .version = FIRMWARE_VERSION,
-        .hop_num = PRODUCT_HOP_NUMBER,
-    };
-
-    // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_REPAIR_REQUEST, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
-
-    LOG_INF("----> Sending REPAIR_REQUEST to device %s ID:%d", device_type_str(dst_type), dst_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send repair response packet. */
-int send_repair_response(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status)
-{
-    repair_response_t packet = {
-        .hdr = {
-            .packet_type = PACKET_REPAIR_RESPONSE,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_HIGH,
-            .tracking_id = tracking_id,
-            .device_id = dst_id,
-            .status = status,
-        },
-        .version = FIRMWARE_VERSION,
-        .hop_num = PRODUCT_HOP_NUMBER,
-    };
-
-    LOG_INF("----> Sending REPAIR_RESPONSE to device %s ID:%d", device_type_str(dst_type), dst_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send route info packet. */
-int send_route_info(const route_info_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t status)
-{
-    route_info_t packet = {
-        .hdr = {
-            .packet_type = PACKET_ROUTE_INFO,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_MEDIUM,
-            .tracking_id = tracker_next_id(),
-            .device_id = dst_id,
-            .status = status,
-        },
-        .device_id = pkt->device_id,
-        .device_type = pkt->device_type,
-        .route_len = pkt->route_len,
-        .avg_rssi_2 = pkt->avg_rssi_2,
-    };
-
-    // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_ROUTE_INFO, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
-
-    LOG_INF("----> Sending ROUTE_INFO to device %s ID:%d", device_type_str(dst_type), dst_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
-}
-
-/* Send route info acknowledgment packet. */
-int send_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status)
-{
-    route_info_ack_t packet = {
-        .hdr = {
-            .packet_type = PACKET_ROUTE_INFO_ACK,
-            .device_type = PRODUCT_DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_MEDIUM,
-            .tracking_id = tracking_id,
-            .device_id = dst_id,
-            .status = status,
-        },
-        .device_id = pkt->device_id,
-        .device_type = pkt->device_type,
-        .route_len = pkt->route_len,
-        .avg_rssi_2 = pkt->avg_rssi_2,
-    };
-
-    LOG_INF("----> Sending ROUTE_INFO_ACK to device %s ID:%d", device_type_str(dst_type), dst_id);
-    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+    return collecting;
 }
 
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
@@ -594,6 +324,11 @@ static void build_route_info_and_send(uint16_t dst_id, uint8_t dst_type, const r
 /* Handle received pairing request packet. */
 void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
+    // Sensor's will not process pair request
+    if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+        return;
+    }
+
     LOG_INF("----> Recieved PAIR_REQUEST from %s ID:%d and RSSI:%d (status: %d)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
 
     // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
@@ -1601,11 +1336,11 @@ void handle_repair_request(const repair_request_t *pkt, uint16_t dst_id, int16_t
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 // Check if device is already paired with this anchor
-                status = check_infra_storage(pkt->hdr.device_id, pkt->hdr.device_type, true);
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
                 status = (status == STATUS_ALREADY_EXISTS) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
             } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
                 // Check if device is already paired with this sensor
-                status = check_sensor_storage(pkt->hdr.device_id);
+                status = check_sensor_storage(dst_id);
                 status = (status == STATUS_ALREADY_EXISTS) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
             } else {
                 // Reject repair request except from anchor and sensor
@@ -1748,6 +1483,38 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
 
     update_known_devices();
 
+    // If status is success, it means the device is repaired, send joined network packet
+    joined_network_t jn_pkt = {
+        .device_id = radio_get_device_id(),
+        .device_type = PRODUCT_DEVICE_TYPE,
+        .serial_num = PRODUCT_SERIAL_NUMBER,
+        .version = FIRMWARE_VERSION,
+    };
+
+    if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+        product_info_update_hop();
+        jn_pkt.connected_device_id = 0xFFFF; // Anchor doesn't have connected device ID at this point, set to 0xFFFF to indicate
+        jn_pkt.hop_num = PRODUCT_HOP_NUMBER;
+        jn_pkt.sensor_count = storage_sensor_count();
+    } else if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+        PRODUCT_CONNECTED_DEVICE_ID = dst_id;
+        jn_pkt.connected_device_id = dst_id;
+        jn_pkt.hop_num = 0xFF;
+        jn_pkt.sensor_count = 0xFF;
+    }
+
+    if (storage_infra_count() > 0) {
+        send_joined_network(&jn_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
+    }
+
+    if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+        int err = storage_route_add(dst_id, pkt->hdr.device_id, pkt->hdr.device_type, 1, rssi_2);
+        if (err) {
+            LOG_ERR("Failed to add route for repaired device %s ID:%d, err %d", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id, err);
+            return;
+        }
+        LOG_INF("Added route for repaired device %s ID:%d via %d", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id, dst_id);
+    }
     return;
 }
 
@@ -1887,87 +1654,6 @@ void handle_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, int16_t
     return;
 }
 
-/* Simple bubble sort candidates by hop (ascending), then RSSI (descending). */
-static void sort_candidates(void)
-{
-    for (int i = 0; i < resp_candidate_count - 1; i++) {
-        for (int j = 0; j < resp_candidate_count - i - 1; j++) {
-            bool swap = false;
-
-            if (resp_candidates[j].hop_num > resp_candidates[j + 1].hop_num) {
-                swap = true;
-            } else if (resp_candidates[j].hop_num == resp_candidates[j + 1].hop_num &&
-                       resp_candidates[j].rssi_2 < resp_candidates[j + 1].rssi_2) {
-                /* Same hop — prefer better (higher) RSSI. */
-                swap = true;
-            }
-
-            if (swap) {
-                struct response_candidate tmp = resp_candidates[j];
-                resp_candidates[j] = resp_candidates[j + 1];
-                resp_candidates[j + 1] = tmp;
-            }
-        }
-    }
-}
-
-/* Select best candidates and send PAIR_CONFIRM to each. */
-static void select_and_confirm(void)
-{
-    if (resp_candidate_count == 0) {
-        LOG_WRN("No candidates collected during window");
-        return;
-    }
-
-    sort_candidates();
-
-    int available = MAX_ANCHORS - storage_infra_count();
-    LOG_WRN("Infra storage has %d available slots for pairing and %d paired count", available, storage_infra_count());
-
-    if (available <= 0) {
-        LOG_WRN("Infra storage full, cannot pair with any candidates");
-        return;
-    }
-
-    int to_confirm = (resp_candidate_count < available) ? resp_candidate_count : available;
-
-    LOG_INF("Selecting %d of %d candidates (sorted by hop then RSSI)", to_confirm, resp_candidate_count);
-
-    for (int i = 0; i < to_confirm; i++) {
-        struct response_candidate *c = &resp_candidates[i];
-
-        /* Skip if already stored. */
-        uint8_t status = check_infra_storage(c->sender_id, c->device_type, true);
-
-        if (status == STATUS_ALREADY_EXISTS) {
-            LOG_INF("Candidate %s ID:%d already paired, skipping", device_type_str(c->device_type), c->sender_id);
-            continue;
-        }
-
-        if (status == STATUS_STORAGE_FULL) {
-            LOG_WRN("Infra storage full, stopping selection");
-            break;
-        }
-
-        if (PRODUCT_HOP_NUMBER == 0xFF && c->hop_num == 0xFF) {
-            LOG_WRN("Candidate %s ID:%d has no upstream link or has invalid hop number %d, skipping", device_type_str(c->device_type), c->sender_id, c->hop_num);
-            continue;
-        }
-
-        send_pair_confirm(c->sender_id, c->device_type, STATUS_SUCCESS);
-
-        if (PRODUCT_DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
-            // Sensor only pairs with one anchor, so stop after the first confirmation
-            break;
-        }
-    }
-}
-
-bool mesh_is_collecting(void)
-{
-    return collecting;
-}
-
 void mesh_tick(void)
 {
     if (!collecting) {
@@ -1982,20 +1668,10 @@ void mesh_tick(void)
     }
 }
 
-/* Mesh time accessors. */
-
-void mesh_time_init(void)
+/* Compute hash. */
+uint32_t compute_pair_hash(uint16_t dev_id, uint32_t random_num)
 {
-    /* Gateway-only: anchor mesh_time at 0 for the moment of startup. */
-    mesh_time_offset = -k_uptime_get();
-}
-
-uint64_t mesh_time_get(void)
-{
-    return (uint64_t)(mesh_time_offset + k_uptime_get());
-}
-
-void mesh_time_set(uint64_t remote_mesh_time)
-{
-    mesh_time_offset = (int64_t)remote_mesh_time - k_uptime_get();
+    uint32_t hash = (uint32_t)dev_id ^ random_num;
+    hash = ((hash << 13) | (hash >> 19)) ^ (hash * 0x02152001);
+    return hash;
 }
