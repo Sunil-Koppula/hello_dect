@@ -39,28 +39,26 @@ static bool collecting;
 /* Check Infra Storage */
 static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool all_slots)
 {
-    infra_entry_t entry;
-
     // Check Only first slot as sensor can only pair with one gateway/anchor, but anchor can pair with multiple sensors
     if (all_slots == false) {
-        if (storage_infra_get(0, &entry) == 0 && entry.device_id == device_id) {
+        if (infra_known_devices[0].device_id == device_id) {
             return STATUS_ALREADY_EXISTS;
         }
-        
-        if (storage_infra_count() >= 1) {
+
+        if (infra_known_device_count >= 1) {
             return STATUS_STORAGE_FULL;
         }
 
         return STATUS_SUCCESS;
     }
 
-    for (int i = 0; i < storage_infra_count(); i++) {
-        if (storage_infra_get(i, &entry) == 0 && entry.device_id == device_id) {
+    for (int i = 0; i < infra_known_device_count; i++) {
+        if (infra_known_devices[i].device_id == device_id) {
             return STATUS_ALREADY_EXISTS;
         }
     }
 
-    if (storage_infra_count() >= MAX_ANCHORS) {
+    if (infra_known_device_count >= MAX_ANCHORS) {
         return STATUS_STORAGE_FULL;
     }
 
@@ -72,8 +70,13 @@ static bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rs
 {
     uint8_t current_hop_num = DEVICE_HOP_NUMBER;
     infra_entry_t entry;
-    for (int i = 0; i < storage_infra_count(); i++) {
-        if (storage_infra_get(i, &entry) == 0 && entry.device_id == device_id) {
+    for (int i = 0; i < infra_known_device_count; i++) {
+        if (infra_known_devices[i].device_id == device_id) {
+            int err = storage_infra_get(i, &entry);
+            if (err) {
+                LOG_ERR("Failed to get infra entry for device %d, err %d", device_id, err);
+                return false;
+            }
             entry.rssi_2 = rssi_2;
             if (hop_num != 0xFF && entry.hop_num != hop_num) {
                 entry.hop_num = hop_num;
@@ -81,7 +84,7 @@ static bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rs
             if (entry.version != FIRMWARE_VERSION) {
                 entry.version = FIRMWARE_VERSION;
             }
-            int err = storage_infra_update(i, &entry);
+            err = storage_infra_update(i, &entry);
             if (err) {
                 LOG_ERR("Failed to update infra entry for device %d, err %d", device_id, err);
                 return false;
@@ -99,15 +102,13 @@ static bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rs
 /* Check Sensor Storage */
 static uint8_t check_sensor_storage(uint16_t device_id)
 {
-    sensor_entry_t entry;
-
-    for (int i = 0; i < storage_sensor_count(); i++) {
-        if (storage_sensor_get(i, &entry) == 0 && entry.device_id == device_id) {
+    for (int i = 0; i < sensor_known_device_count; i++) {
+        if (sensor_known_devices[i].device_id == device_id) {
             return STATUS_ALREADY_EXISTS;
         }
     }
 
-    if (storage_sensor_count() >= MAX_SENSORS) {
+    if (sensor_known_device_count >= MAX_SENSORS) {
         return STATUS_STORAGE_FULL;
     }
 
@@ -118,13 +119,18 @@ static uint8_t check_sensor_storage(uint16_t device_id)
 static void update_sensor_storage(uint16_t device_id, uint16_t version)
 {
     sensor_entry_t entry;
-    for (int i = 0; i < storage_sensor_count(); i++) {
-        if (storage_sensor_get(i, &entry) == 0 && entry.device_id == device_id) {
+    for (int i = 0; i < sensor_known_device_count; i++) {
+        if (sensor_known_devices[i].device_id == device_id) {
+            int err = storage_sensor_get(i, &entry);
+            if (err) {
+                LOG_ERR("Failed to get sensor entry for device %d, err %d", device_id, err);
+                return;
+            }
             if (entry.version == version) {
                 return;
             }
             entry.version = version;
-            int err = storage_sensor_update(i, &entry);
+            err = storage_sensor_update(i, &entry);
             if (err) {
                 LOG_ERR("Failed to update sensor entry for device %d, err %d", device_id, err);
             }
@@ -280,17 +286,23 @@ static void build_route_info_and_send(uint16_t dst_id, uint8_t dst_type, const r
             }
         }
     } else if (route != NULL) {
-        route_entry_t known_entry;
+        route_entry_t known_entry = {0};
         uint8_t idx = 0;
+        /* The RAM table only mirrors the *best* next-hop. To check whether
+         * dst_id is any known next-hop, scan the EEPROM route_info list. */
         for (int i = 0; i < known_route_count; i++) {
-            if (known_route_table[i].device_id == route->device_id) {
-                for (idx = 0; idx < MAX_ANCHORS; idx++) {
-                    if (known_route_table[i].next_device_id[idx] == dst_id) {
-                        storage_route_get(i, &known_entry);
-                        break;
-                    }
+            if (known_route_table[i].device_id != route->device_id) {
+                continue;
+            }
+            if (storage_route_get(i, &known_entry) != 0) {
+                break;
+            }
+            for (idx = 0; idx < known_entry.route_count; idx++) {
+                if (known_entry.route_info[idx].next_hop_id == dst_id) {
+                    break;
                 }
             }
+            break;
         }
 
         for (int i = 0; i < storage_infra_count(); i++) {
@@ -1404,11 +1416,11 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
                 // Check if device is already paired with this anchor/gateway
-                status = check_infra_storage(pkt->hdr.device_id, pkt->hdr.device_type, true);
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
                 if (status == STATUS_ALREADY_EXISTS) {
                     // Update the infra storage with new hop number and rssi
-                    if (update_infra_storage(pkt->hdr.device_id, pkt->hop_num, rssi_2)) {
-                        LOG_INF("Updated infra storage for device %s ID:%d based on REPAIR_RESPONSE", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                    if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
+                        LOG_INF("Updated infra storage for device %s ID:%d based on REPAIR_RESPONSE", device_type_str(pkt->hdr.device_type), dst_id);
                     }
                 } else if (status == STATUS_SUCCESS) {
                     infra_entry_t entry;

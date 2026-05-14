@@ -24,15 +24,6 @@ extern uint8_t DEVICE_HOP_NUMBER;
  * Gateway = 0, Anchor = best infra device ID, Sensor = paired device ID. */
 extern uint16_t CONNECTED_DEVICE_ID;
 
-/* Known Routes Information */
-typedef struct {
-    uint16_t device_id;
-    uint16_t next_device_id[MAX_ANCHORS];
-} known_route_t;
-
-extern known_route_t known_route_table[MAX_DEVICES];
-extern uint16_t known_route_count;
-
 /* Read GPIO pins P0.21/P0.23 to set device type.
  * Must be called before any mesh operations. */
 int product_info_init(void);

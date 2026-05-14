@@ -20,11 +20,12 @@ static const struct device *eeprom_dev = DEVICE_DT_GET(DT_NODELABEL(eeprom));
 /* Cached entry counts (avoid reading header every time). */
 uint8_t infra_known_device_count;
 uint8_t sensor_known_device_count;
+uint16_t known_route_count;
 static uint16_t mesh_count;
-static uint16_t route_count;
 
 infra_known_entry_t  infra_known_devices[MAX_ANCHORS];
 sensor_known_entry_t sensor_known_devices[MAX_SENSORS];
+known_route_t known_route_table[MAX_DEVICES];
 
 /* ---- Internal helpers ---- */
 
@@ -106,11 +107,12 @@ int storage_init(void)
 		return err;
 	}
 
-	err = read_header(STORAGE_PART4_OFFSET, &route_count);
+	err = read_header(STORAGE_PART4_OFFSET, &count);
 	if (err) {
 		LOG_ERR("Failed to read partition 4 header, err %d", err);
 		return err;
 	}
+	known_route_count = count;
 
 	// Update Known infrastructure devices from storage
 	LOG_INF("----------Loading %d infra entries from storage----------", infra_known_device_count);
@@ -122,7 +124,7 @@ int storage_init(void)
 			infra_known_devices[i].device_id = 0xFFFF; /* Mark invalid */
 			continue;
 		}
-		LOG_WRN("		Infra entry %d %s ID:%d from storage", i, device_type_str(entry.device_type), entry.device_id);
+		LOG_INF("		Infra entry %d %s ID:%d from storage", i, device_type_str(entry.device_type), entry.device_id);
 		infra_known_devices[i].device_type = entry.device_type;
 		infra_known_devices[i].device_id = entry.device_id;
 		infra_known_devices[i].last_comm_ms = 0;
@@ -140,33 +142,48 @@ int storage_init(void)
 			sensor_known_devices[i].device_id = 0xFFFF; /* Mark invalid */
 			continue;
 		}
-		LOG_WRN("		Sensor entry %d %s ID:%d from storage", i, device_type_str(DEVICE_TYPE_SENSOR), entry.device_id);
+		LOG_INF("		Sensor entry %d %s ID:%d from storage", i, device_type_str(DEVICE_TYPE_SENSOR), entry.device_id);
 		sensor_known_devices[i].device_id = entry.device_id;
 		sensor_known_devices[i].last_comm_ms = 0;
 		sensor_known_devices[i].comm_failures = 0;
 		sensor_known_devices[i].is_ping_packet_sent = false;
 	}
 
+	// Print Mesh entries from storage
+	LOG_INF("----------Loading %d mesh entries from storage----------", mesh_count);
+	for (uint16_t i = 0; i < mesh_count; i++) {
+		mesh_entry_t entry;
+		err = storage_mesh_get(i, &entry);
+		if (err) {
+			LOG_ERR("		Failed to read mesh entry %d, err %d", i, err);
+			continue;
+		}
+		LOG_INF("		Mesh entry %d device %s ID:%d SN: %lld V: %d conn_dev: %d hop_num: %d sensor_count: %d from storage",
+			i, device_type_str(entry.device_type), entry.device_id, entry.serial_num, entry.version, entry.connected_device_id, entry.hop_num, entry.sensor_count);
+	}
+
 	// Update Known routes from storage
-	known_route_count = route_count;
-	for (uint16_t i = 0; i < route_count; i++) {
+	LOG_INF("----------Loading %d route entries from storage----------", known_route_count);
+	for (uint16_t i = 0; i < known_route_count; i++) {
 		route_entry_t entry;
 		err = storage_route_get(i, &entry);
 		if (err) {
-			LOG_ERR("Failed to read route entry %d, err %d", i, err);
-			known_route_table[i].device_id = 0xFFFF; /* Mark invalid */
+			LOG_ERR("		Failed to read route entry %d, err %d", i, err);
+			known_route_table[i].device_id = 0xFFFF;
+			known_route_table[i].next_device_id = 0xFFFF;
 			continue;
 		}
-		LOG_WRN("Loading route entry %d %s ID:%d from storage", i, device_type_str(entry.device_type), entry.device_id);
-		known_route_table[i].device_id = entry.device_id;
+		LOG_INF("		Route entry %d device %s ID:%d with %d routes from storage", i, device_type_str(entry.device_type), entry.device_id, entry.route_count);
 		for (int j = 0; j < entry.route_count; j++) {
-			known_route_table[i].next_device_id[j] = entry.route_info[j].next_hop_id;
-			LOG_INF("  next hop %d: ID:%d", j, known_route_table[i].next_device_id[j]);
+			LOG_INF("			ID: %d Route_len: %d Avg_RSSI: %d", entry.route_info[j].next_hop_id, entry.route_info[j].route_length, entry.route_info[j].avg_rssi_2);
 		}
+		/* Mirror the best route (index 0 after sort) into the RAM table. */
+		known_route_table[i].device_id = entry.device_id;
+		known_route_table[i].next_device_id = (entry.route_count > 0) ? entry.route_info[0].next_hop_id : 0xFFFF;
 	}
-
-	LOG_INF("Storage init: infra=%d sensors=%d mesh=%d routes=%d",
-		infra_known_device_count, sensor_known_device_count, mesh_count, route_count);
+	
+	LOG_INF("---------------------------------------------------------");
+	LOG_INF("Storage init: infra=%d sensors=%d mesh=%d routes=%d", infra_known_device_count, sensor_known_device_count, mesh_count, known_route_count);
 
 	return 0;
 }
@@ -260,6 +277,12 @@ int storage_infra_add(const infra_entry_t *entry)
 	if (err) {
 		return err;
 	}
+
+	infra_known_devices[infra_known_device_count].device_type = entry->device_type;
+	infra_known_devices[infra_known_device_count].device_id = entry->device_id;
+	infra_known_devices[infra_known_device_count].last_comm_ms = 0;
+	infra_known_devices[infra_known_device_count].comm_failures = 0;
+	infra_known_devices[infra_known_device_count].is_ping_packet_sent = false;
 
 	infra_known_device_count++;
 
@@ -497,10 +520,14 @@ int storage_mesh_remove(uint16_t index)
 
 /* Sort entry->route_info[0..route_count-1] in place:
  *   primary key: route_length ascending (shorter = better),
- *   secondary key: avg_rssi_2 ascending (smaller = stronger).
+ *   secondary key: signed avg_rssi_2 descending (stronger signal first).
  * Best route ends up at index 0. */
 static void sort_routes(route_entry_t *entry)
 {
+	if (entry->route_count < 2) {
+		return;
+	}
+
 	for (int i = 0; i < entry->route_count - 1; i++) {
 		for (int j = 0; j < entry->route_count - i - 1; j++) {
 			bool swap = false;
@@ -508,7 +535,7 @@ static void sort_routes(route_entry_t *entry)
 			if (entry->route_info[j].route_length > entry->route_info[j + 1].route_length) {
 				swap = true;
 			} else if (entry->route_info[j].route_length == entry->route_info[j + 1].route_length &&
-				   entry->route_info[j].avg_rssi_2 > entry->route_info[j + 1].avg_rssi_2) {
+				   (int16_t)entry->route_info[j].avg_rssi_2 < (int16_t)entry->route_info[j + 1].avg_rssi_2) {
 				swap = true;
 			}
 
@@ -521,125 +548,115 @@ static void sort_routes(route_entry_t *entry)
 	}
 }
 
-static int add_new_route(bool new_entry, uint16_t dst_id, uint16_t device_id, uint8_t device_type, uint8_t route_len, int16_t avg_rssi_2, uint16_t device_id_index) {
+static int add_new_route(bool new_entry, uint16_t next_hop_id, uint16_t device_id, uint8_t device_type, uint8_t route_len, int16_t avg_rssi_2, uint16_t device_id_index)
+{
 	int err = 0;
 
 	if (new_entry) {
-		route_entry_t new_entry = {
+		route_entry_t new_route_entry = {
 			.device_type = device_type,
 			.device_id = device_id,
 			.route_count = 1,
-			.route_info = { { .next_hop_id = dst_id, .route_length = route_len, .avg_rssi_2 = avg_rssi_2 } },
+			.route_info = { { .next_hop_id = next_hop_id, .route_length = route_len, .avg_rssi_2 = (uint16_t)avg_rssi_2 } },
 		};
-		err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &new_entry, sizeof(new_entry));
+		err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &new_route_entry, sizeof(new_route_entry));
 		if (err) {
 			return err;
 		}
-		// also update known route table in memory
+
+		/* Update in-RAM table: only the best next-hop is mirrored. Since this
+		 * is the first (and only) route for the device, it's also the best. */
 		known_route_table[known_route_count].device_id = device_id;
-		known_route_table[known_route_count++].next_device_id[0] = dst_id;
-		route_count++;
-		return write_header(STORAGE_PART4_OFFSET, route_count);
-	} else {
-		route_entry_t entry;
-		err = read_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
+		known_route_table[known_route_count].next_device_id = next_hop_id;
+		known_route_count++;
+		return write_header(STORAGE_PART4_OFFSET, known_route_count);
+	}
+
+	/* Update existing device's routes. */
+	route_entry_t entry;
+	err = read_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
+	if (err) {
+		return err;
+	}
+
+	for (int i = 0; i < entry.route_count; i++) {
+		if (entry.route_info[i].next_hop_id == next_hop_id) {
+			/* Update existing route, but only if the new one is at least
+			 * as short. RSSI keeps the stronger signal (larger signed value). */
+			if (entry.route_info[i].route_length >= route_len) {
+				if ((int16_t)entry.route_info[i].avg_rssi_2 < avg_rssi_2) {
+					entry.route_info[i].avg_rssi_2 = (uint16_t)avg_rssi_2;
+				}
+				entry.route_info[i].route_length = route_len;
+			}
+
+			sort_routes(&entry);
+
+			err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
+			if (err) {
+				return err;
+			}
+
+			/* Mirror best (route_info[0]) into the RAM table. */
+			known_route_table[device_id_index].next_device_id = entry.route_info[0].next_hop_id;
+			return 0;
+		}
+	}
+
+	/* Route to this next_hop_id not found, add new route if we have space. */
+	if (entry.route_count < MAX_ANCHORS) {
+		entry.route_info[entry.route_count].next_hop_id = next_hop_id;
+		entry.route_info[entry.route_count].route_length = route_len;
+		entry.route_info[entry.route_count].avg_rssi_2 = (uint16_t)avg_rssi_2;
+		entry.route_count++;
+
+		sort_routes(&entry);
+
+		err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
 		if (err) {
 			return err;
 		}
-		for (int i = 0; i < entry.route_count; i++) {
-			if (entry.route_info[i].next_hop_id == dst_id) {
-				// Update existing route
-				if (entry.route_info[i].route_length >= route_len) {
-					if (entry.route_info[i].avg_rssi_2 > avg_rssi_2) {
-						entry.route_info[i].avg_rssi_2 = avg_rssi_2;
-					}
-					entry.route_info[i].route_length = route_len;
-				}
-				err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
-				if (err) {
-					return err;
-				}
-				// Sort routes by route length (and then by RSSI if lengths are equal)
-				sort_routes(&entry);
-				// Update in EEPROM after sorting
-				err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
-				if (err) {
-					return err;
-				}
-				// also update known route table in memory
-				for (int j = 0; j < entry.route_count; j++) {
-					known_route_table[device_id_index].next_device_id[j] = entry.route_info[j].next_hop_id;
-				}
-				return err;
-			}
-		}
-		// Route to this dst_id not found, add new route if we have space
-		if (entry.route_count < MAX_ANCHORS) {
-			entry.route_info[entry.route_count].next_hop_id = dst_id;
-			entry.route_info[entry.route_count].route_length = route_len;
-			entry.route_info[entry.route_count].avg_rssi_2 = avg_rssi_2;
-			entry.route_count++;
-			err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
-			if (err) {
-				return err;
-			}
-			// Sort routes by route length (and then by RSSI if lengths are equal)
-			sort_routes(&entry);
-			// Update in EEPROM after sorting
-			err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
-			if (err) {
-				return err;
-			}
-			// also update known route table in memory
-			for (int j = 0; j < entry.route_count; j++) {
-				known_route_table[device_id_index].next_device_id[j] = entry.route_info[j].next_hop_id;
-			}
-			return err;
-		}
-		return -ENOMEM;
+
+		known_route_table[device_id_index].next_device_id = entry.route_info[0].next_hop_id;
+		return 0;
 	}
+	return -ENOMEM;
 }
 
-int storage_route_add(uint16_t dst_id, uint16_t device_id, uint8_t device_type, uint8_t route_len, int16_t avg_rssi_2)
+int storage_route_add(uint16_t next_hop_id, uint16_t device_id, uint8_t device_type, uint8_t route_len, int16_t avg_rssi_2)
 {
-	if (route_count == 0) {
-		// No existing routes, add new entry
-		return add_new_route(true, dst_id, device_id, device_type, route_len, avg_rssi_2, 0);
-	}
-
-	uint16_t device_id_index = 0;
+	/* Find existing device entry; loop naturally terminates at known_route_count
+	 * if not found (covers the empty-table case without a special-case shortcut). */
+	uint16_t device_id_index;
 
 	for (device_id_index = 0; device_id_index < known_route_count; device_id_index++) {
 		if (known_route_table[device_id_index].device_id == device_id) {
 			break;
 		}
 	}
-	// If we didn't find an existing entry for this device, add a new one
-	if (device_id_index == known_route_count && known_route_count < MAX_DEVICES) {
-		// Add new entry
-		return add_new_route(true, dst_id, device_id, device_type, route_len, avg_rssi_2, device_id_index);
-	} else if (device_id_index == known_route_count) {
-		// No existing entry and no space for new entry
-		LOG_WRN("Route partition full, cannot add route for device_id 0x%04X", device_id);
-		return -ENOMEM;
-	}
-	// We found an existing entry for this device, add/update route in that entry
-	return add_new_route(false, dst_id, device_id, device_type, route_len, avg_rssi_2, device_id_index);
 
+	if (device_id_index == known_route_count) {
+		if (known_route_count >= MAX_DEVICES) {
+			LOG_WRN("Route partition full, cannot add route for device_id 0x%04X", device_id);
+			return -ENOMEM;
+		}
+		return add_new_route(true, next_hop_id, device_id, device_type, route_len, avg_rssi_2, device_id_index);
+	}
+	return add_new_route(false, next_hop_id, device_id, device_type, route_len, avg_rssi_2, device_id_index);
 }
 
 int storage_route_get(uint16_t index, route_entry_t *entry)
 {
-	if (index >= route_count) {
+	if (index >= known_route_count) {
 		return -EINVAL;
 	}
 
 	return read_entry(STORAGE_PART4_OFFSET, index, entry, sizeof(*entry));
 }
 
-int storage_route_remove(uint16_t device_id, uint16_t dst_id)
+int storage_route_remove(uint16_t device_id, uint16_t next_hop_id)
 {
-	uint16_t index = 0;
+	uint16_t index;
 	for (index = 0; index < known_route_count; index++) {
 		if (known_route_table[index].device_id == device_id) {
 			break;
@@ -649,46 +666,67 @@ int storage_route_remove(uint16_t device_id, uint16_t dst_id)
 		return -EINVAL;
 	}
 
-	/* Shift entries after index up by one. */
 	route_entry_t entry;
 	int err = read_entry(STORAGE_PART4_OFFSET, index, &entry, sizeof(entry));
 	if (err) {
 		return err;
 	}
+
 	for (uint8_t i = 0; i < entry.route_count; i++) {
-		if (entry.route_info[i].next_hop_id == dst_id) {
-			// Shift remaining routes up by one
-			for (uint8_t j = i + 1; j < entry.route_count; j++) {
-				entry.route_info[j - 1] = entry.route_info[j];
-			}
-			entry.route_count--;
-			err = write_entry(STORAGE_PART4_OFFSET, index, &entry, sizeof(entry));
-			if (err) {
-				return err;
-			}
-			if (entry.route_count == 0) {
-				for (int j = 0; j < MAX_ANCHORS; j++) {
-					known_route_table[index].next_device_id[j] = 0xFFFF; /* Mark invalid */
+		if (entry.route_info[i].next_hop_id != next_hop_id) {
+			continue;
+		}
+
+		/* Shift remaining routes up by one. */
+		for (uint8_t j = i + 1; j < entry.route_count; j++) {
+			entry.route_info[j - 1] = entry.route_info[j];
+		}
+		entry.route_count--;
+
+		if (entry.route_count == 0) {
+			/* Last route for this device removed — shift the whole device
+			 * entry out of the partition so it doesn't linger forever. */
+			for (uint16_t k = index + 1; k < known_route_count; k++) {
+				route_entry_t shifted;
+				err = read_entry(STORAGE_PART4_OFFSET, k, &shifted, sizeof(shifted));
+				if (err) {
+					return err;
 				}
-				return err;
+				err = write_entry(STORAGE_PART4_OFFSET, k - 1, &shifted, sizeof(shifted));
+				if (err) {
+					return err;
+				}
+				known_route_table[k - 1] = known_route_table[k];
 			}
-			// also update known route table in memory
-			for (int j = 0; j < entry.route_count; j++) {
-				known_route_table[index].next_device_id[j] = entry.route_info[j].next_hop_id;
-			}
+			known_route_count--;
+			known_route_table[known_route_count].device_id = 0xFFFF;
+			known_route_table[known_route_count].next_device_id = 0xFFFF;
+			return write_header(STORAGE_PART4_OFFSET, known_route_count);
+		}
+
+		err = write_entry(STORAGE_PART4_OFFSET, index, &entry, sizeof(entry));
+		if (err) {
 			return err;
 		}
+
+		/* Mirror best (route_info[0]) into the RAM table. */
+		known_route_table[index].next_device_id = entry.route_info[0].next_hop_id;
+		return 0;
 	}
 	return -EINVAL;
 }
 
 int storage_route_count(void)
 {
-	return route_count;
+	return known_route_count;
 }
 
 int storage_route_clear(void)
 {
-	route_count = 0;
+	known_route_count = 0;
+	for (int i = 0; i < MAX_DEVICES; i++) {
+		known_route_table[i].device_id = 0xFFFF;
+		known_route_table[i].next_device_id = 0xFFFF;
+	}
 	return write_header(STORAGE_PART4_OFFSET, 0);
 }

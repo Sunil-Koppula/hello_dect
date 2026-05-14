@@ -115,6 +115,15 @@ typedef struct {
 	route_t route_info[MAX_ANCHORS];    /* routing info to reach this device */
 } __attribute__((packed)) route_entry_t;
 
+/* Known Routes Information */
+typedef struct {
+    uint16_t device_id;
+    uint16_t next_device_id;
+} known_route_t;
+
+extern known_route_t known_route_table[MAX_DEVICES];
+extern uint16_t known_route_count;
+
 /* Initialize storage (must be called once at boot). */
 int storage_init(void);
 

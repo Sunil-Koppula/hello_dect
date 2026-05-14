@@ -7,8 +7,8 @@
 #include "product_info.h"
 
 #define QUEUE_DATA_MAX 200 /* Max Data */
-#define QUEUE_DEPTH 80
-#define MAX_QUEUE_PROCESS_PER_CYCLE 4
+#define QUEUE_DEPTH 50
+#define MAX_QUEUE_PROCESS_PER_CYCLE 10
 
 /* Priority levels (drained in order: HIGH → MEDIUM → LOW). */
 enum queue_priority {

@@ -34,9 +34,6 @@ uint64_t SERIAL_NUMBER;
 uint8_t DEVICE_HOP_NUMBER;
 uint16_t CONNECTED_DEVICE_ID;
 
-known_route_t known_route_table[MAX_DEVICES];
-uint16_t known_route_count;
-
 int product_info_init(void)
 {
 	int err;
@@ -265,11 +262,7 @@ uint16_t get_next_hop_device_id(uint16_t device_id)
 {
 	for (int i = 0; i < known_route_count; i++) {
 		if (known_route_table[i].device_id == device_id) {
-			if (known_route_table[i].next_device_id[0] != 0xFFFF) {
-				return known_route_table[i].next_device_id[0];
-			} else {
-				return 0xFFFF; // No valid next hop
-			}
+			return known_route_table[i].next_device_id;
 		}
 	}
 	return 0xFFFF; // Device ID not found in route table
