@@ -103,11 +103,6 @@ int product_info_init(void)
 		DEVICE_HOP_NUMBER = 0xFF;  /* anchor: updated after pairing */
 		break;
 	}
-	product_info_update_hop();
-
-	LOG_INF("Device type: %s, SN: 0x%016llx, Hop: %d",
-		device_type_str(DEVICE_TYPE),
-		SERIAL_NUMBER, DEVICE_HOP_NUMBER);
 
 	return 0;
 }
@@ -118,7 +113,7 @@ void product_info_update_hop(void)
 		return;
 	}
 
-	if (infra_known_device_count == 0) {
+	if (infra_count == 0) {
 		LOG_WRN("No infra devices found, setting hop number to 0xFF and connected device ID to 0xFFFF");
 		DEVICE_HOP_NUMBER = 0xFF;
 		CONNECTED_DEVICE_ID = 0xFFFF;
@@ -147,20 +142,20 @@ void product_info_update_hop(void)
 
 bool is_known_device(uint16_t device_id)
 {
-	for (int i = 0; i < infra_known_device_count; i++) {
-		if (infra_known_devices[i].device_id == device_id) {
-			infra_known_devices[i].last_comm_ms = k_uptime_get();
-			infra_known_devices[i].comm_failures = 0;
-			infra_known_devices[i].is_ping_packet_sent = false;
+	for (int i = 0; i < infra_count; i++) {
+		if (infra_devices[i].entry.device_id == device_id) {
+			infra_devices[i].last_comm_ms = k_uptime_get();
+			infra_devices[i].comm_failures = 0;
+			infra_devices[i].is_ping_packet_sent = false;
 			return true;
 		}
 	}
 
-	for (int i = 0; i < sensor_known_device_count; i++) {
-		if (sensor_known_devices[i].device_id == device_id) {
-			sensor_known_devices[i].last_comm_ms = k_uptime_get();
-			sensor_known_devices[i].comm_failures = 0;
-			sensor_known_devices[i].is_ping_packet_sent = false;
+	for (int i = 0; i < sensor_count; i++) {
+		if (sensor_devices[i].entry.device_id == device_id) {
+			sensor_devices[i].last_comm_ms = k_uptime_get();
+			sensor_devices[i].comm_failures = 0;
+			sensor_devices[i].is_ping_packet_sent = false;
 			return true;
 		}
 	}
@@ -179,26 +174,26 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 		send_pair_request();
 		return;
 	} else if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
-		infra_known_devices[0].last_comm_ms = k_uptime_get();
-		infra_known_devices[0].comm_failures = 0;
-		infra_known_devices[0].is_ping_packet_sent = false;
+		infra_devices[0].last_comm_ms = k_uptime_get();
+		infra_devices[0].comm_failures = 0;
+		infra_devices[0].is_ping_packet_sent = false;
 		return;
 	}
 
 	uint64_t now = k_uptime_get();
 
-	for (int i = 0; i < infra_known_device_count; i++) {
-		if (infra_known_devices[i].device_id == device_id) {
+	for (int i = 0; i < infra_count; i++) {
+		if (infra_devices[i].entry.device_id == device_id) {
 			if (is_successful_comm) {
-				infra_known_devices[i].comm_failures = 0;
+				infra_devices[i].comm_failures = 0;
 			} else {
-				infra_known_devices[i].comm_failures++;
+				infra_devices[i].comm_failures++;
 			}
-			infra_known_devices[i].last_comm_ms = now;
-			infra_known_devices[i].is_ping_packet_sent = false;
+			infra_devices[i].last_comm_ms = now;
+			infra_devices[i].is_ping_packet_sent = false;
 
-			if (infra_known_devices[i].comm_failures >= MAX_COMM_FAILURES) {
-				LOG_WRN("Device ID:%d has %d consecutive communication failures, removing from known devices", device_id, infra_known_devices[i].comm_failures);
+			if (infra_devices[i].comm_failures >= MAX_COMM_FAILURES) {
+				LOG_WRN("Device ID:%d has %d consecutive communication failures, removing from known devices", device_id, infra_devices[i].comm_failures);
 				// Remove device from EEPROM and RAM
 				int err = storage_infra_remove(i);
 				if (err) {
@@ -211,18 +206,18 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 		}
 	}
 
-	for (int i = 0; i < sensor_known_device_count; i++) {
-		if (sensor_known_devices[i].device_id == device_id) {
+	for (int i = 0; i < sensor_count; i++) {
+		if (sensor_devices[i].entry.device_id == device_id) {
 			if (is_successful_comm) {
-				sensor_known_devices[i].comm_failures = 0;
+				sensor_devices[i].comm_failures = 0;
 			} else {
-				sensor_known_devices[i].comm_failures++;
+				sensor_devices[i].comm_failures++;
 			}
-			sensor_known_devices[i].last_comm_ms = now;
-			sensor_known_devices[i].is_ping_packet_sent = false;
+			sensor_devices[i].last_comm_ms = now;
+			sensor_devices[i].is_ping_packet_sent = false;
 
-			if (sensor_known_devices[i].comm_failures >= MAX_COMM_FAILURES) {
-				LOG_WRN("Device ID:%d has %d consecutive communication failures, removing from known devices", device_id, sensor_known_devices[i].comm_failures);
+			if (sensor_devices[i].comm_failures >= MAX_COMM_FAILURES) {
+				LOG_WRN("Device ID:%d has %d consecutive communication failures, removing from known devices", device_id, sensor_devices[i].comm_failures);
 				// Remove device from EEPROM and RAM
 				int err = storage_sensor_remove(i);
 				if (err) {
@@ -241,20 +236,20 @@ void known_devices_tick(void)
 {
 	uint64_t now = k_uptime_get();
 
-	for (int i = 0; i < infra_known_device_count; i++) {
-		if ((now - infra_known_devices[i].last_comm_ms > PING_TIMEOUT_MS) && !infra_known_devices[i].is_ping_packet_sent) {
+	for (int i = 0; i < infra_count; i++) {
+		if ((now - infra_devices[i].last_comm_ms > PING_TIMEOUT_MS) && !infra_devices[i].is_ping_packet_sent) {
 			// Send Ping Device packet to check if device is still reachable
-			send_ping_device(infra_known_devices[i].device_id, infra_known_devices[i].device_type, STATUS_SUCCESS);
-			infra_known_devices[i].is_ping_packet_sent = true;
+			send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
+			infra_devices[i].is_ping_packet_sent = true;
 		}
 	}
 }
 
 void ping_known_devices(void)
 {
-	for (int i = 0; i < infra_known_device_count; i++) {
-		send_ping_device(infra_known_devices[i].device_id, infra_known_devices[i].device_type, STATUS_SUCCESS);
-		infra_known_devices[i].is_ping_packet_sent = true;
+	for (int i = 0; i < infra_count; i++) {
+		send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
+		infra_devices[i].is_ping_packet_sent = true;
 	}
 }
 

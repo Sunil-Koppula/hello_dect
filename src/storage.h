@@ -49,20 +49,19 @@ typedef struct {
 	uint16_t device_id;        /* short device ID */
 	uint8_t  hop_num;          /* hop count from gateway */
 	uint16_t version;          /* firmware version */
-	uint16_t rssi_2;           /* RSSI */
+	int16_t rssi_2;            /* RSSI in 0.5 dBm units (signed; typically negative) */
 } __attribute__((packed)) infra_entry_t;
 
 // Stored in Internal RAM for fast access
 typedef struct {
-	uint8_t  device_type;      /* device_type_t */
-	uint16_t device_id;        /* short device ID */
-	uint64_t last_comm_ms;     /* timestamp of last communication with this device */
-	uint8_t comm_failures;     /* consecutive communication failures */
-	bool is_ping_packet_sent; /* whether a ping packet has been sent to this device after the last communication */
-} infra_known_entry_t;
+	infra_entry_t entry;		/* the actual infra entry data */
+	uint64_t last_comm_ms;     	/* timestamp of last communication with this device */
+	uint8_t comm_failures;     	/* consecutive communication failures */
+	bool is_ping_packet_sent; 	/* whether a ping packet has been sent to this device after the last communication */
+} infra_t;
 
-extern infra_known_entry_t infra_known_devices[MAX_ANCHORS];
-extern uint8_t infra_known_device_count;
+extern infra_t infra_devices[MAX_ANCHORS];
+extern uint8_t infra_count;
 
 /*
  * Partition 2 entry: Connected sensors.
@@ -75,14 +74,14 @@ typedef struct {
 
 // Stored in Internal RAM for fast access
 typedef struct {
-	uint16_t device_id;        /* sensor short device ID */
+	sensor_entry_t entry;		/* the actual sensor entry data */
 	uint64_t last_comm_ms;     /* timestamp of last communication with this sensor */
 	uint8_t comm_failures;     /* consecutive communication failures */
 	bool is_ping_packet_sent; /* whether a ping packet has been sent to this sensor after the last communication */
-} sensor_known_entry_t;
+} sensor_t;
 
-extern sensor_known_entry_t sensor_known_devices[MAX_SENSORS];
-extern uint8_t sensor_known_device_count;
+extern sensor_t sensor_devices[MAX_SENSORS];
+extern uint8_t sensor_count;
 
 /*
  * Partition 3 entry: Full mesh network table.
@@ -105,7 +104,7 @@ typedef struct {
 typedef struct {
 	uint16_t next_hop_id;    		/* short device ID of the next hop towards this device */
 	uint8_t route_length;     		/* number of hops to this device */
-	uint16_t avg_rssi_2;			/* Average RSSI to this device (in units of 0.5 dBm) */
+	int16_t avg_rssi_2;			/* Average RSSI to this device (in units of 0.5 dBm; signed) */
 } __attribute__((packed)) route_t;
 
 typedef struct {

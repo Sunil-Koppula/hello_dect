@@ -41,24 +41,24 @@ static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool
 {
     // Check Only first slot as sensor can only pair with one gateway/anchor, but anchor can pair with multiple sensors
     if (all_slots == false) {
-        if (infra_known_devices[0].device_id == device_id) {
+        if (infra_count >= 1 && infra_devices[0].entry.device_id == device_id) {
             return STATUS_ALREADY_EXISTS;
         }
 
-        if (infra_known_device_count >= 1) {
+        if (infra_count >= 1) {
             return STATUS_STORAGE_FULL;
         }
 
         return STATUS_SUCCESS;
     }
 
-    for (int i = 0; i < infra_known_device_count; i++) {
-        if (infra_known_devices[i].device_id == device_id) {
+    for (int i = 0; i < infra_count; i++) {
+        if (infra_devices[i].entry.device_id == device_id) {
             return STATUS_ALREADY_EXISTS;
         }
     }
 
-    if (infra_known_device_count >= MAX_ANCHORS) {
+    if (infra_count >= MAX_ANCHORS) {
         return STATUS_STORAGE_FULL;
     }
 
@@ -70,8 +70,8 @@ static bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rs
 {
     uint8_t current_hop_num = DEVICE_HOP_NUMBER;
     infra_entry_t entry;
-    for (int i = 0; i < infra_known_device_count; i++) {
-        if (infra_known_devices[i].device_id == device_id) {
+    for (int i = 0; i < infra_count; i++) {
+        if (infra_devices[i].entry.device_id == device_id) {
             int err = storage_infra_get(i, &entry);
             if (err) {
                 LOG_ERR("Failed to get infra entry for device %d, err %d", device_id, err);
@@ -102,13 +102,13 @@ static bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rs
 /* Check Sensor Storage */
 static uint8_t check_sensor_storage(uint16_t device_id)
 {
-    for (int i = 0; i < sensor_known_device_count; i++) {
-        if (sensor_known_devices[i].device_id == device_id) {
+    for (int i = 0; i < sensor_count; i++) {
+        if (sensor_devices[i].entry.device_id == device_id) {
             return STATUS_ALREADY_EXISTS;
         }
     }
 
-    if (sensor_known_device_count >= MAX_SENSORS) {
+    if (sensor_count >= MAX_SENSORS) {
         return STATUS_STORAGE_FULL;
     }
 
@@ -119,8 +119,8 @@ static uint8_t check_sensor_storage(uint16_t device_id)
 static void update_sensor_storage(uint16_t device_id, uint16_t version)
 {
     sensor_entry_t entry;
-    for (int i = 0; i < sensor_known_device_count; i++) {
-        if (sensor_known_devices[i].device_id == device_id) {
+    for (int i = 0; i < sensor_count; i++) {
+        if (sensor_devices[i].entry.device_id == device_id) {
             int err = storage_sensor_get(i, &entry);
             if (err) {
                 LOG_ERR("Failed to get sensor entry for device %d, err %d", device_id, err);
@@ -784,7 +784,7 @@ void handle_joined_network(const joined_network_t *pkt, uint16_t dst_id, int16_t
         return;
     }
 
-    LOG_INF("----> Received JOINED_NETWORK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->device_id), pkt->device_id, (rssi_2 / 2), pkt->hdr.status);
+    LOG_INF("----> Received JOINED_NETWORK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, (rssi_2 / 2), pkt->hdr.status);
 
     // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
     if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
@@ -839,7 +839,7 @@ void handle_joined_network(const joined_network_t *pkt, uint16_t dst_id, int16_t
                     .dst_device_type = pkt->device_type,
                 };
                 send_joined_network_ack(&ack_pkt, dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, STATUS_SUCCESS);
-                LOG_INF("Forwarding JOINED_NETWORK from %s ID:%d  for %s ID:%d upstream", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->device_id), pkt->device_id);
+                LOG_INF("Forwarding JOINED_NETWORK from %s ID:%d  for %s ID:%d upstream", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->device_type), pkt->device_id);
                 infra_entry_t entry;
                 storage_infra_get(0, &entry);
                 send_joined_network(pkt, entry.device_id, entry.device_type, STATUS_SUCCESS);

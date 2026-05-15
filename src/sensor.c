@@ -37,11 +37,14 @@ static int sensor_init(void)
 	data_init();
 	large_data_init();
 	config_init();
+	
+	product_info_update_hop();
+	LOG_INF("Initialization --- Device type: %s, SN: 0x%016llx, Hop: %d", device_type_str(DEVICE_TYPE), SERIAL_NUMBER, DEVICE_HOP_NUMBER);
 
 	/* Check EEPROM partition 1 — sensor can pair with only one device. */
-	if (infra_known_device_count > 0) {
-			paired_device_id = infra_known_devices[0].device_id;
-			paired_device_type = infra_known_devices[0].device_type;
+	if (infra_count > 0) {
+			paired_device_id = infra_devices[0].entry.device_id;
+			paired_device_type = infra_devices[0].entry.device_type;
 			infra_entry_t entry;
 			int err = storage_infra_get(0, &entry);
 			if (err) {

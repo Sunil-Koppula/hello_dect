@@ -33,10 +33,12 @@ static int anchor_init(void)
 	data_init();
 	large_data_init();
 	config_init();
-
-	if (infra_known_device_count > 0) {
+	
+	product_info_update_hop();
+	LOG_INF("Initialization --- Device type: %s, SN: 0x%016llx, Hop: %d", device_type_str(DEVICE_TYPE), SERIAL_NUMBER, DEVICE_HOP_NUMBER);
+	if (infra_count > 0) {
 		product_info_update_hop();
-		if (infra_known_device_count >= MAX_ANCHORS) {
+		if (infra_count >= MAX_ANCHORS) {
 			ping_known_devices();
 			return 0;
 		}

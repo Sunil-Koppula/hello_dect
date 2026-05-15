@@ -33,6 +33,8 @@ static int gateway_init(void)
 	data_init();
 	large_data_init();
 	config_init();
+	product_info_update_hop();
+	LOG_INF("Initialization --- Device type: %s, SN: 0x%016llx, Hop: %d", device_type_str(DEVICE_TYPE), SERIAL_NUMBER, DEVICE_HOP_NUMBER);
 
 	if (storage_mesh_count() > 0) {
 		LOG_INF("------------DEVICES IN MESH STORAGE------------");
