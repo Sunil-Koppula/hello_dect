@@ -27,15 +27,9 @@ target_sources(app PRIVATE
   src/large_data.c
   src/spi_bus.c
   src/serial.c
+  src/storage.c
 )
 
 # Testing utilities
 target_sources(app PRIVATE src/testing/factory_reset.c)
 target_sources(app PRIVATE src/testing/buttons.c)
-
-# Storage backend: NVS flash or EEPROM
-if(CONFIG_USE_NVS_STORAGE)
-  target_sources(app PRIVATE src/testing/nvs_flash.c)
-else()
-  target_sources(app PRIVATE src/storage.c)
-endif()

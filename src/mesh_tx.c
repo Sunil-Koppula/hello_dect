@@ -2,7 +2,6 @@
 
 #include <string.h>
 #include <zephyr/kernel.h>
-#include <zephyr/logging/log.h>
 #include <zephyr/random/random.h>
 #include "main_sub.h"
 #include "mesh.h"
@@ -11,6 +10,7 @@
 #include "product_info.h"
 #include "radio.h"
 #include "queue.h"
+#include "log_color.h"
 
 LOG_MODULE_REGISTER(mesh_tx, CONFIG_MESH_TX_LOG_LEVEL);
 
@@ -55,7 +55,7 @@ int send_pair_request(void)
     // Add tracker entry for retries
     tracker_add(radio_get_device_id(), 0, packet.hdr.tracking_id, PACKET_PAIR_REQUEST, 5 * PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
-    LOG_INF("----> Sending PAIR_REQUEST");
+    LOG_INF_GRN("Sending PAIR_REQUEST");
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -74,7 +74,7 @@ int send_pair_response(uint16_t dst_id,uint8_t dst_type ,uint8_t tracking_id, ui
         .hop_num = DEVICE_HOP_NUMBER,
     };
 
-    LOG_INF("----> Sending PAIR_RESPONSE to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, DEVICE_HOP_NUMBER, status);
+    LOG_INF_GRN("Sending PAIR_RESPONSE to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, DEVICE_HOP_NUMBER, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -98,7 +98,7 @@ int send_pair_confirm(uint16_t dst_id, uint8_t dst_type, uint8_t status)
     // Add tracker entry for retries
     tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_PAIR_CONFIRM, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
-    LOG_INF("----> Sending PAIR_CONFIRM to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, DEVICE_HOP_NUMBER, status);
+    LOG_INF_GRN("Sending PAIR_CONFIRM to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, DEVICE_HOP_NUMBER, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -117,7 +117,7 @@ int send_pair_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_
         .hop_num = DEVICE_HOP_NUMBER,
     };
 
-    LOG_INF("----> Sending PAIR_ACK to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, DEVICE_HOP_NUMBER, status);
+    LOG_INF_GRN("Sending PAIR_ACK to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, DEVICE_HOP_NUMBER, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -145,7 +145,7 @@ int send_joined_network(const joined_network_t *pkt, uint16_t dst_id, uint8_t ds
     // Add tracker entry for retries
     tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_JOINED_NETWORK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
-    LOG_INF("----> Sending JOINED_NETWORK to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, status);
+    LOG_INF_GRN("Sending JOINED_NETWORK to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -165,7 +165,7 @@ int send_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id, ui
         .dst_device_type = pkt->dst_device_type,
     };
 
-    LOG_INF("----> Sending JOINED_NETWORK_ACK to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id, status);
+    LOG_INF_GRN("Sending JOINED_NETWORK_ACK to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -189,7 +189,7 @@ int send_ping_device(uint16_t dst_id, uint8_t dst_type, uint8_t status)
     // Add tracker entry for retries
     tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_PING_DEVICE, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
-    LOG_INF("----> Sending PING_DEVICE to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
+    LOG_INF_GRN("Sending PING_DEVICE to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -210,7 +210,7 @@ int send_ping_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_
         .timestamp = mesh_time_get() + 15,
     };
 
-    LOG_INF("----> Sending PING_ACK to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
+    LOG_INF_GRN("Sending PING_ACK to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -238,7 +238,7 @@ int send_device_updated(const device_updated_t *pkt, uint16_t dst_id, uint8_t ds
     // Add tracker entry for retries
     tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_DEVICE_UPDATED, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
-    LOG_INF("----> Sending DEVICE_UPDATED to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, status);
+    LOG_INF_GRN("Sending DEVICE_UPDATED to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -258,7 +258,7 @@ int send_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id, ui
         .dst_device_type = pkt->dst_device_type,
     };
 
-    LOG_INF("----> Sending DEVICE_UPDATED_ACK to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id, status);
+    LOG_INF_GRN("Sending DEVICE_UPDATED_ACK to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -286,7 +286,7 @@ int send_repair_request(uint16_t dst_id, uint8_t dst_type)
     // Add tracker entry for retries
     tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_REPAIR_REQUEST, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
-    LOG_INF("----> Sending REPAIR_REQUEST to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, STATUS_SUCCESS);
+    LOG_INF_GRN("Sending REPAIR_REQUEST to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, STATUS_SUCCESS);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -306,7 +306,7 @@ int send_repair_response(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id,
         .hop_num = DEVICE_HOP_NUMBER,
     };
 
-    LOG_INF("----> Sending REPAIR_RESPONSE to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
+    LOG_INF_GRN("Sending REPAIR_RESPONSE to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -331,7 +331,7 @@ int send_route_info(const route_info_t *pkt, uint16_t dst_id, uint8_t dst_type, 
     // Add tracker entry for retries
     tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_ROUTE_INFO, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
-    LOG_INF("----> Sending ROUTE_INFO to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
+    LOG_INF_GRN("Sending ROUTE_INFO to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
@@ -353,7 +353,7 @@ int send_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, uint8_t ds
         .avg_rssi_2 = pkt->avg_rssi_2,
     };
 
-    LOG_INF("----> Sending ROUTE_INFO_ACK to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
+    LOG_INF_GRN("Sending ROUTE_INFO_ACK to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 

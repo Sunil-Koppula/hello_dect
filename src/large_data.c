@@ -685,7 +685,7 @@ int large_data_init(void)
         is_ld_slot_empty[i] = true;
     }
 
-    LOG_INF("Large Data module initialized with %d slots", LARGE_DATA_RECEIVER_SLOT_COUNT);
+    LOG_INF("Large Data module initialized with %d slots at PSRAM 0x%06x-0x%06x", LARGE_DATA_RECEIVER_SLOT_COUNT, LARGE_DATA_PSRAM_BASE, LARGE_DATA_PSRAM_BASE + LARGE_DATA_PSRAM_SIZE - 1);
 
     return 0;
 }

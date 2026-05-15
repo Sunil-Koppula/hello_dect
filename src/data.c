@@ -685,9 +685,8 @@ int data_init(void)
 	}
 	sender.active = false;
 
-	LOG_INF("Data module: %d slots x %d bytes at PSRAM 0x%06x-0x%06x",
-		DATA_SLOT_COUNT, DATA_MAX_TRANSFER_SIZE,
-		DATA_PSRAM_BASE, DATA_PSRAM_BASE + DATA_PSRAM_SIZE - 1);
+	LOG_INF("Data module Initialized with %d slots (slot size=%d) at PSRAM 0x%06x-0x%06x", DATA_SLOT_COUNT,
+		DATA_MAX_TRANSFER_SIZE, DATA_PSRAM_BASE, DATA_PSRAM_BASE + DATA_PSRAM_SIZE - 1);
 
 	return 0;
 }

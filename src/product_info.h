@@ -24,12 +24,15 @@ extern uint8_t DEVICE_HOP_NUMBER;
  * Gateway = 0, Anchor = best infra device ID, Sensor = paired device ID. */
 extern uint16_t CONNECTED_DEVICE_ID;
 
+/* Number of devices in the mesh network. */
+extern uint16_t MESH_DEVICES_COUNT;
+
 /* Read GPIO pins P0.21/P0.23 to set device type.
  * Must be called before any mesh operations. */
 int product_info_init(void);
 
 /* Update hop number (called after pairing for anchors). */
-void product_info_update_hop(void);
+void device_info_update(void);
 
 /* Update the list of known devices in the radio module. */
 void update_known_devices(void);

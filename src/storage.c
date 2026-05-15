@@ -9,7 +9,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/eeprom.h>
-#include <zephyr/logging/log.h>
+#include "log_color.h"
 #include "storage.h"
 #include "product_info.h"
 
@@ -87,27 +87,27 @@ int storage_init(void)
 		return -ENODEV;
 	}
 
-	err = read_header(STORAGE_PART1_OFFSET, &count);
+	err = read_header(STORAGE_INFRA_OFFSET, &count);
 	if (err) {
 		LOG_ERR("Failed to read partition 1 header, err %d", err);
 		return err;
 	}
 	infra_count = (uint8_t)count;
 	
-	err = read_header(STORAGE_PART2_OFFSET, &count);
+	err = read_header(STORAGE_SENSOR_OFFSET, &count);
 	if (err) {
 		LOG_ERR("Failed to read partition 2 header, err %d", err);
 		return err;
 	}
 	sensor_count = (uint8_t)count;
 
-	err = read_header(STORAGE_PART3_OFFSET, &mesh_count);
+	err = read_header(STORAGE_MESH_OFFSET, &mesh_count);
 	if (err) {
 		LOG_ERR("Failed to read partition 3 header, err %d", err);
 		return err;
 	}
 
-	err = read_header(STORAGE_PART4_OFFSET, &count);
+	err = read_header(STORAGE_ROUTING_OFFSET, &count);
 	if (err) {
 		LOG_ERR("Failed to read partition 4 header, err %d", err);
 		return err;
@@ -117,75 +117,81 @@ int storage_init(void)
 	// Update Known infrastructure devices from storage.
 	// Use the EEPROM helper directly here — storage_infra_get() now reads
 	// from RAM, which is uninitialized until this loop runs.
-	LOG_INF("----------Loading %d infra entries from storage----------", infra_count);
+	LOG_INF_CYAN("Loading %d infra entries from storage", infra_count);
 	for (uint8_t i = 0; i < infra_count; i++) {
 		infra_entry_t entry;
-		err = read_entry(STORAGE_PART1_OFFSET, i, &entry, sizeof(entry));
+		err = read_entry(STORAGE_INFRA_OFFSET, i, &entry, sizeof(entry));
 		if (err) {
-			LOG_ERR("		Failed to read infra entry %d, err %d", i, err);
+			LOG_ERR("	Failed to read infra entry %d, err %d", i, err);
 			infra_devices[i].entry.device_id = 0xFFFF; /* Mark invalid */
 			continue;
 		}
-		LOG_INF("		Infra entry %d %s ID:%d hop num: %d V: %d RSSI: %d", i, device_type_str(entry.device_type), entry.device_id, entry.hop_num, entry.version, entry.rssi_2);
+		LOG_INF("	Infra entry %d %s ID:%d hop num: %d V: %d RSSI: %d", i, device_type_str(entry.device_type), entry.device_id, entry.hop_num, entry.version, entry.rssi_2);
 		infra_devices[i].entry = entry;
 		infra_devices[i].last_comm_ms = 0;
 		infra_devices[i].comm_failures = 0;
 		infra_devices[i].is_ping_packet_sent = false;
 	}
 
-	// Update Known Sensors devices from storage. Use the EEPROM helper directly
-	// since storage_sensor_get() will read from RAM after this loop initializes it.
-	LOG_INF("----------Loading %d sensor entries from storage----------", sensor_count);
-	for (uint8_t i = 0; i < sensor_count; i++) {
-		sensor_entry_t entry;
-		err = read_entry(STORAGE_PART2_OFFSET, i, &entry, sizeof(entry));
-		if (err) {
-			LOG_ERR("		Failed to read sensor entry %d, err %d", i, err);
-			sensor_devices[i].entry.device_id = 0xFFFF; /* Mark invalid */
-			continue;
+	if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY || DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+		// Update Known Sensors devices from storage. Use the EEPROM helper directly
+		// since storage_sensor_get() will read from RAM after this loop initializes it.
+		LOG_INF_CYAN("Loading %d sensor entries from storage", sensor_count);
+		for (uint8_t i = 0; i < sensor_count; i++) {
+			sensor_entry_t entry;
+			err = read_entry(STORAGE_SENSOR_OFFSET, i, &entry, sizeof(entry));
+			if (err) {
+				LOG_ERR("	Failed to read sensor entry %d, err %d", i, err);
+				sensor_devices[i].entry.device_id = 0xFFFF; /* Mark invalid */
+				continue;
+			}
+			LOG_INF("	Sensor entry %d %s ID:%d V: %d", i, device_type_str(DEVICE_TYPE_SENSOR), entry.device_id, entry.version);
+			sensor_devices[i].entry = entry;
+			sensor_devices[i].last_comm_ms = 0;
+			sensor_devices[i].comm_failures = 0;
+			sensor_devices[i].is_ping_packet_sent = false;
 		}
-		LOG_INF("		Sensor entry %d %s ID:%d V: %d", i, device_type_str(DEVICE_TYPE_SENSOR), entry.device_id, entry.version);
-		sensor_devices[i].entry = entry;
-		sensor_devices[i].last_comm_ms = 0;
-		sensor_devices[i].comm_failures = 0;
-		sensor_devices[i].is_ping_packet_sent = false;
 	}
 
-	// Print Mesh entries from storage
-	LOG_INF("----------Loading %d mesh entries from storage----------", mesh_count);
-	for (uint16_t i = 0; i < mesh_count; i++) {
-		mesh_entry_t entry;
-		err = storage_mesh_get(i, &entry);
-		if (err) {
-			LOG_ERR("		Failed to read mesh entry %d, err %d", i, err);
-			continue;
-		}
-		LOG_INF("		Mesh entry %d device %s ID:%d SN: %lld V: %d conn_dev: %d hop_num: %d sensor_count: %d",
-			i, device_type_str(entry.device_type), entry.device_id, entry.serial_num, entry.version, entry.connected_device_id, entry.hop_num, entry.sensor_count);
-	}
+	if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
 
-	// Update Known routes from storage
-	LOG_INF("----------Loading %d route entries from storage----------", known_route_count);
-	for (uint16_t i = 0; i < known_route_count; i++) {
-		route_entry_t entry;
-		err = storage_route_get(i, &entry);
-		if (err) {
-			LOG_ERR("		Failed to read route entry %d, err %d", i, err);
-			known_route_table[i].device_id = 0xFFFF;
-			known_route_table[i].next_device_id = 0xFFFF;
-			continue;
+		MESH_DEVICES_COUNT = mesh_count;
+
+		// Print Mesh entries from storage
+		LOG_INF_CYAN("Loading %d mesh entries from storage", mesh_count);
+		for (uint16_t i = 0; i < mesh_count; i++) {
+			mesh_entry_t entry;
+			err = storage_mesh_get(i, &entry);
+			if (err) {
+				LOG_ERR("	Failed to read mesh entry %d, err %d", i, err);
+				continue;
+			}
+			LOG_INF("	Mesh entry %d device %s ID:%d SN: %lld V: %d conn_dev: %d hop_num: %d sensor_count: %d",
+				i, device_type_str(entry.device_type), entry.device_id, entry.serial_num, entry.version, entry.connected_device_id, entry.hop_num, entry.sensor_count);
 		}
-		LOG_INF("		Route entry %d device %s ID:%d with %d routes", i, device_type_str(entry.device_type), entry.device_id, entry.route_count);
-		for (int j = 0; j < entry.route_count; j++) {
-			LOG_INF("			ID: %d Route_len: %d Avg_RSSI: %d", entry.route_info[j].next_hop_id, entry.route_info[j].route_length, entry.route_info[j].avg_rssi_2);
+
+		// Update Known routes from storage
+		LOG_INF_CYAN("Loading %d route entries from storage", known_route_count);
+		for (uint16_t i = 0; i < known_route_count; i++) {
+			route_entry_t entry;
+			err = storage_route_get(i, &entry);
+			if (err) {
+				LOG_ERR("	Failed to read route entry %d, err %d", i, err);
+				known_route_table[i].device_id = 0xFFFF;
+				known_route_table[i].next_device_id = 0xFFFF;
+				continue;
+			}
+			LOG_INF("	Route entry %d device %s ID:%d with %d routes", i, device_type_str(entry.device_type), entry.device_id, entry.route_count);
+			for (int j = 0; j < entry.route_count; j++) {
+				LOG_INF_CYAN("		ID: %d Route_len: %d Avg_RSSI: %d", entry.route_info[j].next_hop_id, entry.route_info[j].route_length, entry.route_info[j].avg_rssi_2);
+			}
+			/* Mirror the best route (index 0 after sort) into the RAM table. */
+			known_route_table[i].device_id = entry.device_id;
+			known_route_table[i].next_device_id = (entry.route_count > 0) ? entry.route_info[0].next_hop_id : 0xFFFF;
 		}
-		/* Mirror the best route (index 0 after sort) into the RAM table. */
-		known_route_table[i].device_id = entry.device_id;
-		known_route_table[i].next_device_id = (entry.route_count > 0) ? entry.route_info[0].next_hop_id : 0xFFFF;
 	}
 	
-	LOG_INF("---------------------------------------------------------");
-	LOG_INF("Storage init: infra=%d sensors=%d mesh=%d routes=%d", infra_count, sensor_count, mesh_count, known_route_count);
+	LOG_INF("Storage Initialized");
 
 	return 0;
 }
@@ -228,13 +234,13 @@ static void sort_infra_devices(void)
 static int flush_infra_to_eeprom(void)
 {
 	for (uint8_t i = 0; i < infra_count; i++) {
-		int err = write_entry(STORAGE_PART1_OFFSET, i, &infra_devices[i].entry, sizeof(infra_entry_t));
+		int err = write_entry(STORAGE_INFRA_OFFSET, i, &infra_devices[i].entry, sizeof(infra_entry_t));
 		if (err) {
 			LOG_ERR("Failed to write infra entry %d, err %d", i, err);
 			return err;
 		}
 	}
-	return write_header(STORAGE_PART1_OFFSET, infra_count);
+	return write_header(STORAGE_INFRA_OFFSET, infra_count);
 }
 
 int storage_infra_add(const infra_entry_t *entry)
@@ -307,7 +313,7 @@ int storage_infra_clear(void)
 	for (int i = 0; i < MAX_ANCHORS; i++) {
 		infra_devices[i].entry.device_id = 0xFFFF;
 	}
-	return write_header(STORAGE_PART1_OFFSET, 0);
+	return write_header(STORAGE_INFRA_OFFSET, 0);
 }
 
 /* ---- Partition 2: Sensors ---- */
@@ -316,13 +322,13 @@ int storage_infra_clear(void)
 static int flush_sensors_to_eeprom(void)
 {
 	for (uint8_t i = 0; i < sensor_count; i++) {
-		int err = write_entry(STORAGE_PART2_OFFSET, i, &sensor_devices[i].entry, sizeof(sensor_entry_t));
+		int err = write_entry(STORAGE_SENSOR_OFFSET, i, &sensor_devices[i].entry, sizeof(sensor_entry_t));
 		if (err) {
 			LOG_ERR("Failed to write sensor entry %d, err %d", i, err);
 			return err;
 		}
 	}
-	return write_header(STORAGE_PART2_OFFSET, sensor_count);
+	return write_header(STORAGE_SENSOR_OFFSET, sensor_count);
 }
 
 int storage_sensor_add(const sensor_entry_t *entry)
@@ -390,7 +396,7 @@ int storage_sensor_clear(void)
 	for (int i = 0; i < MAX_SENSORS; i++) {
 		sensor_devices[i].entry.device_id = 0xFFFF;
 	}
-	return write_header(STORAGE_PART2_OFFSET, 0);
+	return write_header(STORAGE_SENSOR_OFFSET, 0);
 }
 
 /* ---- Partition 3: Mesh network table ---- */
@@ -402,14 +408,14 @@ int storage_mesh_add(const mesh_entry_t *entry)
 		return -ENOMEM;
 	}
 
-	int err = write_entry(STORAGE_PART3_OFFSET, mesh_count, entry, sizeof(*entry));
+	int err = write_entry(STORAGE_MESH_OFFSET, mesh_count, entry, sizeof(*entry));
 
 	if (err) {
 		return err;
 	}
 
 	mesh_count++;
-	return write_header(STORAGE_PART3_OFFSET, mesh_count);
+	return write_header(STORAGE_MESH_OFFSET, mesh_count);
 }
 
 int storage_mesh_update(uint16_t index, const mesh_entry_t *entry)
@@ -418,7 +424,7 @@ int storage_mesh_update(uint16_t index, const mesh_entry_t *entry)
 		return -EINVAL;
 	}
 
-	return write_entry(STORAGE_PART3_OFFSET, index, entry, sizeof(*entry));
+	return write_entry(STORAGE_MESH_OFFSET, index, entry, sizeof(*entry));
 }
 
 int storage_mesh_get(uint16_t index, mesh_entry_t *entry)
@@ -427,7 +433,7 @@ int storage_mesh_get(uint16_t index, mesh_entry_t *entry)
 		return -EINVAL;
 	}
 
-	return read_entry(STORAGE_PART3_OFFSET, index, entry, sizeof(*entry));
+	return read_entry(STORAGE_MESH_OFFSET, index, entry, sizeof(*entry));
 }
 
 int storage_mesh_count(void)
@@ -438,7 +444,7 @@ int storage_mesh_count(void)
 int storage_mesh_clear(void)
 {
 	mesh_count = 0;
-	return write_header(STORAGE_PART3_OFFSET, 0);
+	return write_header(STORAGE_MESH_OFFSET, 0);
 }
 
 int storage_mesh_remove(uint16_t index)
@@ -454,14 +460,14 @@ int storage_mesh_remove(uint16_t index)
 		if (err) {
 			return err;
 		}
-		err = write_entry(STORAGE_PART3_OFFSET, i - 1, &entry, sizeof(entry));
+		err = write_entry(STORAGE_MESH_OFFSET, i - 1, &entry, sizeof(entry));
 		if (err) {
 			return err;
 		}
 	}
 
 	mesh_count--;
-	return write_header(STORAGE_PART3_OFFSET, mesh_count);
+	return write_header(STORAGE_MESH_OFFSET, mesh_count);
 }
 
 /* ---- Partition 4: Routing table for mesh network ---- */
@@ -507,7 +513,7 @@ static int add_new_route(bool new_entry, uint16_t next_hop_id, uint16_t device_i
 			.route_count = 1,
 			.route_info = { { .next_hop_id = next_hop_id, .route_length = route_len, .avg_rssi_2 = avg_rssi_2 } },
 		};
-		err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &new_route_entry, sizeof(new_route_entry));
+		err = write_entry(STORAGE_ROUTING_OFFSET, device_id_index, &new_route_entry, sizeof(new_route_entry));
 		if (err) {
 			return err;
 		}
@@ -517,12 +523,12 @@ static int add_new_route(bool new_entry, uint16_t next_hop_id, uint16_t device_i
 		known_route_table[known_route_count].device_id = device_id;
 		known_route_table[known_route_count].next_device_id = next_hop_id;
 		known_route_count++;
-		return write_header(STORAGE_PART4_OFFSET, known_route_count);
+		return write_header(STORAGE_ROUTING_OFFSET, known_route_count);
 	}
 
 	/* Update existing device's routes. */
 	route_entry_t entry;
-	err = read_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
+	err = read_entry(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
 	if (err) {
 		return err;
 	}
@@ -540,7 +546,7 @@ static int add_new_route(bool new_entry, uint16_t next_hop_id, uint16_t device_i
 
 			sort_routes(&entry);
 
-			err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
+			err = write_entry(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
 			if (err) {
 				return err;
 			}
@@ -560,7 +566,7 @@ static int add_new_route(bool new_entry, uint16_t next_hop_id, uint16_t device_i
 
 		sort_routes(&entry);
 
-		err = write_entry(STORAGE_PART4_OFFSET, device_id_index, &entry, sizeof(entry));
+		err = write_entry(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
 		if (err) {
 			return err;
 		}
@@ -599,7 +605,7 @@ int storage_route_get(uint16_t index, route_entry_t *entry)
 		return -EINVAL;
 	}
 
-	return read_entry(STORAGE_PART4_OFFSET, index, entry, sizeof(*entry));
+	return read_entry(STORAGE_ROUTING_OFFSET, index, entry, sizeof(*entry));
 }
 
 int storage_route_remove(uint16_t device_id, uint16_t next_hop_id)
@@ -615,7 +621,7 @@ int storage_route_remove(uint16_t device_id, uint16_t next_hop_id)
 	}
 
 	route_entry_t entry;
-	int err = read_entry(STORAGE_PART4_OFFSET, index, &entry, sizeof(entry));
+	int err = read_entry(STORAGE_ROUTING_OFFSET, index, &entry, sizeof(entry));
 	if (err) {
 		return err;
 	}
@@ -636,11 +642,11 @@ int storage_route_remove(uint16_t device_id, uint16_t next_hop_id)
 			 * entry out of the partition so it doesn't linger forever. */
 			for (uint16_t k = index + 1; k < known_route_count; k++) {
 				route_entry_t shifted;
-				err = read_entry(STORAGE_PART4_OFFSET, k, &shifted, sizeof(shifted));
+				err = read_entry(STORAGE_ROUTING_OFFSET, k, &shifted, sizeof(shifted));
 				if (err) {
 					return err;
 				}
-				err = write_entry(STORAGE_PART4_OFFSET, k - 1, &shifted, sizeof(shifted));
+				err = write_entry(STORAGE_ROUTING_OFFSET, k - 1, &shifted, sizeof(shifted));
 				if (err) {
 					return err;
 				}
@@ -649,10 +655,10 @@ int storage_route_remove(uint16_t device_id, uint16_t next_hop_id)
 			known_route_count--;
 			known_route_table[known_route_count].device_id = 0xFFFF;
 			known_route_table[known_route_count].next_device_id = 0xFFFF;
-			return write_header(STORAGE_PART4_OFFSET, known_route_count);
+			return write_header(STORAGE_ROUTING_OFFSET, known_route_count);
 		}
 
-		err = write_entry(STORAGE_PART4_OFFSET, index, &entry, sizeof(entry));
+		err = write_entry(STORAGE_ROUTING_OFFSET, index, &entry, sizeof(entry));
 		if (err) {
 			return err;
 		}
@@ -676,5 +682,5 @@ int storage_route_clear(void)
 		known_route_table[i].device_id = 0xFFFF;
 		known_route_table[i].next_device_id = 0xFFFF;
 	}
-	return write_header(STORAGE_PART4_OFFSET, 0);
+	return write_header(STORAGE_ROUTING_OFFSET, 0);
 }

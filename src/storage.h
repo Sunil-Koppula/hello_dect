@@ -9,14 +9,17 @@
 /*
  * EEPROM partition layout (M24M02 — 256KB):
  *
+ * Partion 0: Device Info
+ *   Offset 0x00000, 32B — stored by all devices
+ *
  * Partition 1: Connected infrastructure (Gateway/Anchors/Sensors)
- *   Offset 0x00000, 4KB — stored by Gateway + Anchor
+ *   Offset 0x00020, 4KB — stored by Gateway + Anchor
  *
  * Partition 2: Connected sensors
- *   Offset 0x01000, 4KB — stored by Gateway + Anchor
+ *   Offset 0x01020, 4KB — stored by Gateway + Anchor
  *
  * Partition 3: Mesh network table (full topology)
- *   Offset 0x02000, 16KB — stored by Gateway only
+ *   Offset 0x03020, 16KB — stored by Gateway only
  *
  * Each partition starts with a 4-byte header:
  *   [0-1] magic (0xDE, 0xC7)
@@ -24,21 +27,34 @@
  */
 
 /* Partition base addresses. */
-#define STORAGE_PART1_OFFSET  0x00000
-#define STORAGE_PART1_SIZE    0x01000  /* 4KB */
 
-#define STORAGE_PART2_OFFSET  0x01000
-#define STORAGE_PART2_SIZE    0x01000  /* 4KB */
+#define STORAGE_DEVICE_INFO_OFFSET  	0x00000
+#define STORAGE_DEVICE_INFO_SIZE	  	0x00020  /* 32B */
 
-#define STORAGE_PART3_OFFSET  0x02000
-#define STORAGE_PART3_SIZE    0x04000  /* 16KB */
+#define STORAGE_INFRA_OFFSET  			0x00020
+#define STORAGE_INFRA_SIZE    			0x01000  /* 4KB */
 
-#define STORAGE_PART4_OFFSET  0x06000
-#define STORAGE_PART4_SIZE    0x08000  /* 32KB */
+#define STORAGE_SENSOR_OFFSET  			0x01020
+#define STORAGE_SENSOR_SIZE    			0x01000  /* 4KB */
+
+#define STORAGE_MESH_OFFSET  			0x03020
+#define STORAGE_MESH_SIZE    			0x04000  /* 16KB */
+
+#define STORAGE_ROUTING_OFFSET  		0x07020
+#define STORAGE_ROUTING_SIZE    		0x08000  /* 32KB */
 
 #define STORAGE_HEADER_SIZE   4
 #define STORAGE_MAGIC_0       0xDE
 #define STORAGE_MAGIC_1       0xC7
+
+typedef struct {
+	uint8_t device_type;      			/* device_type_t */
+	uint16_t device_id;      			/* short device ID */
+	uint64_t serial_num;       			/* 64-bit serial number */
+	uint16_t version;          			/* device firmware version */
+	uint8_t  hop_num;          			/* hop count from gateway */
+	uint16_t total_devices;       		/* total number of devices in the network */
+} __attribute__((packed)) device_info_t;
 
 /*
  * Partition 1 entry: Connected infrastructure devices (Gateway/Anchors).

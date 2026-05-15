@@ -33,6 +33,7 @@ device_type_t DEVICE_TYPE;
 uint64_t SERIAL_NUMBER;
 uint8_t DEVICE_HOP_NUMBER;
 uint16_t CONNECTED_DEVICE_ID;
+uint16_t MESH_DEVICES_COUNT;
 
 int product_info_init(void)
 {
@@ -87,10 +88,14 @@ int product_info_init(void)
 	uint16_t hw_id;
 
 	hwinfo_get_device_id((void *)&hw_id, sizeof(hw_id));
+	radio_set_device_id(hw_id);
 	SERIAL_NUMBER = ((uint64_t)hw_id << 40) | 0x00DEADBEEFULL;
 
 	/* Set initial hop and connected device based on device type. */
 	CONNECTED_DEVICE_ID = 0xFFFF;  /* invalid ID by default */
+
+	/* Set initial mesh devices count. */
+	MESH_DEVICES_COUNT = 0;
 
 	switch (DEVICE_TYPE) {
 	case DEVICE_TYPE_GATEWAY:
@@ -107,7 +112,7 @@ int product_info_init(void)
 	return 0;
 }
 
-void product_info_update_hop(void)
+void device_info_update(void)
 {
 	if (DEVICE_TYPE != DEVICE_TYPE_ANCHOR) {
 		return;

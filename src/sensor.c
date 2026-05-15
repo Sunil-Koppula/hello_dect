@@ -12,7 +12,6 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 #include "main_sub.h"
 #include "protocol.h"
@@ -25,6 +24,7 @@
 #include "data.h"
 #include "large_data.h"
 #include "config.h"
+#include "log_color.h"
 
 LOG_MODULE_REGISTER(sensor, CONFIG_SENSOR_LOG_LEVEL);
 
@@ -33,26 +33,25 @@ static uint8_t  paired_device_type;
 
 static int sensor_init(void)
 {
+	device_info_update();
+	LOG_INF_BLU("%s Initialized with ID: %d SN: 0x%016llx, Hop: %d", device_type_str(DEVICE_TYPE), radio_get_device_id(), SERIAL_NUMBER, DEVICE_HOP_NUMBER);
+
 	tracker_init();
 	data_init();
-	large_data_init();
 	config_init();
-	
-	product_info_update_hop();
-	LOG_INF("Initialization --- Device type: %s, SN: 0x%016llx, Hop: %d", device_type_str(DEVICE_TYPE), SERIAL_NUMBER, DEVICE_HOP_NUMBER);
+	large_data_init();
 
 	/* Check EEPROM partition 1 — sensor can pair with only one device. */
 	if (infra_count > 0) {
-			paired_device_id = infra_devices[0].entry.device_id;
-			paired_device_type = infra_devices[0].entry.device_type;
 			infra_entry_t entry;
 			int err = storage_infra_get(0, &entry);
 			if (err) {
 				LOG_ERR("Failed to read infra entry, err %d", err);
 				return err;
 			}
+			paired_device_id = entry.device_id;
+			paired_device_type = entry.device_type;
 			LOG_INF("Already paired with %s ID:%d (hop:%d)", device_type_str(paired_device_type), paired_device_id, entry.hop_num);
-			product_info_update_hop();
 			ping_known_devices();
 			return 0;
 	}

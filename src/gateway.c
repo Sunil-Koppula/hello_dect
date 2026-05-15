@@ -7,7 +7,6 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 #include "main_sub.h"
 #include "protocol.h"
@@ -20,6 +19,7 @@
 #include "data.h"
 #include "large_data.h"
 #include "config.h"
+#include "log_color.h"
 
 LOG_MODULE_REGISTER(gateway, CONFIG_GATEWAY_LOG_LEVEL);
 
@@ -28,13 +28,14 @@ LOG_MODULE_REGISTER(gateway, CONFIG_GATEWAY_LOG_LEVEL);
 
 static int gateway_init(void)
 {
+	device_info_update();
+	LOG_INF_BLU("%s Initialized with ID: %d SN: 0x%016llx, Hop: %d Mesh Devices: %d", device_type_str(DEVICE_TYPE), radio_get_device_id(), SERIAL_NUMBER, DEVICE_HOP_NUMBER, MESH_DEVICES_COUNT);
+
 	tracker_init();
 	mesh_time_init();
 	data_init();
-	large_data_init();
 	config_init();
-	product_info_update_hop();
-	LOG_INF("Initialization --- Device type: %s, SN: 0x%016llx, Hop: %d", device_type_str(DEVICE_TYPE), SERIAL_NUMBER, DEVICE_HOP_NUMBER);
+	large_data_init();
 
 	if (storage_mesh_count() > 0) {
 		LOG_INF("------------DEVICES IN MESH STORAGE------------");

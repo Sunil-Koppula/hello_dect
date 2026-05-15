@@ -26,28 +26,7 @@ int main(void)
 {
 	int err;
 
-	LOG_INF("Dect NR+ PHY mesh started");
-
-	err = product_info_init();
-	if (err) {
-		LOG_ERR("product_info_init failed, err %d", err);
-		return err;
-	}
-
-	err = storage_init();
-	if (err) {
-		LOG_ERR("storage_init failed, err %d", err);
-		return err;
-	}
-
-	err = psram_init();
-	if (err) {
-		LOG_WRN("PSRAM init failed, err %d (tracker will not work)", err);
-	}
-
-	/* Check for factory reset (hold Button 1 for 3s at boot). */
-	factory_reset_init();
-	buttons_init();
+	LOG_INF("---****--- Dect NR+ PHY mesh started ---****---");
 
 	err = nrf_modem_lib_init();
 	if (err) {
@@ -94,22 +73,36 @@ int main(void)
 		return -EIO;
 	}
 
-	uint16_t hw_id;
+	err = nrf_modem_dect_phy_capability_get();
+	if (err) {
+		LOG_ERR("nrf_modem_dect_phy_capability_get failed, err %d", err);
+	}
 
-	hwinfo_get_device_id((void *)&hw_id, sizeof(hw_id));
-	radio_set_device_id(hw_id);
+	err = product_info_init();
+	if (err) {
+		LOG_ERR("product_info_init failed, err %d", err);
+		return err;
+	}
 
-	LOG_INF("Dect NR+ PHY initialized, device ID: %d", hw_id);
+	err = storage_init();
+	if (err) {
+		LOG_ERR("storage_init failed, err %d", err);
+		return err;
+	}
+
+	err = psram_init();
+	if (err) {
+		LOG_WRN("PSRAM init failed, err %d (tracker will not work)", err);
+	}
 
 	err = at_command_init();
 	if (err) {
 		LOG_WRN("AT command init failed, err %d", err);
 	}
 
-	err = nrf_modem_dect_phy_capability_get();
-	if (err) {
-		LOG_ERR("nrf_modem_dect_phy_capability_get failed, err %d", err);
-	}
+	/* Check for factory reset (hold Button 1 for 3s at boot). */
+	factory_reset_init();
+	buttons_init();
 
 	switch (DEVICE_TYPE) {
 	case DEVICE_TYPE_GATEWAY:

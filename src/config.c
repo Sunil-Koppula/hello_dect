@@ -403,7 +403,7 @@ int config_init(void)
         config_slots[i].config_crc32 = 0;
     }
 
-    LOG_INF("Config Module: %d slots x %d bytes at PSRAM 0x%06x-0x%06x",
+    LOG_INF("Config Module Initialized with %d slots (slot size=%d) at PSRAM 0x%06x-0x%06x",
         CONFIG_SLOT_COUNT, CONFIG_MAX_SIZE,
         CONFIG_PSRAM_BASE, CONFIG_PSRAM_BASE + CONFIG_PSRAM_SIZE - 1);
 
