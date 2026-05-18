@@ -6,9 +6,11 @@
  * Partition 3 (0x02000): Mesh network table    — Gateway only
  */
 
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/eeprom.h>
+#include <zephyr/sys/crc.h>
 #include "log_color.h"
 #include "storage.h"
 #include "product_info.h"
@@ -74,6 +76,35 @@ static int write_entry(uint32_t base_offset, uint16_t index, const void *entry, 
 	return eeprom_write(eeprom_dev, addr, entry, entry_size);
 }
 
+/* Compute CRC32 over an entry struct, excluding its trailing 4-byte crc32 field.
+ * Every entry_t in storage.h declares `uint32_t crc32` as its final field. */
+static inline uint32_t entry_crc32(const void *entry, size_t entry_size)
+{
+	return crc32_ieee((const uint8_t *)entry, entry_size - sizeof(uint32_t));
+}
+
+/* Returns true if the entry's stored crc32 matches the computed value. */
+static inline bool entry_crc_ok(const void *entry, size_t entry_size)
+{
+	uint32_t stored;
+	/* crc32 is the last 4 bytes of the struct; read it without depending on
+	 * a specific entry type. */
+	memcpy(&stored, (const uint8_t *)entry + entry_size - sizeof(uint32_t),
+	       sizeof(stored));
+	return entry_crc32(entry, entry_size) == stored;
+}
+
+/* Stamp the trailing crc32 field of an entry struct, then write the whole
+ * entry to EEPROM. Caller passes a non-const buffer so the crc32 field can
+ * be updated in place. */
+static int write_entry_with_crc(uint32_t base_offset, uint16_t index,
+				void *entry, size_t entry_size)
+{
+	uint32_t crc = entry_crc32(entry, entry_size);
+	memcpy((uint8_t *)entry + entry_size - sizeof(uint32_t), &crc, sizeof(crc));
+	return write_entry(base_offset, index, entry, entry_size);
+}
+
 /* ---- Public API ---- */
 
 int storage_init(void)
@@ -126,6 +157,11 @@ int storage_init(void)
 			infra_devices[i].entry.device_id = 0xFFFF; /* Mark invalid */
 			continue;
 		}
+		if (!entry_crc_ok(&entry, sizeof(entry))) {
+			LOG_ERR("	Infra entry %d CRC mismatch, marking invalid", i);
+			infra_devices[i].entry.device_id = 0xFFFF;
+			continue;
+		}
 		LOG_INF("	Infra entry %d %s ID:%d hop num: %d V: %d RSSI: %d", i, device_type_str(entry.device_type), entry.device_id, entry.hop_num, entry.version, entry.rssi_2);
 		infra_devices[i].entry = entry;
 		infra_devices[i].last_comm_ms = 0;
@@ -143,6 +179,11 @@ int storage_init(void)
 			if (err) {
 				LOG_ERR("	Failed to read sensor entry %d, err %d", i, err);
 				sensor_devices[i].entry.device_id = 0xFFFF; /* Mark invalid */
+				continue;
+			}
+			if (!entry_crc_ok(&entry, sizeof(entry))) {
+				LOG_ERR("	Sensor entry %d CRC mismatch, marking invalid", i);
+				sensor_devices[i].entry.device_id = 0xFFFF;
 				continue;
 			}
 			LOG_INF("	Sensor entry %d %s ID:%d V: %d", i, device_type_str(DEVICE_TYPE_SENSOR), entry.device_id, entry.version);
@@ -230,10 +271,13 @@ static void sort_infra_devices(void)
 	}
 }
 
-/* Write all current infra_devices[].entry values to EEPROM (header + entries). */
+/* Write all current infra_devices[].entry values to EEPROM (header + entries).
+ * CRC32 is recomputed (covers everything except the crc32 field itself) and
+ * stamped into the entry before each write. */
 static int flush_infra_to_eeprom(void)
 {
 	for (uint8_t i = 0; i < infra_count; i++) {
+		infra_devices[i].entry.crc32 = entry_crc32(&infra_devices[i].entry, sizeof(infra_entry_t));
 		int err = write_entry(STORAGE_INFRA_OFFSET, i, &infra_devices[i].entry, sizeof(infra_entry_t));
 		if (err) {
 			LOG_ERR("Failed to write infra entry %d, err %d", i, err);
@@ -318,10 +362,12 @@ int storage_infra_clear(void)
 
 /* ---- Partition 2: Sensors ---- */
 
-/* Write all current sensor_devices[].entry values to EEPROM (header + entries). */
+/* Write all current sensor_devices[].entry values to EEPROM (header + entries).
+ * CRC32 is recomputed and stamped before each write. */
 static int flush_sensors_to_eeprom(void)
 {
 	for (uint8_t i = 0; i < sensor_count; i++) {
+		sensor_devices[i].entry.crc32 = entry_crc32(&sensor_devices[i].entry, sizeof(sensor_entry_t));
 		int err = write_entry(STORAGE_SENSOR_OFFSET, i, &sensor_devices[i].entry, sizeof(sensor_entry_t));
 		if (err) {
 			LOG_ERR("Failed to write sensor entry %d, err %d", i, err);
@@ -408,8 +454,8 @@ int storage_mesh_add(const mesh_entry_t *entry)
 		return -ENOMEM;
 	}
 
-	int err = write_entry(STORAGE_MESH_OFFSET, mesh_count, entry, sizeof(*entry));
-
+	mesh_entry_t local = *entry;
+	int err = write_entry_with_crc(STORAGE_MESH_OFFSET, mesh_count, &local, sizeof(local));
 	if (err) {
 		return err;
 	}
@@ -424,7 +470,8 @@ int storage_mesh_update(uint16_t index, const mesh_entry_t *entry)
 		return -EINVAL;
 	}
 
-	return write_entry(STORAGE_MESH_OFFSET, index, entry, sizeof(*entry));
+	mesh_entry_t local = *entry;
+	return write_entry_with_crc(STORAGE_MESH_OFFSET, index, &local, sizeof(local));
 }
 
 int storage_mesh_get(uint16_t index, mesh_entry_t *entry)
@@ -433,7 +480,15 @@ int storage_mesh_get(uint16_t index, mesh_entry_t *entry)
 		return -EINVAL;
 	}
 
-	return read_entry(STORAGE_MESH_OFFSET, index, entry, sizeof(*entry));
+	int err = read_entry(STORAGE_MESH_OFFSET, index, entry, sizeof(*entry));
+	if (err) {
+		return err;
+	}
+	if (!entry_crc_ok(entry, sizeof(*entry))) {
+		LOG_ERR("Mesh entry %d CRC mismatch", index);
+		return -EBADMSG;
+	}
+	return 0;
 }
 
 int storage_mesh_count(void)
@@ -453,7 +508,8 @@ int storage_mesh_remove(uint16_t index)
 		return -EINVAL;
 	}
 
-	/* Shift entries after index up by one. */
+	/* Shift entries after index up by one. The CRC inside each entry is
+	 * already valid from when it was last written, so we can reuse it. */
 	for (uint16_t i = index + 1; i < mesh_count; i++) {
 		mesh_entry_t entry;
 		int err = storage_mesh_get(i, &entry);
@@ -513,7 +569,7 @@ static int add_new_route(bool new_entry, uint16_t next_hop_id, uint16_t device_i
 			.route_count = 1,
 			.route_info = { { .next_hop_id = next_hop_id, .route_length = route_len, .avg_rssi_2 = avg_rssi_2 } },
 		};
-		err = write_entry(STORAGE_ROUTING_OFFSET, device_id_index, &new_route_entry, sizeof(new_route_entry));
+		err = write_entry_with_crc(STORAGE_ROUTING_OFFSET, device_id_index, &new_route_entry, sizeof(new_route_entry));
 		if (err) {
 			return err;
 		}
@@ -546,7 +602,7 @@ static int add_new_route(bool new_entry, uint16_t next_hop_id, uint16_t device_i
 
 			sort_routes(&entry);
 
-			err = write_entry(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
+			err = write_entry_with_crc(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
 			if (err) {
 				return err;
 			}
@@ -566,7 +622,7 @@ static int add_new_route(bool new_entry, uint16_t next_hop_id, uint16_t device_i
 
 		sort_routes(&entry);
 
-		err = write_entry(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
+		err = write_entry_with_crc(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
 		if (err) {
 			return err;
 		}
@@ -605,7 +661,15 @@ int storage_route_get(uint16_t index, route_entry_t *entry)
 		return -EINVAL;
 	}
 
-	return read_entry(STORAGE_ROUTING_OFFSET, index, entry, sizeof(*entry));
+	int err = read_entry(STORAGE_ROUTING_OFFSET, index, entry, sizeof(*entry));
+	if (err) {
+		return err;
+	}
+	if (!entry_crc_ok(entry, sizeof(*entry))) {
+		LOG_ERR("Route entry %d CRC mismatch", index);
+		return -EBADMSG;
+	}
+	return 0;
 }
 
 int storage_route_remove(uint16_t device_id, uint16_t next_hop_id)
@@ -658,7 +722,7 @@ int storage_route_remove(uint16_t device_id, uint16_t next_hop_id)
 			return write_header(STORAGE_ROUTING_OFFSET, known_route_count);
 		}
 
-		err = write_entry(STORAGE_ROUTING_OFFSET, index, &entry, sizeof(entry));
+		err = write_entry_with_crc(STORAGE_ROUTING_OFFSET, index, &entry, sizeof(entry));
 		if (err) {
 			return err;
 		}

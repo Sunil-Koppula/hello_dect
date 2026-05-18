@@ -33,8 +33,10 @@ struct response_candidate {
 
 static struct response_candidate resp_candidates[MAX_RESPONSE_CANDIDATES];
 static int resp_candidate_count;
+static int resp_candidate_idx = 0;
 static struct nbtimeout collect_timer;
 static bool collecting;
+static bool process_next_request = false;
 
 /* Check Infra Storage */
 static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool all_slots)
@@ -209,54 +211,31 @@ static void sort_candidates(void)
 }
 
 /* Select best candidates and send PAIR_CONFIRM to each. */
-static void select_and_confirm(void)
+static void select_and_confirm(int idx)
 {
-    if (resp_candidate_count == 0) {
-        LOG_WRN("No candidates collected during window");
+    struct response_candidate *c = &resp_candidates[idx];
+
+    /* Skip if already stored. */
+    uint8_t status = check_infra_storage(c->sender_id, c->device_type, true);
+
+    if (status == STATUS_STORAGE_FULL) {
+        LOG_WRN("Infra storage full, stopping selection");
+        resp_candidate_count = 0;
         return;
     }
 
-    sort_candidates();
-
-    int available = MAX_ANCHORS - storage_infra_count();
-    LOG_WRN("Infra storage has %d available slots for pairing and %d paired count", available, storage_infra_count());
-
-    if (available <= 0) {
-        LOG_WRN("Infra storage full, cannot pair with any candidates");
+    if (DEVICE_HOP_NUMBER == 0xFF && c->hop_num == 0xFF) {
+        LOG_WRN("Candidate %s ID:%d has no upstream link or has invalid hop number %d, skipping", device_type_str(c->device_type), c->sender_id, c->hop_num);
+        process_next_request = true;
         return;
     }
 
-    int to_confirm = (resp_candidate_count < available) ? resp_candidate_count : available;
+    send_pair_confirm(c->sender_id, c->device_type, STATUS_SUCCESS);
 
-    LOG_INF("Selecting %d of %d candidates (sorted by hop then RSSI)", to_confirm, resp_candidate_count);
-
-    for (int i = 0; i < to_confirm; i++) {
-        struct response_candidate *c = &resp_candidates[i];
-
-        /* Skip if already stored. */
-        uint8_t status = check_infra_storage(c->sender_id, c->device_type, true);
-
-        if (status == STATUS_ALREADY_EXISTS) {
-            LOG_INF("Candidate %s ID:%d already paired, skipping", device_type_str(c->device_type), c->sender_id);
-            continue;
-        }
-
-        if (status == STATUS_STORAGE_FULL) {
-            LOG_WRN("Infra storage full, stopping selection");
-            break;
-        }
-
-        if (DEVICE_HOP_NUMBER == 0xFF && c->hop_num == 0xFF) {
-            LOG_WRN("Candidate %s ID:%d has no upstream link or has invalid hop number %d, skipping", device_type_str(c->device_type), c->sender_id, c->hop_num);
-            continue;
-        }
-
-        send_pair_confirm(c->sender_id, c->device_type, STATUS_SUCCESS);
-
-        if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
-            // Sensor only pairs with one anchor, so stop after the first confirmation
-            break;
-        }
+    if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+        // Sensor only pairs with one anchor, so stop after the first confirmation
+        resp_candidate_count = 0;
+        return;
     }
 }
 
@@ -395,6 +374,10 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
             return;
         }
         break;
+    }
+
+    if (status == STATUS_SUCCESS && MESH_DEVICES_COUNT >= MAX_DEVICES) {
+        status = STATUS_STORAGE_FULL;
     }
 
     // Send response based on device type and storage check result
@@ -601,41 +584,6 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
 
     send_pair_ack(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
 
-    // Send Route Info Request to the newly paired device if status is success
-    if (status == STATUS_SUCCESS) {
-        switch (DEVICE_TYPE) {
-            case DEVICE_TYPE_GATEWAY:
-            {
-                int err = storage_route_add(dst_id, dst_id, pkt->hdr.device_type, 1, rssi_2);
-                if (err) {
-                    LOG_ERR("Failed to add route for device %s ID:%d, err %d", device_type_str(pkt->hdr.device_type), dst_id, err);
-                    return;
-                }
-                LOG_INF("Added route for device %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id);
-
-                // Build route info packet and send to other devices in the network to update the route info for the newly paired device
-                build_route_info_and_send(dst_id, pkt->hdr.device_type, NULL, rssi_2, true);
-            }
-            break;
-
-            case DEVICE_TYPE_ANCHOR:
-            {
-                int err = storage_route_add(dst_id, dst_id, pkt->hdr.device_type, 1, rssi_2);
-                if (err) {
-                    LOG_ERR("Failed to add route for device %s ID:%d, err %d", device_type_str(pkt->hdr.device_type), dst_id, err);
-                    return;
-                }
-                LOG_INF("Added route for device %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id);
-
-                // Build route info packet and send to other devices in the network to update the route info for the newly paired device
-                build_route_info_and_send(dst_id, pkt->hdr.device_type, NULL, rssi_2, true);
-            }
-            break;
-
-            default:
-                break; 
-        }
-    }
     return;
 
 }
@@ -747,26 +695,6 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
             send_joined_network(&jn_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
         }
 
-        // Send Route Info Request to the newly paired device
-        switch (DEVICE_TYPE) {
-            case DEVICE_TYPE_ANCHOR:
-            {
-                int err = storage_route_add(dst_id, dst_id, pkt->hdr.device_type, 1, rssi_2);
-                if (err) {
-                    LOG_ERR("Failed to add route for device %s ID:%d, err %d", device_type_str(pkt->hdr.device_type), dst_id, err);
-                    return;
-                }
-                LOG_INF("Added route for device %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id);
-
-                // Build route info packet and send to other devices in the network to update the route info for the newly paired device
-                build_route_info_and_send(dst_id, pkt->hdr.device_type, NULL, rssi_2, true);
-            }
-            break;
-
-            default:
-                break; 
-        }
-
     } else if (status == STATUS_ALREADY_EXISTS) {
         LOG_INF("%s ID:%d already paired, received PAIR_ACK with success", device_type_str(pkt->hdr.device_type), dst_id);
     } else if (status == STATUS_STORAGE_FULL) {
@@ -823,6 +751,8 @@ void handle_joined_network(const joined_network_t *pkt, uint16_t dst_id, int16_t
                 } else if (status == STATUS_ALREADY_EXISTS) {
                     LOG_INF("%s ID:%d already in network, received JOINED_NETWORK with success", device_type_str(pkt->device_type), pkt->device_id);
                 }
+                // Send Ping Device
+                ping_known_devices(pkt->device_id, status);
             } else {
                 // Reject joined network except from anchor and sensor
                 return;
@@ -906,8 +836,7 @@ void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id,
         case DEVICE_TYPE_ANCHOR:
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-                // Send Ping Device to the device that just joined the network to update the mesh time and hop number
-                ping_known_devices();
+                // Implement Later
             }
             else {
                 // Reject joined network ack except from anchor and gateway
@@ -950,7 +879,7 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
         return;
     }
 
-    LOG_INF_MAG("   Received PING_DEVICE from %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+    LOG_INF_MAG("   Received PING_DEVICE from %s ID:%d with RSSI:%d (status: 0x%02x) (gen_id: %d)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status, pkt->dst_device_id);
 
     // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
     if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
@@ -958,27 +887,38 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
         return;
     }
 
+    if (pkt->dst_device_id != 0 || pkt->dst_device_id != 0xFFFF) {
+        for (int i = 0; i < infra_count; i++) {
+            if (infra_devices[i].entry.device_id == pkt->dst_device_id && pkt->hdr.status != STATUS_ALREADY_EXISTS && pkt->hdr.status != STATUS_SUCCESS) {
+                // Remove from Infra Storage
+                storage_infra_remove(i);
+            }
+        }
+    }
+
+    if (pkt->dst_device_id == radio_get_device_id()) {
+        if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
+            process_next_request = true;
+            // Send Route Info
+            // Implement Later if device != Sensor
+        } else {
+            // factory reset
+            factory_reset();
+        }
+        
+    }
+
     switch (DEVICE_TYPE) {
         case DEVICE_TYPE_GATEWAY:
         {
-            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-                // Update Infra storage with new RSSI and hop number
-                update_infra_storage(dst_id, pkt->hop_num, rssi_2);
-            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
-                // Update Sensor storage
-                update_sensor_storage(dst_id, pkt->version);
-            } else {
-                // Reject ping device except from anchor and sensor
-                return;
-            }
+            // Gateway never receives ping device because it's the root, but in case it receives ping device just ignore
+            return;
         }
         break;
 
         case DEVICE_TYPE_ANCHOR:
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
-                // Set the mesh time
-                mesh_time_set(pkt->timestamp);
                 // Check if we need to update hop number
                 if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
                     LOG_INF("Updated hop number for GATEWAY ID:%d to hop:%d based on PING_DEVICE", dst_id, DEVICE_HOP_NUMBER);
@@ -1008,19 +948,14 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
                     };
                     send_device_updated(&du_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
                 }
-                // Update mesh time if hop number is less than current hop number, which means the ping is from a closer anchor and the time is more accurate
-                if (pkt->hop_num < DEVICE_HOP_NUMBER) {
-                    mesh_time_set(pkt->timestamp);
-                    LOG_INF("Updated mesh time based on PING_DEVICE from ANCHOR ID:%d", dst_id);
-                }
-            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
-                // Update mesh time
-                mesh_time_set(pkt->timestamp);
-                update_sensor_storage(dst_id, pkt->version);
             } else {
                 // Reject ping device except from gateway, anchor, and sensor
                 return;
             }
+            // Set the mesh time
+            mesh_time_set(pkt->timestamp);
+            MESH_DEVICES_COUNT = pkt->total_devices;
+            ping_known_devices(pkt->dst_device_id, pkt->hdr.status);
         }
         break;
 
@@ -1045,7 +980,7 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
         break;
     }
     // Send ACK back to the sender
-    send_ping_ack(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, STATUS_SUCCESS);
+    send_ping_ack(dst_id, pkt->hdr.device_type, pkt->dst_device_id, pkt->hdr.tracking_id, STATUS_SUCCESS);
 
     LOG_INF("Mesh Time %llu seconds", mesh_time_get() / 1000);
     return;
@@ -1074,13 +1009,9 @@ void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
         case DEVICE_TYPE_GATEWAY:
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-                // Print mesh time diff
-                LOG_INF("Mesh time is %d seconds ahead based on PING_ACK from %s ID:%d", (int32_t)(mesh_time_get() - pkt->timestamp), device_type_str(pkt->hdr.device_type), dst_id);
                 // Update Infra storage with new RSSI and hop number
                 update_infra_storage(dst_id, pkt->hop_num, rssi_2);
             } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
-                // Print mesh time diff
-                LOG_INF("Mesh time is %d seconds ahead based on PING_ACK from %s ID:%d", (int32_t)(mesh_time_get() - pkt->timestamp), device_type_str(pkt->hdr.device_type), dst_id);
                 // Update Sensor storage
                 update_sensor_storage(dst_id, pkt->version);
             } else {
@@ -1092,23 +1023,7 @@ void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
         case DEVICE_TYPE_ANCHOR:
         {
-            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
-                // Update mesh time
-                mesh_time_set(pkt->timestamp);
-                if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
-                    LOG_INF("Updated hop number for GATEWAY ID:%d to hop:%d based on PING_ACK", dst_id, DEVICE_HOP_NUMBER);
-                    device_updated_t du_pkt = {
-                        .device_type = DEVICE_TYPE,
-                        .device_id = radio_get_device_id(),
-                        .serial_num = SERIAL_NUMBER,
-                        .version = FIRMWARE_VERSION,
-                        .connected_device_id = 0xFFFF,
-                        .hop_num = DEVICE_HOP_NUMBER,
-                        .sensor_count = storage_sensor_count(),
-                    };
-                    send_device_updated(&du_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
-                }
-            } else if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 // Check if we need to update hop number
                 if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
                     LOG_INF("Updated hop number for ANCHOR ID:%d to hop:%d based on PING_ACK", dst_id, DEVICE_HOP_NUMBER);
@@ -1123,17 +1038,7 @@ void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
                     };
                     send_device_updated(&du_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
                 }
-                // Update mesh time if hop number is less than current hop number, which means the ping is from a closer anchor and the time is more accurate
-                if (pkt->hop_num < DEVICE_HOP_NUMBER) {
-                    mesh_time_set(pkt->timestamp);
-                    LOG_INF("Updated mesh time based on PING_DEVICE from ANCHOR ID:%d", dst_id);
-                } else {
-                    // Print mesh time diff
-                    LOG_INF("Mesh time is %d seconds ahead based on PING_ACK from ANCHOR ID:%d", (int32_t)(mesh_time_get() - pkt->timestamp), dst_id);
-                }
             } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
-                // Print mesh time diff
-                LOG_INF("Mesh time is %d seconds ahead based on PING_ACK from SENSOR ID:%d", (int32_t)(mesh_time_get() - pkt->timestamp), dst_id);
                 // Update Sensor storage
                 update_sensor_storage(dst_id, pkt->version);
             } else {
@@ -1145,14 +1050,8 @@ void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
         case DEVICE_TYPE_SENSOR:
         {
-            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-                // Update mesh time
-                mesh_time_set(pkt->timestamp);
-                update_infra_storage(dst_id, pkt->hop_num, rssi_2);
-            } else {
-                // Reject ping ack except from gateway and anchor
-                return;
-            }
+            // Sensor will never receive ping ack, if it receives jut ignore it
+            return;
         }
         break;
 
@@ -1490,39 +1389,7 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
         }
         break;
     }
-
-    // If status is success, it means the device is repaired, send joined network packet
-    joined_network_t jn_pkt = {
-        .device_id = radio_get_device_id(),
-        .device_type = DEVICE_TYPE,
-        .serial_num = SERIAL_NUMBER,
-        .version = FIRMWARE_VERSION,
-    };
-
-    if (DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
-        device_info_update();
-        jn_pkt.connected_device_id = 0xFFFF; // Anchor doesn't have connected device ID at this point, set to 0xFFFF to indicate
-        jn_pkt.hop_num = DEVICE_HOP_NUMBER;
-        jn_pkt.sensor_count = storage_sensor_count();
-    } else if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
-        CONNECTED_DEVICE_ID = dst_id;
-        jn_pkt.connected_device_id = dst_id;
-        jn_pkt.hop_num = 0xFF;
-        jn_pkt.sensor_count = 0xFF;
-    }
-
-    if (storage_infra_count() > 0) {
-        send_joined_network(&jn_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
-    }
-
-    if (DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
-        int err = storage_route_add(dst_id, pkt->hdr.device_id, pkt->hdr.device_type, 1, rssi_2);
-        if (err) {
-            LOG_ERR("Failed to add route for repaired device %s ID:%d, err %d", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id, err);
-            return;
-        }
-        LOG_INF("Added route for repaired device %s ID:%d via %d", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id, dst_id);
-    }
+    
     return;
 }
 
@@ -1664,6 +1531,12 @@ void handle_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, int16_t
 
 void mesh_tick(void)
 {
+    if (process_next_request && resp_candidate_idx > 0) {
+        process_next_request = false;
+        select_and_confirm(resp_candidate_count - resp_candidate_idx);
+        resp_candidate_idx--;
+    }
+
     if (!collecting) {
         return;
     }
@@ -1672,8 +1545,20 @@ void mesh_tick(void)
         LOG_INF("Collection window expired - %d candidates", resp_candidate_count);
         collecting = false;
         nbtimeout_stop(&collect_timer);
-        select_and_confirm();
+        sort_candidates();
+
+        int available = MAX_ANCHORS - storage_infra_count();
+        LOG_INF("Available slots for anchors: %d", available);
+        if (available <= 0) {
+            LOG_WRN("No available slots for anchors, cannot process any more candidates");
+            resp_candidate_count = 0;
+        } else {
+            resp_candidate_count = (resp_candidate_count < available) ? resp_candidate_count : available;
+            process_next_request = true;
+        }
+        resp_candidate_idx = resp_candidate_count;
     }
+
 }
 
 /* Compute hash. */

@@ -39,7 +39,6 @@ static int anchor_init(void)
 	
 	if (infra_count > 0) {
 		if (infra_count >= MAX_ANCHORS) {
-			ping_known_devices();
 			return 0;
 		}
 	}
@@ -239,7 +238,6 @@ void anchor_main(void)
 			data_tick();
 			large_data_tick();
 			config_tick();
-			known_devices_tick();
 			// mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
 			break;

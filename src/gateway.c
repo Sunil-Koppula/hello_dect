@@ -59,7 +59,7 @@ static int gateway_init(void)
 		}
 	}
 
-	ping_known_devices();
+	ping_known_devices(0, STATUS_SUCCESS);
 
 	return 0;
 }

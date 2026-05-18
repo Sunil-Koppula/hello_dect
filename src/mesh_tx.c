@@ -170,7 +170,7 @@ int send_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id, ui
 }
 
 /* Send ping device packet. */
-int send_ping_device(uint16_t dst_id, uint8_t dst_type, uint8_t status)
+int send_ping_device(uint16_t dst_id, uint8_t dst_type, uint16_t gen_id, uint8_t status)
 {
     ping_device_t packet = {
         .hdr = {
@@ -181,8 +181,10 @@ int send_ping_device(uint16_t dst_id, uint8_t dst_type, uint8_t status)
             .device_id = dst_id,
             .status = status,
         },
+        .dst_device_id = gen_id,
         .hop_num = DEVICE_HOP_NUMBER,
         .version = FIRMWARE_VERSION,
+        .total_devices = MESH_DEVICES_COUNT,
         .timestamp = mesh_time_get() + 15,
     };
 
@@ -194,7 +196,7 @@ int send_ping_device(uint16_t dst_id, uint8_t dst_type, uint8_t status)
 }
 
 /* Send ping acknowledgment packet. */
-int send_ping_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status)
+int send_ping_ack(uint16_t dst_id, uint8_t dst_type, uint16_t gen_id, uint8_t tracking_id, uint8_t status)
 {
     ping_ack_t packet = {
         .hdr = {
@@ -205,6 +207,7 @@ int send_ping_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_
             .device_id = dst_id,
             .status = status,
         },
+        .dst_device_id = gen_id,
         .hop_num = DEVICE_HOP_NUMBER,
         .version = FIRMWARE_VERSION,
         .timestamp = mesh_time_get() + 15,

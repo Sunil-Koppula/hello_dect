@@ -43,17 +43,16 @@ static int sensor_init(void)
 
 	/* Check EEPROM partition 1 — sensor can pair with only one device. */
 	if (infra_count > 0) {
-			infra_entry_t entry;
-			int err = storage_infra_get(0, &entry);
-			if (err) {
-				LOG_ERR("Failed to read infra entry, err %d", err);
-				return err;
-			}
-			paired_device_id = entry.device_id;
-			paired_device_type = entry.device_type;
-			LOG_INF("Already paired with %s ID:%d (hop:%d)", device_type_str(paired_device_type), paired_device_id, entry.hop_num);
-			ping_known_devices();
-			return 0;
+		infra_entry_t entry;
+		int err = storage_infra_get(0, &entry);
+		if (err) {
+			LOG_ERR("Failed to read infra entry, err %d", err);
+			return err;
+		}
+		paired_device_id = entry.device_id;
+		paired_device_type = entry.device_type;
+		LOG_INF("Already paired with %s ID:%d (hop:%d)", device_type_str(paired_device_type), paired_device_id, entry.hop_num);
+		return 0;
 	}
 
 	/* Not paired — start pairing. */
@@ -251,7 +250,6 @@ void sensor_main(void)
 			tracker_tick(tracker_default_expired_cb);
 			data_tick();
 			large_data_tick();
-			known_devices_tick();
 			// mesh_time_check_milestone();
 			state = MAIN_SUB_RX_WINDOW;
 			break;

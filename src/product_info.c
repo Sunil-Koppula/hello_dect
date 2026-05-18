@@ -13,6 +13,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/hwinfo.h>
+#include <zephyr/sys/reboot.h>
 #include <zephyr/logging/log.h>
 #include "main_sub.h"
 #include "product_info.h"
@@ -138,8 +139,8 @@ void device_info_update(void)
 	/* Best entry is now at index 0. */
 	if (temp_hop_num != DEVICE_HOP_NUMBER && DEVICE_HOP_NUMBER != 0xFF) {
 		LOG_INF("Updating hop number from %d to %d", DEVICE_HOP_NUMBER, temp_hop_num);
-		// Send Ping Device packet to known devices
-		ping_known_devices();
+		// Send device updated packet to gateway to update hop number and connected device ID
+		// Implement Later
 	}
 	DEVICE_HOP_NUMBER = temp_hop_num;
 	CONNECTED_DEVICE_ID = entry.device_id;
@@ -244,17 +245,20 @@ void known_devices_tick(void)
 	for (int i = 0; i < infra_count; i++) {
 		if ((now - infra_devices[i].last_comm_ms > PING_TIMEOUT_MS) && !infra_devices[i].is_ping_packet_sent) {
 			// Send Ping Device packet to check if device is still reachable
-			send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
+			send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, 0, STATUS_SUCCESS);
 			infra_devices[i].is_ping_packet_sent = true;
 		}
 	}
 }
 
-void ping_known_devices(void)
+void ping_known_devices(uint16_t gen_id, uint8_t status)
 {
 	for (int i = 0; i < infra_count; i++) {
-		send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
-		infra_devices[i].is_ping_packet_sent = true;
+		if (infra_devices[i].entry.hop_num > DEVICE_HOP_NUMBER) {
+			// Send Ping Device packet to check if device is still reachable
+			send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, gen_id, status);
+			infra_devices[i].is_ping_packet_sent = true;
+		}
 	}
 }
 
@@ -266,4 +270,21 @@ uint16_t get_next_hop_device_id(uint16_t device_id)
 		}
 	}
 	return 0xFFFF; // Device ID not found in route table
+}
+
+void factory_reset(void)
+{
+	LOG_WRN("Factory Reset.....");
+
+	/* Wait 2 seconds for user to release button. */
+	k_msleep(2000);
+
+	storage_infra_clear();
+	storage_sensor_clear();
+	storage_mesh_clear();
+	storage_route_clear();
+
+	LOG_WRN("Factory Reset Complete, Rebooting...");
+	k_msleep(500);
+	sys_reboot(SYS_REBOOT_COLD);
 }

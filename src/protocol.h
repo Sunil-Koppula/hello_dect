@@ -161,6 +161,7 @@ typedef struct {
 	uint16_t dst_device_id;			/* short device ID of the device being pinged */
 	uint8_t hop_num; 				/* hop count from gateway */
 	uint16_t version;				/* device firmware version */
+	uint16_t total_devices;			/* total number of devices in the network (for gateway) or behind this anchor (for anchor) */
 	uint64_t timestamp;				/* sender timestamp for RTT measurement */
 } __attribute__((packed)) ping_device_t;
 
