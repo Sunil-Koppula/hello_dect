@@ -11,6 +11,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/sys/reboot.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/crc.h>
 #include "buttons.h"
@@ -25,11 +26,13 @@
 
 LOG_MODULE_REGISTER(buttons, CONFIG_MAIN_LOG_LEVEL);
 
+#define BUTTON0_NODE DT_NODELABEL(button0)
 #define BUTTON1_NODE DT_NODELABEL(button1)
 #define BUTTON2_NODE DT_NODELABEL(button2)
+#define BUTTON3_NODE DT_NODELABEL(button3)
 
 #define DEBOUNCE_MS         50
-#define BUTTON_COUNT        2
+#define BUTTON_COUNT        4
 #define EVENT_QUEUE_DEPTH   8
 
 #define BUTTONS_THREAD_STACK_SIZE  4096
@@ -40,7 +43,7 @@ struct button_entry {
 	struct gpio_callback cb;
 	button_handler_t handler;
 	int64_t last_press_ms;
-	int idx;          /* user-facing index: 1 or 2 */
+	int idx;          /* user-facing index: 1, 2, 3, or 4 */
 };
 
 typedef enum
@@ -76,8 +79,10 @@ typedef struct {
 } __attribute__((packed)) sensor_config_t;
 
 static struct button_entry buttons[BUTTON_COUNT] = {
-	{ .spec = GPIO_DT_SPEC_GET(BUTTON1_NODE, gpios), .idx = 1 },
-	{ .spec = GPIO_DT_SPEC_GET(BUTTON2_NODE, gpios), .idx = 2 },
+	{ .spec = GPIO_DT_SPEC_GET(BUTTON0_NODE, gpios), .idx = 1 },
+	{ .spec = GPIO_DT_SPEC_GET(BUTTON1_NODE, gpios), .idx = 2 },
+	{ .spec = GPIO_DT_SPEC_GET(BUTTON2_NODE, gpios), .idx = 3 },
+	{ .spec = GPIO_DT_SPEC_GET(BUTTON3_NODE, gpios), .idx = 4 },
 };
 
 K_MSGQ_DEFINE(button_events, sizeof(int), EVENT_QUEUE_DEPTH, 4);
@@ -158,6 +163,16 @@ int button_register_handler(int idx, button_handler_t handler)
 	}
 	b->handler = handler;
 	return 0;
+}
+
+static void default_button0_handler(void)
+{
+	LOG_WRN("Factory Reset Button pressed");
+	k_msleep(1000);
+	factory_reset();
+
+	k_msleep(500);
+	sys_reboot(SYS_REBOOT_COLD);
 }
 
 static void default_button1_handler(void)
@@ -351,8 +366,10 @@ static void default_button2_handler(void)
 
 int buttons_init(void)
 {
-	button_register_handler(1, default_button1_handler);
-	button_register_handler(2, default_button2_handler);
+	button_register_handler(1, default_button0_handler);
+	button_register_handler(2, default_button1_handler);
+	button_register_handler(3, default_button2_handler);
+	button_register_handler(4, NULL);
 
 	for (int i = 0; i < BUTTON_COUNT; i++) {
 		struct button_entry *b = &buttons[i];
@@ -389,7 +406,7 @@ int buttons_init(void)
 			BUTTONS_THREAD_PRIO, 0, K_NO_WAIT);
 	k_thread_name_set(&buttons_thread_data, "buttons");
 
-	LOG_INF("Buttons initialized (button1, button2)");
+	LOG_INF("Buttons initialized");
 	return 0;
 }
 

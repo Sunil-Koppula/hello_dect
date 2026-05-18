@@ -31,5 +31,4 @@ target_sources(app PRIVATE
 )
 
 # Testing utilities
-target_sources(app PRIVATE src/testing/factory_reset.c)
 target_sources(app PRIVATE src/testing/buttons.c)

@@ -15,7 +15,6 @@
 #include "main_sub.h"
 #include "psram.h"
 #include "serial.h"
-#include "testing/factory_reset.h"
 #include "testing/buttons.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
@@ -100,8 +99,7 @@ int main(void)
 		LOG_WRN("AT command init failed, err %d", err);
 	}
 
-	/* Check for factory reset (hold Button 1 for 3s at boot). */
-	factory_reset_init();
+	/* Testing Purpose Only*/
 	buttons_init();
 
 	switch (DEVICE_TYPE) {
