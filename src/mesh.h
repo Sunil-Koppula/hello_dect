@@ -10,6 +10,8 @@
 #include "product_info.h"
 #include "protocol.h"
 
+extern uint16_t temp_id;
+
 /* TX helpers */
 int send_pair_request(void);
 int send_pair_response(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status);

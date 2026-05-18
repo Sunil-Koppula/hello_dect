@@ -38,6 +38,9 @@ static struct nbtimeout collect_timer;
 static bool collecting;
 static bool process_next_request = false;
 
+// Set temp ID to 0xFFFF
+uint16_t temp_id = 0xFFFF;
+
 /* Check Infra Storage */
 static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool all_slots)
 {
@@ -751,8 +754,15 @@ void handle_joined_network(const joined_network_t *pkt, uint16_t dst_id, int16_t
                 } else if (status == STATUS_ALREADY_EXISTS) {
                     LOG_INF("%s ID:%d already in network, received JOINED_NETWORK with success", device_type_str(pkt->device_type), pkt->device_id);
                 }
-                // Send Ping Device
-                ping_known_devices(pkt->device_id, status);
+                // // Send Ping Device
+                // ping_known_devices(pkt->device_id, status);
+
+                // Testing Purpose Only
+                if (pkt->device_type == DEVICE_TYPE_SENSOR) {
+                    ping_known_devices(pkt->device_id, STATUS_STORAGE_FULL);
+                } else {
+                    ping_known_devices(pkt->device_id, status);
+                }
             } else {
                 // Reject joined network except from anchor and sensor
                 return;
@@ -891,7 +901,19 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
         for (int i = 0; i < infra_count; i++) {
             if (infra_devices[i].entry.device_id == pkt->dst_device_id && pkt->hdr.status != STATUS_ALREADY_EXISTS && pkt->hdr.status != STATUS_SUCCESS) {
                 // Remove from Infra Storage
+                send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, pkt->dst_device_id, pkt->hdr.status);
                 storage_infra_remove(i);
+                temp_id = infra_devices[i].entry.device_id;
+                break;
+            }
+        }
+        for (int i = 0; i < sensor_count; i++) {
+            if (sensor_devices[i].entry.device_id == pkt->dst_device_id && pkt->hdr.status != STATUS_ALREADY_EXISTS && pkt->hdr.status != STATUS_SUCCESS) {
+                // Remove from Sensor Storage
+                send_ping_device(sensor_devices[i].entry.device_id, DEVICE_TYPE_SENSOR, pkt->dst_device_id, pkt->hdr.status);
+                storage_sensor_remove(i);
+                temp_id = sensor_devices[i].entry.device_id;
+                break;
             }
         }
     }
@@ -903,7 +925,9 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
             // Implement Later if device != Sensor
         } else {
             // factory reset
+            send_ping_ack(dst_id, pkt->hdr.device_type, pkt->dst_device_id, pkt->hdr.tracking_id, STATUS_SUCCESS);
             factory_reset();
+            return;
         }
         
     }
@@ -1004,6 +1028,11 @@ void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
     // Remove the ping tracker
     tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+    if (temp_id != 0xFFFF && temp_id == dst_id) {
+        temp_id = 0xFFFF;
+        return;
+    }
 
     switch (DEVICE_TYPE) {
         case DEVICE_TYPE_GATEWAY:

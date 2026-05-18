@@ -148,6 +148,10 @@ void device_info_update(void)
 
 bool is_known_device(uint16_t device_id)
 {
+	if (temp_id != 0xFFFF && temp_id == device_id) {
+		return true;
+	}
+
 	for (int i = 0; i < infra_count; i++) {
 		if (infra_devices[i].entry.device_id == device_id) {
 			infra_devices[i].last_comm_ms = k_uptime_get();
@@ -276,15 +280,12 @@ void factory_reset(void)
 {
 	LOG_WRN("Factory Reset.....");
 
-	/* Wait 2 seconds for user to release button. */
-	k_msleep(2000);
-
 	storage_infra_clear();
 	storage_sensor_clear();
 	storage_mesh_clear();
 	storage_route_clear();
 
-	LOG_WRN("Factory Reset Complete, Rebooting...");
-	k_msleep(500);
-	sys_reboot(SYS_REBOOT_COLD);
+	// LOG_WRN("Factory Reset Complete, Rebooting...");
+	// k_msleep(500);
+	// sys_reboot(SYS_REBOOT_COLD);
 }
