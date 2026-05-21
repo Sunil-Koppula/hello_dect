@@ -475,7 +475,8 @@ void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 			.data_id = pkt->data_id,
 		};
 		// Find dst_id from route table using gen_device_id
-		dst_id = get_next_hop_device_id(pkt->gen_device_id);
+		// dst_id = get_next_hop_device_id(pkt->gen_device_id);
+		uint16_t dst_id = 0xFFFF; // Implement later
 		if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
 			LOG_ERR("No route to gen_device_id %d, cannot send DATA_RECEIVED", pkt->gen_device_id);
 			return;
@@ -639,7 +640,8 @@ void handle_data_received(const data_receive_t *pkt, uint16_t dst_id, int16_t rs
 					.data_id = pkt->data_id,
 				};
 				// Find dst_id from route table using gen_device_id
-				dst_id = get_next_hop_device_id(pkt->gen_device_id);
+				// dst_id = get_next_hop_device_id(pkt->gen_device_id);
+				dst_id = 0xFFFF; // Implement later
 				if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
 					LOG_ERR("No route to gen_device_id %d, cannot forward DATA_RECEIVED", pkt->gen_device_id);
 					return;

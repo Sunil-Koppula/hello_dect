@@ -115,6 +115,14 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 			handle_repair_response((const repair_response_t *)data, sender_id, rssi_2);
 			break;
 
+		case PACKET_ROUTE_DISCOVERY:
+			handle_route_discovery((const route_discovery_t *)data, sender_id, rssi_2);
+			break;
+
+		case PACKET_ROUTE_DISCOVERY_ACK:
+			handle_route_discovery_ack((const route_discovery_ack_t *)data, sender_id, rssi_2);
+			break;
+
 		case PACKET_ROUTE_INFO:
 			handle_route_info((const route_info_t *)data, sender_id, rssi_2);
 			break;

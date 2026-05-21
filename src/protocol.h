@@ -21,6 +21,14 @@ typedef enum {
 	DEVICE_TYPE_SENSOR  = 0x03,
 } device_type_t;
 
+/* Data Types */
+typedef enum {
+	DATA_TYPE_UNKNOWN	= 0x00,
+	DATA_TYPE_REPORT	= 0x01,
+	DATA_TYPE_CONFIG	= 0x02,
+	DATA_TYPE_LARGE		= 0x03,
+} data_type_t;
+
 /* Packet Types Identifier */
 typedef enum {
 	PACKET_UNKNOWN       		= 0x00,
@@ -36,26 +44,28 @@ typedef enum {
 	PACKET_DEVICE_UPDATED_ACK	= 0x0A,
 	PACKET_REPAIR_REQUEST		= 0x0B,
 	PACKET_REPAIR_RESPONSE		= 0x0C,
-	PACKET_ROUTE_INFO			= 0x0D,
-	PACKET_ROUTE_INFO_ACK		= 0x0E,
-	PACKET_DATA_INIT			= 0x0F,
-	PACKET_DATA_INIT_ACK		= 0x10,
-	PACKET_DATA_CHUNK			= 0x11,
-	PACKET_DATA_CHUNK_ACK		= 0x12,
-	PACKET_DATA_RECEIVED		= 0x13,
-	PACKET_CONFIG				= 0x14,
-	PACKET_CONFIG_ACK			= 0x15,
-	PACKET_CONFIG_RECEIVED		= 0x16,
-	PACKET_LARGE_DATA_INIT		= 0x17,
-	PACKET_LARGE_DATA_INIT_ACK	= 0x18,
-	PACKET_LARGE_DATA_CHUNK		= 0x19,
-	PACKET_LARGE_DATA_CHUNK_ACK	= 0x1A,
-	PACKET_LARGE_DATA_RECEIVED	= 0x1B,
-	PACKET_OTA_INIT				= 0x1C,
-	PACKET_OTA_INIT_ACK			= 0x1D,
-	PACKET_OTA_CHUNK			= 0x1E,
-	PACKET_OTA_CHUNK_ACK		= 0x1F,
-	PACKET_OTA_RECEIVED			= 0x20,
+	PACKET_ROUTE_DISCOVERY		= 0x0D,
+	PACKET_ROUTE_DISCOVERY_ACK	= 0x0E,
+	PACKET_ROUTE_INFO			= 0x0F,
+	PACKET_ROUTE_INFO_ACK		= 0x10,
+	PACKET_DATA_INIT			= 0x11,
+	PACKET_DATA_INIT_ACK		= 0x12,
+	PACKET_DATA_CHUNK			= 0x13,
+	PACKET_DATA_CHUNK_ACK		= 0x14,
+	PACKET_DATA_RECEIVED		= 0x15,
+	PACKET_CONFIG				= 0x16,
+	PACKET_CONFIG_ACK			= 0x17,
+	PACKET_CONFIG_RECEIVED		= 0x18,
+	PACKET_LARGE_DATA_INIT		= 0x19,
+	PACKET_LARGE_DATA_INIT_ACK	= 0x1A,
+	PACKET_LARGE_DATA_CHUNK		= 0x1B,
+	PACKET_LARGE_DATA_CHUNK_ACK	= 0x1C,
+	PACKET_LARGE_DATA_RECEIVED	= 0x1D,
+	PACKET_OTA_INIT				= 0x1E,
+	PACKET_OTA_INIT_ACK			= 0x1F,
+	PACKET_OTA_CHUNK			= 0x20,
+	PACKET_OTA_CHUNK_ACK		= 0x21,
+	PACKET_OTA_RECEIVED			= 0x22,
 } packet_type_t;
 
 /* Packet Priority Levels */
@@ -96,6 +106,12 @@ typedef struct {
 } __attribute__((packed)) packet_header_t;
 
 #define PACKET_HEADER_SIZE sizeof(packet_header_t)
+
+/* Route Info Entry */
+typedef struct {
+	uint16_t device_id;		/* short device ID of the device */
+	uint8_t hop_num;		/* hop count from gateway */
+} __attribute__((packed)) route_info_entry_t;
 
 /********** Packet Structures **********/
 
@@ -221,13 +237,36 @@ typedef struct {
 
 #define REPAIR_RESPONSE_PACKET_SIZE sizeof(repair_response_t)
 
+/* ROUTE DISCOVERY Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t device_id;
+	uint8_t device_type;
+	uint8_t hop_num;
+	uint8_t data_type;
+	uint16_t data_id;
+} __attribute__((packed)) route_discovery_t;
+
+#define ROUTE_DISCOVERY_PACKET_SIZE sizeof(route_discovery_t)
+
+/* ROUTE DISCOVERY ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t device_id;
+	uint8_t device_type;
+	uint8_t hop_num;
+} __attribute__((packed)) route_discovery_ack_t;
+
+#define ROUTE_DISCOVERY_ACK_PACKET_SIZE sizeof(route_discovery_ack_t)
+
 /* ROUTE INFO Packet */
 typedef struct {
 	packet_header_t hdr;
-	uint16_t device_id;				/* short device ID of the device whose route info is being shared */
-	uint8_t device_type;			/* device_type_t of the device whose route info is being shared */
-	uint8_t route_len; 				/* hop count from gateway */
-	int16_t avg_rssi_2;				/* Average RSSI to this device (in units of 0.5 dBm) */
+	uint16_t device_id;
+	uint8_t device_type;
+	uint8_t data_type;
+	uint16_t data_id;
+	route_info_entry_t route_info[MAX_DEPTH];
 } __attribute__((packed)) route_info_t;
 
 #define ROUTE_INFO_PACKET_SIZE sizeof(route_info_t)
@@ -237,8 +276,8 @@ typedef struct {
 	packet_header_t hdr;
 	uint16_t device_id;				/* short device ID of the device whose route info is being acknowledged */
 	uint8_t device_type;			/* device_type_t of the device whose route info is being acknowledged */
-	uint8_t route_len; 				/* hop count from gateway */
-	int16_t avg_rssi_2;				/* Average RSSI to this device (in units of 0.5 dBm) */
+	uint8_t data_type;				/* data_type_t of the data being acknowledged */
+	uint16_t data_id;				/* ID of the data being acknowledged */
 } __attribute__((packed)) route_info_ack_t;
 
 #define ROUTE_INFO_ACK_PACKET_SIZE sizeof(route_info_ack_t)
@@ -354,11 +393,14 @@ typedef struct {
 /* CONFIG Packet */
 typedef struct {
 	packet_header_t hdr;
-	uint16_t dst_device_id;				/* short device ID of the device being configured */
-	uint8_t dst_device_type;			/* device_type_t of the device being configured */
-	uint8_t config_len; 				/* length of the config data */
-	uint32_t config_crc32;				/* CRC32 of the config data for integrity checking */
-	uint8_t config[MAX_CONFIG_SIZE];	/* config data */
+	uint16_t dst_device_id;						/* short device ID of the device being configured */
+	uint8_t dst_device_type;					/* device_type_t of the device being configured */
+	uint8_t data_type;							/* data_type_t of the config data */
+	uint16_t data_id;							/* ID of the config data (for the sender's reference, e.g. to match with ACKs) */
+	route_info_entry_t route_info[MAX_DEPTH];	/* routing info for the config packet to reach the destination device (filled by sender based on route discovery or routing table) */
+	uint8_t config_len; 						/* length of the config data */
+	uint32_t config_crc32;						/* CRC32 of the config data for integrity checking */
+	uint8_t config[MAX_CONFIG_SIZE];			/* config data */
 } __attribute__((packed)) config_t;
 
 #define CONFIG_PACKET_SIZE sizeof(config_t)
@@ -377,6 +419,8 @@ typedef struct {
 	packet_header_t hdr;
 	uint16_t dst_device_id;			/* short device ID of the device being configured */
 	uint8_t dst_device_type;		/* device_type_t of the device being configured */
+	uint8_t data_type;				/* data_type_t of the config data */
+	uint16_t data_id;				/* ID of the config data */
 } __attribute__((packed)) config_received_t;
 
 #define CONFIG_RECEIVED_PACKET_SIZE sizeof(config_received_t)

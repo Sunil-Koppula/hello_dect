@@ -22,12 +22,11 @@ static const struct device *eeprom_dev = DEVICE_DT_GET(DT_NODELABEL(eeprom));
 /* Cached entry counts (avoid reading header every time). */
 uint8_t infra_count;
 uint8_t sensor_count;
-uint16_t known_route_count;
-static uint16_t mesh_count;
+uint16_t mesh_count;
 
 infra_t  infra_devices[MAX_ANCHORS];
 sensor_t sensor_devices[MAX_SENSORS];
-known_route_t known_route_table[MAX_DEVICES];
+mesh_t   mesh_devices[MAX_DEVICES];
 
 /* ---- Internal helpers ---- */
 
@@ -138,13 +137,6 @@ int storage_init(void)
 		return err;
 	}
 
-	err = read_header(STORAGE_ROUTING_OFFSET, &count);
-	if (err) {
-		LOG_ERR("Failed to read partition 4 header, err %d", err);
-		return err;
-	}
-	known_route_count = count;
-
 	// Update Known infrastructure devices from storage.
 	// Use the EEPROM helper directly here — storage_infra_get() now reads
 	// from RAM, which is uninitialized until this loop runs.
@@ -209,26 +201,11 @@ int storage_init(void)
 			}
 			LOG_INF("	Mesh entry %d device %s ID:%d SN: %lld V: %d conn_dev: %d hop_num: %d sensor_count: %d",
 				i, device_type_str(entry.device_type), entry.device_id, entry.serial_num, entry.version, entry.connected_device_id, entry.hop_num, entry.sensor_count);
-		}
-
-		// Update Known routes from storage
-		LOG_INF_CYAN("Loading %d route entries from storage", known_route_count);
-		for (uint16_t i = 0; i < known_route_count; i++) {
-			route_entry_t entry;
-			err = storage_route_get(i, &entry);
-			if (err) {
-				LOG_ERR("	Failed to read route entry %d, err %d", i, err);
-				known_route_table[i].device_id = 0xFFFF;
-				known_route_table[i].next_device_id = 0xFFFF;
-				continue;
-			}
-			LOG_INF("	Route entry %d device %s ID:%d with %d routes", i, device_type_str(entry.device_type), entry.device_id, entry.route_count);
-			for (int j = 0; j < entry.route_count; j++) {
-				LOG_INF_CYAN("		ID: %d Route_len: %d Avg_RSSI: %d", entry.route_info[j].next_hop_id, entry.route_info[j].route_length, entry.route_info[j].avg_rssi_2);
-			}
-			/* Mirror the best route (index 0 after sort) into the RAM table. */
-			known_route_table[i].device_id = entry.device_id;
-			known_route_table[i].next_device_id = (entry.route_count > 0) ? entry.route_info[0].next_hop_id : 0xFFFF;
+			mesh_devices[i].device_type = entry.device_type;
+			mesh_devices[i].device_id = entry.device_id;
+			mesh_devices[i].serial_num = entry.serial_num;
+			mesh_devices[i].connected_device_id = entry.connected_device_id;
+			mesh_devices[i].hop_num = entry.hop_num;
 		}
 	}
 	
@@ -524,227 +501,4 @@ int storage_mesh_remove(uint16_t index)
 
 	mesh_count--;
 	return write_header(STORAGE_MESH_OFFSET, mesh_count);
-}
-
-/* ---- Partition 4: Routing table for mesh network ---- */
-
-/* Sort entry->route_info[0..route_count-1] in place:
- *   primary key: route_length ascending (shorter = better),
- *   secondary key: signed avg_rssi_2 descending (stronger signal first).
- * Best route ends up at index 0. */
-static void sort_routes(route_entry_t *entry)
-{
-	if (entry->route_count < 2) {
-		return;
-	}
-
-	for (int i = 0; i < entry->route_count - 1; i++) {
-		for (int j = 0; j < entry->route_count - i - 1; j++) {
-			bool swap = false;
-
-			if (entry->route_info[j].route_length > entry->route_info[j + 1].route_length) {
-				swap = true;
-			} else if (entry->route_info[j].route_length == entry->route_info[j + 1].route_length &&
-				   entry->route_info[j].avg_rssi_2 < entry->route_info[j + 1].avg_rssi_2) {
-				swap = true;
-			}
-
-			if (swap) {
-				route_t tmp = entry->route_info[j];
-				entry->route_info[j] = entry->route_info[j + 1];
-				entry->route_info[j + 1] = tmp;
-			}
-		}
-	}
-}
-
-static int add_new_route(bool new_entry, uint16_t next_hop_id, uint16_t device_id, uint8_t device_type, uint8_t route_len, int16_t avg_rssi_2, uint16_t device_id_index)
-{
-	int err = 0;
-
-	if (new_entry) {
-		route_entry_t new_route_entry = {
-			.device_type = device_type,
-			.device_id = device_id,
-			.route_count = 1,
-			.route_info = { { .next_hop_id = next_hop_id, .route_length = route_len, .avg_rssi_2 = avg_rssi_2 } },
-		};
-		err = write_entry_with_crc(STORAGE_ROUTING_OFFSET, device_id_index, &new_route_entry, sizeof(new_route_entry));
-		if (err) {
-			return err;
-		}
-
-		/* Update in-RAM table: only the best next-hop is mirrored. Since this
-		 * is the first (and only) route for the device, it's also the best. */
-		known_route_table[known_route_count].device_id = device_id;
-		known_route_table[known_route_count].next_device_id = next_hop_id;
-		known_route_count++;
-		return write_header(STORAGE_ROUTING_OFFSET, known_route_count);
-	}
-
-	/* Update existing device's routes. */
-	route_entry_t entry;
-	err = read_entry(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
-	if (err) {
-		return err;
-	}
-
-	for (int i = 0; i < entry.route_count; i++) {
-		if (entry.route_info[i].next_hop_id == next_hop_id) {
-			/* Update existing route, but only if the new one is at least
-			 * as short. RSSI keeps the stronger signal (larger signed value). */
-			if (entry.route_info[i].route_length >= route_len) {
-				if (entry.route_info[i].avg_rssi_2 < avg_rssi_2) {
-					entry.route_info[i].avg_rssi_2 = avg_rssi_2;
-				}
-				entry.route_info[i].route_length = route_len;
-			}
-
-			sort_routes(&entry);
-
-			err = write_entry_with_crc(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
-			if (err) {
-				return err;
-			}
-
-			/* Mirror best (route_info[0]) into the RAM table. */
-			known_route_table[device_id_index].next_device_id = entry.route_info[0].next_hop_id;
-			return 0;
-		}
-	}
-
-	/* Route to this next_hop_id not found, add new route if we have space. */
-	if (entry.route_count < MAX_ANCHORS) {
-		entry.route_info[entry.route_count].next_hop_id = next_hop_id;
-		entry.route_info[entry.route_count].route_length = route_len;
-		entry.route_info[entry.route_count].avg_rssi_2 = avg_rssi_2;
-		entry.route_count++;
-
-		sort_routes(&entry);
-
-		err = write_entry_with_crc(STORAGE_ROUTING_OFFSET, device_id_index, &entry, sizeof(entry));
-		if (err) {
-			return err;
-		}
-
-		known_route_table[device_id_index].next_device_id = entry.route_info[0].next_hop_id;
-		return 0;
-	}
-	return -ENOMEM;
-}
-
-int storage_route_add(uint16_t next_hop_id, uint16_t device_id, uint8_t device_type, uint8_t route_len, int16_t avg_rssi_2)
-{
-	/* Find existing device entry; loop naturally terminates at known_route_count
-	 * if not found (covers the empty-table case without a special-case shortcut). */
-	uint16_t device_id_index;
-
-	for (device_id_index = 0; device_id_index < known_route_count; device_id_index++) {
-		if (known_route_table[device_id_index].device_id == device_id) {
-			break;
-		}
-	}
-
-	if (device_id_index == known_route_count) {
-		if (known_route_count >= MAX_DEVICES) {
-			LOG_WRN("Route partition full, cannot add route for device_id 0x%04X", device_id);
-			return -ENOMEM;
-		}
-		return add_new_route(true, next_hop_id, device_id, device_type, route_len, avg_rssi_2, device_id_index);
-	}
-	return add_new_route(false, next_hop_id, device_id, device_type, route_len, avg_rssi_2, device_id_index);
-}
-
-int storage_route_get(uint16_t index, route_entry_t *entry)
-{
-	if (index >= known_route_count) {
-		return -EINVAL;
-	}
-
-	int err = read_entry(STORAGE_ROUTING_OFFSET, index, entry, sizeof(*entry));
-	if (err) {
-		return err;
-	}
-	if (!entry_crc_ok(entry, sizeof(*entry))) {
-		LOG_ERR("Route entry %d CRC mismatch", index);
-		return -EBADMSG;
-	}
-	return 0;
-}
-
-int storage_route_remove(uint16_t device_id, uint16_t next_hop_id)
-{
-	uint16_t index;
-	for (index = 0; index < known_route_count; index++) {
-		if (known_route_table[index].device_id == device_id) {
-			break;
-		}
-	}
-	if (index == known_route_count) {
-		return -EINVAL;
-	}
-
-	route_entry_t entry;
-	int err = read_entry(STORAGE_ROUTING_OFFSET, index, &entry, sizeof(entry));
-	if (err) {
-		return err;
-	}
-
-	for (uint8_t i = 0; i < entry.route_count; i++) {
-		if (entry.route_info[i].next_hop_id != next_hop_id) {
-			continue;
-		}
-
-		/* Shift remaining routes up by one. */
-		for (uint8_t j = i + 1; j < entry.route_count; j++) {
-			entry.route_info[j - 1] = entry.route_info[j];
-		}
-		entry.route_count--;
-
-		if (entry.route_count == 0) {
-			/* Last route for this device removed — shift the whole device
-			 * entry out of the partition so it doesn't linger forever. */
-			for (uint16_t k = index + 1; k < known_route_count; k++) {
-				route_entry_t shifted;
-				err = read_entry(STORAGE_ROUTING_OFFSET, k, &shifted, sizeof(shifted));
-				if (err) {
-					return err;
-				}
-				err = write_entry(STORAGE_ROUTING_OFFSET, k - 1, &shifted, sizeof(shifted));
-				if (err) {
-					return err;
-				}
-				known_route_table[k - 1] = known_route_table[k];
-			}
-			known_route_count--;
-			known_route_table[known_route_count].device_id = 0xFFFF;
-			known_route_table[known_route_count].next_device_id = 0xFFFF;
-			return write_header(STORAGE_ROUTING_OFFSET, known_route_count);
-		}
-
-		err = write_entry_with_crc(STORAGE_ROUTING_OFFSET, index, &entry, sizeof(entry));
-		if (err) {
-			return err;
-		}
-
-		/* Mirror best (route_info[0]) into the RAM table. */
-		known_route_table[index].next_device_id = entry.route_info[0].next_hop_id;
-		return 0;
-	}
-	return -EINVAL;
-}
-
-int storage_route_count(void)
-{
-	return known_route_count;
-}
-
-int storage_route_clear(void)
-{
-	known_route_count = 0;
-	for (int i = 0; i < MAX_DEVICES; i++) {
-		known_route_table[i].device_id = 0xFFFF;
-		known_route_table[i].next_device_id = 0xFFFF;
-	}
-	return write_header(STORAGE_ROUTING_OFFSET, 0);
 }

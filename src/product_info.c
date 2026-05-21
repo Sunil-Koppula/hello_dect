@@ -266,16 +266,6 @@ void ping_known_devices(uint16_t gen_id, uint8_t status)
 	}
 }
 
-uint16_t get_next_hop_device_id(uint16_t device_id)
-{
-	for (int i = 0; i < known_route_count; i++) {
-		if (known_route_table[i].device_id == device_id) {
-			return known_route_table[i].next_device_id;
-		}
-	}
-	return 0xFFFF; // Device ID not found in route table
-}
-
 void factory_reset(void)
 {
 	LOG_WRN("Factory Reset.....");
@@ -283,7 +273,6 @@ void factory_reset(void)
 	storage_infra_clear();
 	storage_sensor_clear();
 	storage_mesh_clear();
-	storage_route_clear();
 
 	// LOG_WRN("Factory Reset Complete, Rebooting...");
 	// k_msleep(500);

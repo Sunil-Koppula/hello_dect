@@ -313,6 +313,53 @@ int send_repair_response(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id,
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
 }
 
+/* Send route discovery packet. */
+int send_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t status)
+{
+    route_discovery_t packet = {
+        .hdr = {
+            .packet_type = PACKET_ROUTE_DISCOVERY,
+            .device_type = DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_HIGH,
+            .tracking_id = tracker_next_id(),
+            .device_id = dst_id,
+            .status = status,
+        },
+        .device_id = pkt->device_id,
+        .device_type = pkt->device_type,
+        .hop_num = pkt->hop_num,
+        .data_type = pkt->data_type,
+        .data_id = pkt->data_id,
+    };
+
+    // Add tracker entry for retries
+    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_ROUTE_DISCOVERY, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+
+    LOG_INF_GRN("Sending ROUTE_DISCOVERY to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, status);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+}
+
+/* Send route discovery acknowledgment packet. */
+int send_route_discovery_ack(const route_discovery_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status)
+{
+    route_discovery_ack_t packet = {
+        .hdr = {
+            .packet_type = PACKET_ROUTE_DISCOVERY_ACK,
+            .device_type = DEVICE_TYPE,
+            .priority = PACKET_PRIORITY_HIGH,
+            .tracking_id = tracking_id,
+            .device_id = dst_id,
+            .status = status,
+        },
+        .device_id = pkt->device_id,
+        .device_type = pkt->device_type,
+        .hop_num = pkt->hop_num,
+    };
+
+    LOG_INF_GRN("Sending ROUTE_DISCOVERY_ACK to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, status);
+    return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
+}
+
 /* Send route info packet. */
 int send_route_info(const route_info_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t status)
 {
@@ -320,16 +367,17 @@ int send_route_info(const route_info_t *pkt, uint16_t dst_id, uint8_t dst_type, 
         .hdr = {
             .packet_type = PACKET_ROUTE_INFO,
             .device_type = DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_MEDIUM,
+            .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracker_next_id(),
             .device_id = dst_id,
             .status = status,
         },
         .device_id = pkt->device_id,
         .device_type = pkt->device_type,
-        .route_len = pkt->route_len,
-        .avg_rssi_2 = pkt->avg_rssi_2,
+        .data_type = pkt->data_type,
+        .data_id = pkt->data_id,
     };
+    memcpy(packet.route_info, pkt->route_info, sizeof(packet.route_info));
 
     // Add tracker entry for retries
     tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_ROUTE_INFO, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
@@ -345,15 +393,15 @@ int send_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, uint8_t ds
         .hdr = {
             .packet_type = PACKET_ROUTE_INFO_ACK,
             .device_type = DEVICE_TYPE,
-            .priority = PACKET_PRIORITY_MEDIUM,
+            .priority = PACKET_PRIORITY_HIGH,
             .tracking_id = tracking_id,
             .device_id = dst_id,
             .status = status,
         },
         .device_id = pkt->device_id,
         .device_type = pkt->device_type,
-        .route_len = pkt->route_len,
-        .avg_rssi_2 = pkt->avg_rssi_2,
+        .data_type = pkt->data_type,
+        .data_id = pkt->data_id,
     };
 
     LOG_INF_GRN("Sending ROUTE_INFO_ACK to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);

@@ -25,6 +25,8 @@ int send_device_updated(const device_updated_t *pkt, uint16_t dst_id, uint8_t ds
 int send_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status);
 int send_repair_request(uint16_t dst_id, uint8_t dst_type);
 int send_repair_response(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status);
+int send_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t status);
+int send_route_discovery_ack(const route_discovery_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status);
 int send_route_info(const route_info_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t status);
 int send_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status);
 
@@ -41,6 +43,8 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
 void handle_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_repair_request(const repair_request_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_route_discovery_ack(const route_discovery_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 

@@ -411,7 +411,8 @@ void handle_large_data_init_ack(const large_data_init_ack_t *pkt, uint16_t dst_i
                         .data_id = pkt->data_id,
                     };
                     // Find dst_id from route table using gen_device_id and send large data received packet to sensor
-                    dst_id = get_next_hop_device_id(pkt->gen_device_id);
+                    // dst_id = get_next_hop_device_id(pkt->gen_device_id);
+                    dst_id = 0xFFFF; // Implement later
                     if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
                         LOG_ERR("No route to gen_device_id %d, cannot forward LARGE_DATA_RECEIVED", pkt->gen_device_id);
                         return;
@@ -499,7 +500,8 @@ void handle_large_data_chunk(const large_data_chunk_t *pkt, uint16_t dst_id, int
             .data_id = pkt->data_id,
         };
         // Find dst_id from route table using gen_device_id and send large data received packet to sensor
-        dst_id = get_next_hop_device_id(pkt->gen_device_id);
+        // dst_id = get_next_hop_device_id(pkt->gen_device_id);
+        dst_id = 0xFFFF; // Implement later
         if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
             LOG_ERR("No route to gen_device_id %d, cannot forward LARGE_DATA_RECEIVED", pkt->gen_device_id);
             return;
@@ -636,7 +638,8 @@ void handle_large_data_received(const large_data_receive_t *pkt, uint16_t dst_id
                     .data_id = pkt->data_id,
                 };
                 // Find dst_id from route table using gen_device_id and send large data received packet to sensor
-                dst_id = get_next_hop_device_id(pkt->gen_device_id);
+                // dst_id = get_next_hop_device_id(pkt->gen_device_id);
+                dst_id = 0xFFFF; // Implement later
                 if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
                     LOG_ERR("No route to gen_device_id %d, cannot forward LARGE_DATA_RECEIVED", pkt->gen_device_id);
                     return;

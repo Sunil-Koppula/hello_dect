@@ -203,6 +203,8 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		config_received_t recv_pkt = {
 			.dst_device_id = pkt->dst_device_id,
 			.dst_device_type = pkt->dst_device_type,
+			.data_type = pkt->data_type,
+			.data_id = pkt->data_id,
 		};
 		send_config_received(&recv_pkt, dst_id, pkt->hdr.device_type);
 	}
@@ -427,7 +429,8 @@ void config_tick(void)
                 LOG_ERR("psram_read @0x%06x failed (%d), cannot send config", addr, err);
                 continue;
             }
-            uint16_t dst_id = get_next_hop_device_id(config_slots[i].dst_device_id);
+            // uint16_t dst_id = get_next_hop_device_id(config_slots[i].dst_device_id);
+			uint16_t dst_id = 0xFFFF; // Implement later
             send_config(&config_pkt, dst_id, config_slots[i].dst_device_type, PACKET_PRIORITY_HIGH);
             config_slots[i].is_sent = true;
         }

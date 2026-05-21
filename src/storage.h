@@ -34,9 +34,6 @@
 #define STORAGE_MESH_OFFSET				0x00480
 #define STORAGE_MESH_SIZE				0x03000  /* 12KB */
 
-#define STORAGE_ROUTING_OFFSET			0x03480
-#define STORAGE_ROUTING_SIZE			0x08000  /* 32KB */
-
 #define STORAGE_HEADER_SIZE		4
 #define STORAGE_MAGIC_0			0xDE
 #define STORAGE_MAGIC_1			0xC7
@@ -101,32 +98,16 @@ typedef struct {
 	uint32_t crc32;					/* CRC32 over all preceding bytes; must be last */
 } __attribute__((packed)) mesh_entry_t;
 
-/* 
- * Partition 4: Routing table for mesh network.
- * Stored by: Gateway, Anchor.
- */
 typedef struct {
-	uint16_t next_hop_id;    		/* short device ID of the next hop towards this device */
-	uint8_t route_length;     		/* number of hops to this device */
-	int16_t avg_rssi_2;			/* Average RSSI to this device (in units of 0.5 dBm; signed) */
-} __attribute__((packed)) route_t;
+	uint8_t  device_type;      		/* device_type_t */
+	uint16_t device_id;        		/* short device ID */
+	uint64_t serial_num;       		/* 64-bit serial number */
+	uint16_t connected_device_id;	/* parent/connected device ID */
+	uint8_t  hop_num;          		/* hop count from gateway */
+} mesh_t;
 
-typedef struct {
-	uint8_t device_type;      			/* device_type_t */
-	uint16_t device_id;      			/* short device ID */
-	uint8_t route_count;     			/* number of routes to this device (for multipath) */
-	route_t route_info[MAX_ANCHORS];    /* routing info to reach this device */
-	uint32_t crc32;						/* CRC32 over all preceding bytes; must be last */
-} __attribute__((packed)) route_entry_t;
-
-/* Known Routes Information */
-typedef struct {
-    uint16_t device_id;
-    uint16_t next_device_id;
-} known_route_t;
-
-extern known_route_t known_route_table[MAX_DEVICES];
-extern uint16_t known_route_count;
+extern mesh_t mesh_devices[MAX_DEVICES];
+extern uint16_t mesh_count;
 
 /* Compile-time partition-capacity checks. If any MAX_* constant grows beyond
  * what the partition can hold, the build fails here instead of at runtime. */
@@ -136,8 +117,6 @@ _Static_assert(STORAGE_HEADER_SIZE + (uint32_t)sizeof(sensor_entry_t) * MAX_SENS
                "SENSOR partition too small for MAX_SENSORS sensor_entry_t slots");
 _Static_assert(STORAGE_HEADER_SIZE + (uint32_t)sizeof(mesh_entry_t)   * MAX_DEVICES  <= STORAGE_MESH_SIZE,
                "MESH partition too small for MAX_DEVICES mesh_entry_t slots");
-_Static_assert(STORAGE_HEADER_SIZE + (uint32_t)sizeof(route_entry_t)  * MAX_DEVICES  <= STORAGE_ROUTING_SIZE,
-               "ROUTING partition too small for MAX_DEVICES route_entry_t slots");
 
 /* Initialize storage (must be called once at boot). */
 int storage_init(void);
@@ -165,12 +144,5 @@ int storage_mesh_get(uint16_t index, mesh_entry_t *entry);
 int storage_mesh_remove(uint16_t index);
 int storage_mesh_count(void);
 int storage_mesh_clear(void);
-
-/* Partition 4: Routing table for mesh network (Gateway + Anchor). */
-int storage_route_add(uint16_t dst_id, uint16_t device_id, uint8_t device_type, uint8_t route_len, int16_t avg_rssi_2);
-int storage_route_get(uint16_t index, route_entry_t *entry);
-int storage_route_remove(uint16_t device_id, uint16_t dst_id);
-int storage_route_count(void);
-int storage_route_clear(void);
 
 #endif /* STORAGE_H */

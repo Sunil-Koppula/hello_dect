@@ -23,6 +23,7 @@
 #include "../radio.h"
 #include "../protocol.h"
 #include "../storage.h"
+#include "../mesh.h"
 
 LOG_MODULE_REGISTER(buttons, CONFIG_MAIN_LOG_LEVEL);
 
@@ -244,15 +245,41 @@ static void default_button2_handler(void)
 		config_slots[idx].active = true;
 		config_slots[idx].is_sent = true;
 
-		mesh_entry_t entry;
-		int err = storage_mesh_get(1, &entry);
-		if (err) {
-			LOG_ERR("storage_mesh_get failed (%d)", err);
-			config_slots[idx].active = false;
+		int err = 0;
+
+		uint16_t dummy_id = 63762;
+		uint64_t dummy_sn = ((uint64_t)dummy_id << 40) | 0x00DEADBEEFULL;
+
+		uint16_t dst_id = 0xFFFF;
+		uint8_t dst_type;
+		uint8_t hop_num = 0xFF;
+
+		for (int i = 0; i < mesh_count; i++) {
+			if (mesh_devices[i].serial_num == dummy_sn) {
+				dst_id = mesh_devices[i].device_id;
+				dst_type = mesh_devices[i].device_type;
+				hop_num = mesh_devices[i].hop_num;
+
+				if (mesh_devices[i].device_type == DEVICE_TYPE_SENSOR) {
+					for (int j = 0; j < mesh_count; j++) {
+						if (mesh_devices[j].device_id == mesh_devices[i].connected_device_id) {
+							hop_num = mesh_devices[j].hop_num;
+							break;
+						}
+					}
+				}
+				LOG_INF("Found test device (sn = 0x%016llX) in mesh storage at index %d, device %s ID:%d hop_num:%d", mesh_devices[i].serial_num, i, device_type_str(dst_type), dst_id, hop_num);
+				break;
+			}
+		}
+
+		if (dst_id == 0xFFFF || hop_num == 0xFF) {
+			LOG_WRN("Test device with SN 0x%016llX not found in mesh storage, cannot send config", dummy_sn);
 			return;
 		}
-		config_slots[idx].dst_device_id = entry.device_id;
-		config_slots[idx].dst_device_type = entry.device_type;
+
+		config_slots[idx].dst_device_id = dst_id;
+		config_slots[idx].dst_device_type = dst_type;
 
 		// Generate config for testing
 		sensor_config_t config = {
@@ -288,21 +315,18 @@ static void default_button2_handler(void)
 			return;
 		}
 
-		// Build config packet and send
-		config_t config_pkt = {
-			.dst_device_id = config_slots[idx].dst_device_id,
-			.dst_device_type = config_slots[idx].dst_device_type,
-			.config_len = config_slots[idx].config_len,
-			.config_crc32 = config_slots[idx].config_crc32,
+		// First we have find the route
+		route_discovery_t rd_pkt = {
+			.device_id = config_slots[idx].dst_device_id,
+			.device_type = config_slots[idx].dst_device_type,
+			.hop_num = hop_num,
+			.data_type = DATA_TYPE_CONFIG,
+			.data_id = idx,
 		};
-		err = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
-		if (err) {
-			LOG_ERR("psram_read @0x%06x failed (%d)", addr, err);
-			config_slots[idx].active = false;
-			return;
+		for (int i = 0; i < infra_count; i++) {
+			send_route_discovery(&rd_pkt, infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
 		}
-		uint16_t dst_id = get_next_hop_device_id(config_slots[idx].dst_device_id);
-		send_config(&config_pkt, dst_id, DEVICE_TYPE_ANCHOR, PACKET_PRIORITY_HIGH);	
+
 	} else if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
 		LOG_WRN("Large Data Button pressed");
 		// For testing, always use slot 0 and send large data to gateway
