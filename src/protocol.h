@@ -27,6 +27,7 @@ typedef enum {
 	DATA_TYPE_REPORT	= 0x01,
 	DATA_TYPE_CONFIG	= 0x02,
 	DATA_TYPE_LARGE		= 0x03,
+	DATA_TYPE_OTA		= 0x04,
 } data_type_t;
 
 /* Packet Types Identifier */

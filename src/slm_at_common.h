@@ -19,7 +19,7 @@
 
 #define SLM_UART_STRING_MESSAGE_SIZE_MAX ((size_t)256)
 #define SLM_UART_MIN_10_MS_DELAY_TIME    10
-#define SLM_UART_AT_COMMAND_LEN          512
+#define SLM_UART_AT_COMMAND_LEN          1024
 
 typedef enum {
     SLM_AT_SEND_INIT = 0,

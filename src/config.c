@@ -50,6 +50,9 @@ static int alloc_config_slot(void)
 static void config_slot_free(int idx)
 {
 	config_slots[idx].active = false;
+	config_slots[idx].is_sent = false;
+	config_slots[idx].is_ready = false;
+	config_slots[idx].is_applied = false;
 }
 
 static uint8_t validate_config(const config_t *pkt)
@@ -447,7 +450,8 @@ int config_init(void)
 void config_tick(void)
 {
     for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
-        if (config_slots[i].active && !config_slots[i].is_sent && DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+        if (config_slots[i].active && !config_slots[i].is_sent && config_slots[i].is_ready && DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+			LOG_INF("Config slot %d is active and ready but not sent, sending config to device %s ID:%d", i, device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
             // Downstream the packet to sensor
             uint32_t addr = config_slot_psram_addr(i);
             config_t config_pkt = {
@@ -474,15 +478,20 @@ int validate_config_slot(uint16_t device_id, uint8_t device_type, uint16_t confi
 	// check is slot exists for the device
 	int idx;
 	for (idx = 0; idx < CONFIG_SLOT_COUNT; idx++) {
-		if (config_slots[idx].dst_device_id == device_id && config_slots[idx].dst_device_type == device_type && config_slots[idx].config_id == config_id) {
-			if (config_slots[idx].active && config_slots[idx].is_ready) {
-				LOG_WRN("Config slot already exists for device_id 0x%04X, device_type 0x%02X, config_id 0x%04X", device_id, device_type, config_id);
-				return -1;
-			}
-			// Implement later
+		if (config_slots[idx].dst_device_id == device_id && config_slots[idx].dst_device_type == device_type && config_slots[idx].active) {
+			config_slots[idx].active = true;
+			config_slots[idx].is_sent = false;
+			config_slots[idx].is_ready = false;
+			config_slots[idx].is_applied = false;
+			config_slots[idx].dst_device_id = device_id;
+			config_slots[idx].dst_device_type = device_type;
+			config_slots[idx].config_id = config_id;
+			config_slots[idx].config_len = config_len;
+			config_slots[idx].config_crc32 = config_crc32;
 			return idx;
 		}
 	}
+	// if not exist, find a free slot and allocate it for the device
 	if (idx >= CONFIG_SLOT_COUNT) {
 		// allocate new slot
 		for (idx = 0; idx < CONFIG_SLOT_COUNT; idx++) {
@@ -502,4 +511,75 @@ int validate_config_slot(uint16_t device_id, uint8_t device_type, uint16_t confi
 		}
 	}
 	return -1;
+}
+
+int validate_config_data(int idx, uint16_t config_id, const uint8_t *data)
+{
+	int err = 0;
+
+	if (idx < 0 || idx >= CONFIG_SLOT_COUNT) {
+		LOG_WRN("Invalid config slot index %d", idx);
+		return -1;
+	}
+
+	if (!config_slots[idx].active) {
+		LOG_WRN("Config slot %d is not active", idx);
+		return -1;
+	}
+
+	if (config_slots[idx].config_id != config_id) {
+		LOG_WRN("Config ID mismatch for slot %d (expected 0x%04X, got 0x%04X)", idx, config_slots[idx].config_id, config_id);
+		return -1;
+	}
+
+	// Verify CRC of received bytes first (no PSRAM round-trip needed).
+	uint32_t calc_crc32 = crc32_ieee(data, config_slots[idx].config_len);
+	if (calc_crc32 != config_slots[idx].config_crc32) {
+		LOG_WRN("Config data CRC32 mismatch for slot %d (expected 0x%08X, got 0x%08X)", idx, config_slots[idx].config_crc32, calc_crc32);
+		config_slot_free(idx);
+		return -1;
+	}
+
+	// CRC OK — persist to PSRAM.
+	uint32_t addr = config_slot_psram_addr(idx);
+	err = psram_write(addr, data, config_slots[idx].config_len);
+	if (err) {
+		LOG_ERR("psram_write @0x%06x failed (%d), aborting config store for slot %d", addr, err, idx);
+		config_slot_free(idx);
+		return -1;
+	}
+
+	config_slots[idx].is_ready = true;
+	config_slots[idx].is_sent = false; // Mark as not sent to trigger resend if needed
+	config_slots[idx].is_applied = false; // Mark as not applied
+
+	// Testing Purpose only: because we known the route to sensor
+	config_t config_pkt = {
+		.dst_device_id = config_slots[idx].dst_device_id,
+		.dst_device_type = config_slots[idx].dst_device_type,
+		.data_type = DATA_TYPE_CONFIG,
+		.data_id = config_slots[idx].config_id,
+		.config_len = config_slots[idx].config_len,
+		.config_crc32 = config_slots[idx].config_crc32,
+	};
+
+	// Update route
+	for (int j = 0; j < MAX_DEPTH; j++) {
+		config_pkt.route_info[j].device_id = 0xFFFF;
+		config_pkt.route_info[j].hop_num = 0xFF;
+	}
+	config_pkt.route_info[0].device_id = 0x926B;
+	config_pkt.route_info[0].hop_num = 1;
+
+	// copy config data
+	int err_read = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
+	if (err_read) {
+		LOG_ERR("psram_read @0x%06x failed (%d), cannot read config for sending", addr, err_read);
+		return -1;
+	}
+
+	send_config(&config_pkt, 0x926B, DEVICE_TYPE_ANCHOR, PACKET_PRIORITY_HIGH);
+	config_slots[idx].is_sent = true;
+	
+	return err;
 }

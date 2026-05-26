@@ -258,6 +258,7 @@ void gateway_main(void)
 
 		case MAIN_SUB_TRACKER:
 			tracker_tick(tracker_default_expired_cb);
+			config_tick();
 			data_tick();
 			large_data_tick();
 			known_devices_tick();

@@ -37,6 +37,9 @@ void config_tick(void);
 /* Validate a config slot and it is used for serial communication */
 int validate_config_slot(uint16_t device_id, uint8_t device_type, uint16_t config_id, uint8_t config_len, uint32_t config_crc32);
 
+/* Validate config data for a given slot */
+int validate_config_data(int idx, uint16_t config_id, const uint8_t *data);
+
 /* TX helpers */
 int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
 int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);

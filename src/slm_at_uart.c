@@ -310,14 +310,19 @@ int slm_at_tx_write(const uint8_t *data, size_t len, bool print_full_debug)
 
 bool slm_at_wait_for_message(uint32_t w_time)
 {
-    uint32_t wait_time = w_time / SLM_UART_MIN_10_MS_DELAY_TIME;
-    do {
+    /* Fast path: caller wants a non-blocking peek. Never sleep. */
+    if (w_time == 0) {
+        return g_data_msg.message_ready;
+    }
+
+    uint32_t ticks = w_time / SLM_UART_MIN_10_MS_DELAY_TIME;
+    for (uint32_t i = 0; i <= ticks; i++) {
         if (g_data_msg.message_ready) {
             return true;
         }
         k_msleep(SLM_UART_MIN_10_MS_DELAY_TIME);
-    } while (wait_time--);
-    return false;
+    }
+    return g_data_msg.message_ready;
 }
 
 void slm_at_get_message_copy(char *pcopy_str)
@@ -325,8 +330,8 @@ void slm_at_get_message_copy(char *pcopy_str)
     size_t size = 0;
     if (k_sem_take(&data_msg_sem, K_SECONDS(1)) == 0) {
         size = g_data_msg.size;
-        if (size > (SLM_UART_STRING_MESSAGE_SIZE_MAX - 1)) {
-            size = SLM_UART_STRING_MESSAGE_SIZE_MAX - 1;
+        if (size > (SLM_UART_AT_COMMAND_LEN - 1)) {
+            size = SLM_UART_AT_COMMAND_LEN - 1;
         }
         memcpy(pcopy_str, g_data_msg.buf, size);
         pcopy_str[size]          = 0x00;

@@ -11,8 +11,8 @@
  *
  *  Wire format (h745 convention — '#' prefix, not '+'):
  *      Host -> device:   AT#CMD?<CR><LF>
- *                        AT#CMD=arg1,arg2<CR><LF>
- *                        AT#DATA=<id>,"<hex>"<CR><LF>
+ *                        AT#DATAINIT<hex><CR><LF>
+ *                        AT#DATA<hex><CR><LF>
  *      Device -> host:   <CR><LF>#CMD: value<CR><LF>
  *                        <CR><LF>OK<CR><LF>
  *                        <CR><LF>ERROR<CR><LF>
@@ -25,9 +25,11 @@
 LOG_MODULE_REGISTER(slm_at_main, CONFIG_MAIN_LOG_LEVEL);
 
 #include <zephyr/kernel.h>
+#include <zephyr/sys/crc.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/sys/util.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -43,6 +45,18 @@ LOG_MODULE_REGISTER(slm_at_main, CONFIG_MAIN_LOG_LEVEL);
 #include "data.h"
 #include "psram.h"
 #include "protocol.h"
+
+typedef struct {
+    uint8_t data_type;
+    uint16_t data_id;
+    int  data_idx;
+    uint8_t page;
+    uint8_t chunk;
+} data_info_t;
+
+static data_info_t data_info;
+
+#define AT_DATA_PAYLOAD_MAX 500
 
 /* ---- Public response strings (extern'd from other modules if needed). ---- */
 const char AT_RESP_OK[]    = {"\r\nOK\r\n"};
@@ -145,6 +159,11 @@ static int parse_data_init(const char *args, data_init_info_t *out)
 
 static int validate_data_info(const data_init_info_t *info)
 {
+    if (data_info.data_type != 0) {
+        LOG_WRN("Another data transfer in progress (type %u id %u), rejecting new one", data_info.data_type, data_info.data_id);
+        return -EBUSY;
+    }
+
     switch (info->data_type) {
     case DATA_TYPE_REPORT:
         return 0;
@@ -179,10 +198,15 @@ static int validate_data_info(const data_init_info_t *info)
         if (err < 0) {
             return -EINVAL;
         }
-        LOG_INF("Allocated config slot %d for %s ID:%d",
-                err,
-                device_type_str(mesh_devices[idx].device_type),
-                mesh_devices[idx].device_id);
+
+        // Store the info for the upcoming AT#DATA chunks to validate against and know where to route the config data when the slot is ready.
+        data_info.data_type = info->data_type;
+        data_info.data_id = info->data_id;
+        data_info.data_idx = err;
+        data_info.page = 0;
+        data_info.chunk = 0;
+
+        LOG_INF("Allocated config slot %d for %s ID:%d", err, device_type_str(mesh_devices[idx].device_type), mesh_devices[idx].device_id);
         return 0;
     }
 
@@ -194,7 +218,7 @@ static int validate_data_info(const data_init_info_t *info)
     }
 }
 
-/* ---- Hex helper for the AT#DATA="<hex>" payload --------------------- */
+/* ---- Hex helper for the AT#DATA payload --------------------- */
 
 static int hex_decode(const char *hex, size_t hex_len, uint8_t *out, size_t out_max)
 {
@@ -272,7 +296,7 @@ static void cmd_reboot(void)
     sys_reboot(SYS_REBOOT_COLD);
 }
 
-/* AT#DATAINIT=<34 hex chars> */
+/* AT#DATAINIT<34 hex chars> */
 static void cmd_data_init(const char *args)
 {
     data_init_info_t info;
@@ -296,45 +320,139 @@ static void cmd_data_init(const char *args)
     at_ok();
 }
 
-/* AT#DATA=<id>,"<hex>" — hex-encoded payload chunk (h745 OTASB style).
- * The caller already supplied data_id via AT#DATAINIT; <id> here selects the
- * destination slot. <hex> is decoded into a binary buffer. */
+/* AT#DATA<id:2><page:1><chunk:1><crc32:4><payload:N>
+ *
+ * All hex, no separators (note: no '=' after AT#DATA). Wire layout:
+ *   - 8 hex chars   : header (id:2 page:1 chunk:1, big-endian)
+ *   - 8 hex chars   : CRC32-IEEE of the decoded payload (big-endian)
+ *   - 2*N hex chars : payload, N ≤ AT_DATA_PAYLOAD_MAX (500)
+ *
+ * Radio still emits SEND_DATA_MAX (180 B) per radio chunk; the firmware
+ * is expected to split each AT chunk into 1..N radio chunks when forwarding.
+ *
+ * Chunking rules by data_type (set via AT#DATAINIT):
+ *   CONFIG : exactly one chunk  → page=0, chunk=0
+ *   REPORT : exactly one chunk  → page=0, chunk=0
+ *   LARGE  : pages × 20 chunks  → page=0..N-1, chunk=0..19
+ *
+ * The 'id' field must match the most recent AT#DATAINIT. A CRC32 mismatch
+ * on the chunk payload returns ERROR so the host can retry just that chunk.
+ */
 static void cmd_data(const char *args)
 {
-    /* Extract the integer id. */
-    char     work[SLM_UART_AT_COMMAND_LEN];
-    strncpy(work, args, sizeof(work) - 1);
-    work[sizeof(work) - 1] = 0;
+    /* Trim trailing CR/LF/space the parser may have left in place. */
+    size_t arglen = strlen(args);
+    while (arglen > 0 &&
+           (args[arglen - 1] == '\r' || args[arglen - 1] == '\n' ||
+            args[arglen - 1] == ' ')) {
+        arglen--;
+    }
 
-    int64_t id_val = 0;
-    if (slm_at_extract_int(work, FIRST_POSITION, &id_val) != 0) {
+    /* Minimum wire size: 8 (header) + 8 (crc) + 2 (≥1 payload byte) = 18. */
+    if (arglen < 8 + 8 + 2) {
         at_error();
         return;
     }
 
-    /* Locate the opening quote and the closing quote. */
-    const char *open_q = strchr(args, '"');
-    if (open_q == NULL) {
+    /* Decode the 4-byte header. */
+    size_t   pos = 0;
+    uint64_t v;
+    if (read_be(args, &pos, 2, &v) != 0) { at_error(); return; }
+    uint16_t hdr_id    = (uint16_t)v;
+    if (read_be(args, &pos, 1, &v) != 0) { at_error(); return; }
+    uint8_t  hdr_page  = (uint8_t)v;
+    if (read_be(args, &pos, 1, &v) != 0) { at_error(); return; }
+    uint8_t  hdr_chunk = (uint8_t)v;
+
+    /* Decode the 4-byte CRC32 trailer-of-header. */
+    if (read_be(args, &pos, 4, &v) != 0) { at_error(); return; }
+    uint32_t hdr_crc32 = (uint32_t)v;
+
+    /* Everything remaining is the payload. */
+    size_t payload_chars = arglen - pos;
+    if ((payload_chars % 2) != 0) {
         at_error();
         return;
     }
-    const char *close_q = strchr(open_q + 1, '"');
-    if (close_q == NULL) {
+    if ((payload_chars / 2) > AT_DATA_PAYLOAD_MAX) {
         at_error();
         return;
     }
 
-    size_t  hex_len = (size_t)(close_q - (open_q + 1));
-    uint8_t payload[1024];
-    int     decoded = hex_decode(open_q + 1, hex_len, payload, sizeof(payload));
+    uint8_t payload[AT_DATA_PAYLOAD_MAX];
+    int     decoded = hex_decode(args + pos, payload_chars,
+                                 payload, sizeof(payload));
     if (decoded < 0) {
         at_error();
         return;
     }
 
+    /* Verify CRC32 over the decoded payload. */
+    uint32_t calc_crc32 = crc32_ieee(payload, (size_t)decoded);
+    if (calc_crc32 != hdr_crc32) {
+        LOG_WRN("AT#DATA id=%u page=%u chunk=%u CRC mismatch: got 0x%08x, calc 0x%08x", hdr_id, hdr_page, hdr_chunk, hdr_crc32, calc_crc32);
+        at_error();
+        return;
+    }
+
+    /* Must have a prior AT#DATAINIT establishing the transfer context. */
+    if (data_info.data_type == 0) {
+        at_error();
+        return;
+    }
+    if (hdr_id != data_info.data_id) {
+        at_error();
+        return;
+    }
+
+    /* Per-type chunk layout checks. */
+    switch (data_info.data_type) {
+        case DATA_TYPE_REPORT:
+        {
+            if (hdr_page != 0 || hdr_chunk != 0) {
+                at_error();
+                return;
+            }
+        }
+        break;
+
+        case DATA_TYPE_CONFIG:
+        {
+            if (hdr_page != 0 || hdr_chunk != 0) {
+                at_error();
+                return;
+            }
+        }
+        break;
+        
+        case DATA_TYPE_LARGE:
+        {
+            at_error();
+            return;
+            // Implement later
+        }
+        break;
+
+        case DATA_TYPE_OTA:
+        {
+            at_error();
+            return;
+            // Implement later
+        }
+
+        default:
+        {
+            at_error();
+            return;
+        }
+        break;
+    }
+
+    LOG_INF("AT#DATA id=%u page=%u chunk=%u len=%d",
+            hdr_id, hdr_page, hdr_chunk, decoded);
+
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
-    snprintf(resp, sizeof(resp), "#DATA: id=%lld len=%d",
-             (long long)id_val, decoded);
+    snprintf(resp, sizeof(resp), "#DATA: id=%u page=%u chunk=%u len=%d", hdr_id, hdr_page, hdr_chunk, decoded);
     at_send_line(resp);
     at_ok();
 }
@@ -357,11 +475,11 @@ static void dispatch(char *line)
         cmd_hop();
     } else if (strstr(line, "AT#REBOOT") != NULL) {
         cmd_reboot();
-    } else if (strstr(line, "AT#DATAINIT=") != NULL) {
-        char *p = strstr(line, "AT#DATAINIT=") + strlen("AT#DATAINIT=");
+    } else if (strstr(line, "AT#DATAINIT") != NULL) {
+        char *p = strstr(line, "AT#DATAINIT") + strlen("AT#DATAINIT");
         cmd_data_init(p);
-    } else if (strstr(line, "AT#DATA=") != NULL) {
-        char *p = strstr(line, "AT#DATA=") + strlen("AT#DATA=");
+    } else if (strstr(line, "AT#DATA") != NULL) {
+        char *p = strstr(line, "AT#DATA") + strlen("AT#DATA");
         cmd_data(p);
     } else if (strstr(line, "AT") != NULL) {
         /* Plain "AT" — must come last because it matches any AT command. */

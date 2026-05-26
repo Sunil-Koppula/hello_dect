@@ -17,6 +17,10 @@ Examples:
     python at_console.py --port COM7 AT#DEVTYPE?           # one-shot
     python at_console.py --port /dev/ttyACM0 AT#VERSION? AT#HOP?
 
+    # Push a config payload to a device, addressed by its SN:
+    python at_console.py --port COM26 \
+        --send-config 0x004AD000DEADBEEF --file config.bin
+
 Requires: pyserial  (pip install pyserial)
 """
 
@@ -25,6 +29,8 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import zlib
+from pathlib import Path
 from typing import Iterable
 
 try:
@@ -37,6 +43,42 @@ except ImportError:
 
 DEFAULT_BAUD = 1000000  # uart1 current-speed in nrf9151dk_nrf9151_ns.overlay
 DEFAULT_TIMEOUT_S = 2.0
+
+# Must match firmware protocol.h DATA_TYPE_*.
+DATA_TYPE_REPORT = 1
+DATA_TYPE_CONFIG = 2
+DATA_TYPE_LARGE  = 3
+
+# Max binary bytes per AT#DATA chunk over UART (must match firmware's
+# AT_DATA_PAYLOAD_MAX). The radio still ships SEND_DATA_MAX = 180 B per
+# radio chunk; firmware splits each AT chunk into 1..N radio chunks when
+# forwarding.
+#
+# Wire format (all hex, no separators, no '=' after the command name):
+#   AT#DATA<id:2B><page:1B><chunk:1B><crc32:4B><payload_hex>
+# At 500 B payload: 7 prefix ("AT#DATA") + 16 header/CRC hex + 1000 payload
+# hex + CR = 1024 chars, exactly SLM_UART_AT_COMMAND_LEN (1024).
+DATA_CHUNK_MAX = 500
+LARGE_CHUNKS_PER_PAGE = 20  # matches large_data.c
+
+
+def parse_sn_hex(s: str) -> int:
+    """Parse a 64-bit serial number written as a 0x-prefixed hex string.
+
+    The firmware addresses devices by SN as an 8-byte big-endian field, so
+    we keep the input format strict: must start with '0x', be hex, and fit
+    in 64 bits.
+    """
+    s = s.strip()
+    if not s.lower().startswith("0x"):
+        raise ValueError(f"SN must be 0x-prefixed hex (got {s!r})")
+    try:
+        value = int(s, 16)
+    except ValueError as e:
+        raise ValueError(f"SN is not valid hex: {s!r}") from e
+    if value < 0 or value >= (1 << 64):
+        raise ValueError(f"SN out of range for uint64: {s!r}")
+    return value
 
 
 class ATClient:
@@ -92,6 +134,126 @@ class ATClient:
                 time.sleep(0.01)
 
         raise TimeoutError(f"no OK/ERROR within {self.timeout_s:.1f}s; got {lines!r}")
+
+    def send_data(
+        self,
+        sn: int,
+        data_type: int,
+        data_id: int,
+        payload: bytes,
+        chunk_size: int = DATA_CHUNK_MAX,
+        verbose: bool = True,
+    ) -> None:
+        """Push a binary payload to a remote device via AT#DATAINIT + AT#DATA.
+
+        Two phases:
+
+        1. AT#DATAINIT<sn:8><type:1><id:2><len:2><crc32:4>    (34 hex chars)
+           announces the transfer and is validated by the device.
+
+        2. AT#DATA<id:2><page:1><chunk:1><crc32:4><payload:N>  (all hex)
+           one or more chunks carrying the payload, ≤500 B each at the
+           UART layer. crc32 is crc32_ieee of just the payload bytes; on
+           mismatch the firmware returns ERROR and the host should retry.
+
+        Chunk layout by data_type:
+            CONFIG (2): one chunk only, page=0 chunk=0  (≤128 B for the
+                        config payload itself; firmware enforces).
+            REPORT (1): one chunk only, page=0 chunk=0  (≤360 B at AT layer;
+                        firmware DATA_MAX_TRANSFER_SIZE = 256 B further caps).
+            LARGE  (3): pages of 20 chunks each, page=0..N-1 chunk=0..19.
+
+        Raises RuntimeError on any ERROR response, TimeoutError on a hang.
+        """
+        if not (0 <= sn < (1 << 64)):
+            raise ValueError(f"sn out of range: {sn}")
+        if not (0 <= data_type < (1 << 8)):
+            raise ValueError(f"data_type out of range: {data_type}")
+        if not (0 <= data_id < (1 << 16)):
+            raise ValueError(f"data_id out of range: {data_id}")
+        if len(payload) >= (1 << 16):
+            raise ValueError(f"payload too large for uint16 length: {len(payload)}")
+        if chunk_size <= 0 or chunk_size > DATA_CHUNK_MAX:
+            raise ValueError(
+                f"chunk_size must be 1..{DATA_CHUNK_MAX} (got {chunk_size})"
+            )
+
+        crc32 = zlib.crc32(payload) & 0xFFFFFFFF
+
+        # Phase 1 — DATAINIT.
+        init_blob = (
+            sn.to_bytes(8, "big")
+            + data_type.to_bytes(1, "big")
+            + data_id.to_bytes(2, "big")
+            + len(payload).to_bytes(2, "big")
+            + crc32.to_bytes(4, "big")
+        )
+        init_hex = init_blob.hex()
+        assert len(init_hex) == 34, f"DATAINIT hex must be 34 chars, got {len(init_hex)}"
+
+        cmd = f"AT#DATAINIT{init_hex}"
+        if verbose:
+            print(f">>> {cmd}")
+        lines = self.send_raw(cmd)
+        for line in lines:
+            if verbose:
+                print(line)
+        if not lines or lines[-1] != "OK":
+            raise RuntimeError(f"AT#DATAINIT failed: {lines!r}")
+
+        if not payload:
+            if verbose:
+                print("(no payload bytes — DATAINIT-only)")
+            return
+
+        # Phase 2 — chunked payload with page/chunk numbering.
+        total = len(payload)
+        sent = 0
+        # global_chunk = chunks-since-start; page/chunk derived from it.
+        global_chunk = 0
+        while sent < total:
+            n = min(chunk_size, total - sent)
+            chunk = payload[sent : sent + n]
+            page  = global_chunk // LARGE_CHUNKS_PER_PAGE
+            chunk_no = global_chunk %  LARGE_CHUNKS_PER_PAGE
+
+            # Per-type layout sanity (firmware also enforces).
+            if data_type == DATA_TYPE_CONFIG and global_chunk > 0:
+                raise ValueError(
+                    f"CONFIG payload too large for one chunk "
+                    f"(max {DATA_CHUNK_MAX} B, got {len(payload)} B)"
+                )
+            if data_type == DATA_TYPE_REPORT and global_chunk > 0:
+                raise ValueError(
+                    f"REPORT payload too large for one chunk "
+                    f"(max {DATA_CHUNK_MAX} B, got {len(payload)} B)"
+                )
+
+            header = (
+                data_id.to_bytes(2, "big")
+                + page.to_bytes(1, "big")
+                + chunk_no.to_bytes(1, "big")
+            )
+            chunk_crc32 = zlib.crc32(chunk) & 0xFFFFFFFF
+            crc_bytes = chunk_crc32.to_bytes(4, "big")
+            # Wire order: header | crc | payload. Hex blob is uppercase.
+            # No '=' separator: payload hex follows "AT#DATA" directly.
+            cmd = "AT#DATA" + (header + crc_bytes + chunk).hex().upper()
+
+            if verbose:
+                print(f">>> AT#DATA<id={data_id} page={page} chunk={chunk_no} "
+                      f"len={n}>  [{sent + n}/{total}]")
+            lines = self.send_raw(cmd)
+            for line in lines:
+                if verbose:
+                    print(line)
+            if not lines or lines[-1] != "OK":
+                raise RuntimeError(
+                    f"AT#DATA page={page} chunk={chunk_no} failed at "
+                    f"offset {sent}: {lines!r}"
+                )
+            sent += n
+            global_chunk += 1
 
 
 def autodetect_port() -> str | None:
@@ -154,6 +316,24 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S, help="per-command timeout in seconds")
     parser.add_argument("--no-rtscts", action="store_true", help="disable RTS/CTS flow control (firmware default has it ON)")
     parser.add_argument("--list", action="store_true", help="list available serial ports and exit")
+
+    # Data push: announce via AT#DATAINIT, then stream chunks via AT#DATA<hex>.
+    # The SN identifies the destination device on the mesh. data_id defaults
+    # to 1 — override with --data-id if needed.
+    send_group = parser.add_mutually_exclusive_group()
+    send_group.add_argument("--send-config", metavar="SN_HEX",
+                            help="push a CONFIG payload to the device with this 0x-prefixed SN")
+    send_group.add_argument("--send-report", metavar="SN_HEX",
+                            help="push a REPORT payload to the device with this 0x-prefixed SN")
+    send_group.add_argument("--send-large", metavar="SN_HEX",
+                            help="push a LARGE payload to the device with this 0x-prefixed SN")
+    parser.add_argument("--file", metavar="PATH",
+                        help="binary payload file (required when using --send-*)")
+    parser.add_argument("--data-id", type=int, default=1,
+                        help="data_id field for the transfer (default: 1)")
+    parser.add_argument("--chunk-size", type=int, default=DATA_CHUNK_MAX,
+                        help=f"bytes per AT#DATA chunk (default: {DATA_CHUNK_MAX})")
+
     parser.add_argument("commands", nargs="*", help="AT commands to run (REPL if none given)")
     args = parser.parse_args(argv)
 
@@ -178,6 +358,43 @@ def main(argv: list[str]) -> int:
         client.send_raw("ATE0")
     except TimeoutError:
         pass  # device may not respond if it was mid-boot — keep going
+
+    # Data-push mode short-circuits the REPL / one-shot paths.
+    send_sn_hex = args.send_config or args.send_report or args.send_large
+    if send_sn_hex:
+        if not args.file:
+            sys.stderr.write("error: --send-* requires --file <PATH>\n")
+            client.close()
+            return 2
+        try:
+            sn = parse_sn_hex(send_sn_hex)
+        except ValueError as e:
+            sys.stderr.write(f"error: {e}\n")
+            client.close()
+            return 2
+        try:
+            payload = Path(args.file).read_bytes()
+        except OSError as e:
+            sys.stderr.write(f"error: cannot read {args.file}: {e}\n")
+            client.close()
+            return 2
+
+        if args.send_config:
+            dtype = DATA_TYPE_CONFIG
+        elif args.send_report:
+            dtype = DATA_TYPE_REPORT
+        else:
+            dtype = DATA_TYPE_LARGE
+
+        try:
+            client.send_data(sn, dtype, args.data_id, payload,
+                             chunk_size=args.chunk_size)
+        except (RuntimeError, TimeoutError, ValueError) as e:
+            sys.stderr.write(f"error: {e}\n")
+            return 1
+        finally:
+            client.close()
+        return 0
 
     try:
         if args.commands:
