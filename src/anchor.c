@@ -181,86 +181,128 @@ void anchor_main(void)
 
 	while (1) {
 		switch (state) {
-		case MAIN_SUB_INIT:
-		{
-			err = anchor_init();
-			if (err) {
-				LOG_ERR("Anchor init failed, err %d", err);
-				state = MAIN_SUB_ERROR;
-				break;
-			}
-			state = MAIN_SUB_RX_WINDOW;
-			break;
-		}
-
-		case MAIN_SUB_RX_WINDOW:
-		{
-			err = receive(1, 25);
-			if (err) {
-				LOG_ERR("Reception failed, err %d", err);
-				state = MAIN_SUB_ERROR;
-				break;
-			}
-			k_sem_take(&operation_sem, K_FOREVER);
-			state = MAIN_SUB_RX_PROCESS;
-			break;
-		}
-
-		case MAIN_SUB_RX_PROCESS:
-		{
-			struct rx_data_item rx_item;
-			int rx_count = 0;
-
-			while (rx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-			       rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
-				anchor_process_rx(rx_item.data, rx_item.sender_id, rx_item.rssi_2);
-				rx_count++;
-			}
-			
-			state = MAIN_SUB_TX_PROCESS;
-			break;
-		}
-
-		case MAIN_SUB_TX_PROCESS:
-		{
-			struct tx_data_item tx_large_item;
-			int tx_count = 0;
-
-			while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-			       tx_queue_get(&tx_large_item, K_NO_WAIT) == 0) {
-				err = transmit(0, tx_large_item.data, tx_large_item.data_len, 0);
+			case MAIN_SUB_INIT:
+			{
+				err = anchor_init();
 				if (err) {
-					LOG_ERR("TX failed, err %d", err);
+					LOG_ERR("Anchor init failed, err %d", err);
+					state = MAIN_SUB_ERROR;
+					break;
+				}
+				state = MAIN_SUB_RX_WINDOW;
+			}
+			break;
+
+			case MAIN_SUB_RX_WINDOW:
+			{
+				err = receive(1, 25);
+				if (err) {
+					LOG_ERR("Reception failed, err %d", err);
+					state = MAIN_SUB_ERROR;
 					break;
 				}
 				k_sem_take(&operation_sem, K_FOREVER);
-				tx_count++;
+				state = MAIN_SUB_RX_PROCESS;
 			}
-
-			state = MAIN_SUB_TRACKER;
-			break;
-		}
-
-		case MAIN_SUB_TRACKER:
-			mesh_tick();
-			tracker_tick(tracker_default_expired_cb);
-			data_tick();
-			large_data_tick();
-			config_tick();
-			// mesh_time_check_milestone();
-			slm_at_run_cycle();
-			state = MAIN_SUB_RX_WINDOW;
 			break;
 
-		case MAIN_SUB_ERROR:
-			LOG_ERR("Anchor in error state, waiting 10s before retry");
-			k_msleep(10000);
-			state = MAIN_SUB_INIT;
+			case MAIN_SUB_RX_PROCESS:
+			{
+				struct rx_data_item rx_item;
+				int rx_count = 0;
+
+				while (rx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
+					rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
+					anchor_process_rx(rx_item.data, rx_item.sender_id, rx_item.rssi_2);
+					rx_count++;
+				}
+				state = MAIN_SUB_TX_PROCESS;
+			}
 			break;
 
-		default:
-			LOG_ERR("Anchor in unknown state %d", state);
-			sys_reboot(SYS_REBOOT_COLD);
+			case MAIN_SUB_TX_PROCESS:
+			{
+				struct tx_data_item tx_large_item;
+				int tx_count = 0;
+
+				while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
+					tx_queue_get(&tx_large_item, K_NO_WAIT) == 0) {
+					err = transmit(0, tx_large_item.data, tx_large_item.data_len, 0);
+					if (err) {
+						LOG_ERR("TX failed, err %d", err);
+						state = MAIN_SUB_ERROR;
+						break;
+					}
+					k_sem_take(&operation_sem, K_FOREVER);
+					tx_count++;
+				}
+				state = MAIN_SUB_SLM_AT;
+			}
+			break;
+
+			case MAIN_SUB_SLM_AT:
+			{
+				slm_at_run_cycle();
+				state = MAIN_SUB_TRACKER;
+			}
+			break;
+
+			case MAIN_SUB_TRACKER:
+			{
+				mesh_tick();
+				tracker_tick(tracker_default_expired_cb);
+				state = MAIN_SUB_CONFIG;
+			}
+			break;
+
+			case MAIN_SUB_CONFIG:
+			{
+				config_tick();
+				state = MAIN_SUB_REPORT;
+			}
+			break;
+
+			case MAIN_SUB_REPORT:
+			{
+				data_tick();
+				state = MAIN_SUB_LARGE_DATA;
+			}
+			break;
+
+			case MAIN_SUB_LARGE_DATA:
+			{
+				large_data_tick();
+				state = MAIN_SUB_OTA;
+			}
+			break;
+
+			case MAIN_SUB_OTA:
+			{
+				// Implement later
+				state = MAIN_SUB_PING_DEVICES;
+			}
+			break;
+
+			case MAIN_SUB_PING_DEVICES:
+			{
+				state = MAIN_SUB_RX_WINDOW;
+			}
+			break;
+
+			case MAIN_SUB_ERROR:
+			{
+				LOG_ERR("Anchor in error state, waiting 10s before retry");
+				k_msleep(10000);
+				state = MAIN_SUB_INIT;
+			}
+			break;
+
+			default:
+			{
+				LOG_ERR("Anchor in unknown state %d", state);
+				// Reset the device to recover from unknown state
+				sys_reboot(SYS_REBOOT_COLD);
+			}
 			break;
 		}
 	}

@@ -7,7 +7,7 @@
 #define PRODUCT_NAME "DECT NR+ PHY MESH"
 #define FIRMWARE_VERSION 100
 
-#define PING_TIMEOUT_MS      10 * 60 * 1000 /* 10 minutes timeout for known devices */
+#define PING_TIMEOUT_MS      2 * 60 * 1000 /* 2 minutes timeout for known devices */
 #define MAX_COMM_FAILURES    3
 
 /* Runtime device type (set by product_info_init from GPIO pins). */
