@@ -24,6 +24,7 @@
 #include "large_data.h"
 #include "config.h"
 #include "log_color.h"
+#include "slm_at_main.h"
 
 LOG_MODULE_REGISTER(anchor, CONFIG_ANCHOR_LOG_LEVEL);
 
@@ -247,6 +248,7 @@ void anchor_main(void)
 			large_data_tick();
 			config_tick();
 			// mesh_time_check_milestone();
+			slm_at_run_cycle();
 			state = MAIN_SUB_RX_WINDOW;
 			break;
 

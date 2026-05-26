@@ -54,6 +54,10 @@ static void config_slot_free(int idx)
 
 static uint8_t validate_config(const config_t *pkt)
 {
+	if (pkt->dst_device_id != radio_get_device_id() && DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+		return STATUS_FAILURE;
+	}
+
 	int idx;
 	int ret = find_config_slot(pkt->dst_device_id, &idx);
 	if (ret < 0) {
@@ -175,12 +179,52 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		break;
 
 		case DEVICE_TYPE_ANCHOR:
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+				// validate config packet and store it if valid, if not reject the packet
+				uint8_t status = validate_config(pkt);
+				ack.hdr.status = status;
+				if (ack.hdr.status == STATUS_SUCCESS) {
+					// Forward the config
+					if (pkt->dst_device_type == DEVICE_TYPE_SENSOR && pkt->route_info[1].device_id == 0xFFFF) {
+						// Check in sensor storge
+						for (int i = 0; i < sensor_count; i++) {
+							if (sensor_devices[i].entry.device_id == pkt->dst_device_id) {
+								config_t config_pkt;
+								memcpy(&config_pkt, pkt, sizeof(config_t));
+								for (int j = 0; j < MAX_DEPTH - 1; j++) {
+									config_pkt.route_info[j] = pkt->route_info[j+1];
+								}
+								config_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
+								config_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
+								send_config(&config_pkt, pkt->dst_device_id, pkt->dst_device_type, PACKET_PRIORITY_HIGH);
+							} 
+						}
+					} 
+				}
+			} else {
+				// Reject config packet except from gateway and anchor
+				return;
+			}
+		}
+		break;
+
 		case DEVICE_TYPE_SENSOR:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
 				// validate config packet and store it if valid, if not reject the packet
 				uint8_t status = validate_config(pkt);
 				ack.hdr.status = status;
+				if (ack.hdr.status == STATUS_SUCCESS) {
+					// Send config received packet to confirm the config is received and processed
+					config_received_t recv_pkt = {
+						.dst_device_id = pkt->dst_device_id,
+						.dst_device_type = pkt->dst_device_type,
+						.data_type = pkt->data_type,
+						.data_id = pkt->data_id,
+					};
+					send_config_received(&recv_pkt, dst_id, pkt->hdr.device_type);
+				}
 			} else {
 				// Reject config packet except from gateway and anchor
 				return;
@@ -197,18 +241,6 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 	}
 
 	send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
-
-	if (ack.hdr.status == STATUS_SUCCESS && DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
-		// Send config received packet to confirm the config is received and processed
-		config_received_t recv_pkt = {
-			.dst_device_id = pkt->dst_device_id,
-			.dst_device_type = pkt->dst_device_type,
-			.data_type = pkt->data_type,
-			.data_id = pkt->data_id,
-		};
-		send_config_received(&recv_pkt, dst_id, pkt->hdr.device_type);
-	}
-
 	return;
 }
 
@@ -435,4 +467,39 @@ void config_tick(void)
             config_slots[i].is_sent = true;
         }
     }
+}
+
+int validate_config_slot(uint16_t device_id, uint8_t device_type, uint16_t config_id, uint8_t config_len, uint32_t config_crc32)
+{
+	// check is slot exists for the device
+	int idx;
+	for (idx = 0; idx < CONFIG_SLOT_COUNT; idx++) {
+		if (config_slots[idx].dst_device_id == device_id && config_slots[idx].dst_device_type == device_type && config_slots[idx].config_id == config_id) {
+			if (config_slots[idx].active && config_slots[idx].is_ready) {
+				LOG_WRN("Config slot already exists for device_id 0x%04X, device_type 0x%02X, config_id 0x%04X", device_id, device_type, config_id);
+				return -1;
+			}
+			// Implement later
+			return idx;
+		}
+	}
+	if (idx >= CONFIG_SLOT_COUNT) {
+		// allocate new slot
+		for (idx = 0; idx < CONFIG_SLOT_COUNT; idx++) {
+			if (!config_slots[idx].active) {
+				// Initialize the slot
+				config_slots[idx].active = true;
+				config_slots[idx].is_sent = false;
+				config_slots[idx].is_ready = false;
+				config_slots[idx].is_applied = false;
+				config_slots[idx].dst_device_id = device_id;
+				config_slots[idx].dst_device_type = device_type;
+				config_slots[idx].config_id = config_id;
+				config_slots[idx].config_len = config_len;
+				config_slots[idx].config_crc32 = config_crc32;
+				return idx;
+			}
+		}
+	}
+	return -1;
 }

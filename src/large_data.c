@@ -16,6 +16,7 @@
 LOG_MODULE_REGISTER(large_data, CONFIG_LARGE_DATA_LOG_LEVEL);
 
 #define CRC_VERIFY_STAGE_SIZE 1024  /* Read and process data in 1KB stages for CRC verification */
+#define PACKET_LARGE_DATA_TIMEOUT_MS 100
 
 static large_data_chunk_t chunk_pkt;
 static uint8_t crc_stage[CRC_VERIFY_STAGE_SIZE];
@@ -270,7 +271,7 @@ int send_large_data_chunk(large_data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_
     pkt->hdr.device_id = dst_id;
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_LARGE_DATA_CHUNK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
+    tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_LARGE_DATA_CHUNK, PACKET_LARGE_DATA_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
     LOG_INF("----> Sending LARGE_DATA_CHUNK to device %s ID:%d for DATA ID:%d (Page: %d Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->data_id, pkt->page_index, pkt->chunk_index, sizeof(pkt->data));
     return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);

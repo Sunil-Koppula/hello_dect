@@ -20,6 +20,7 @@
 #include "large_data.h"
 #include "config.h"
 #include "log_color.h"
+#include "slm_at_main.h"
 
 LOG_MODULE_REGISTER(gateway, CONFIG_GATEWAY_LOG_LEVEL);
 
@@ -261,6 +262,7 @@ void gateway_main(void)
 			large_data_tick();
 			known_devices_tick();
 			// mesh_time_check_milestone();
+			slm_at_run_cycle();
 			state = MAIN_SUB_RX_WINDOW;
 			break;
 

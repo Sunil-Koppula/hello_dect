@@ -262,6 +262,60 @@ static route_info_t build_route_info(const route_info_t *pkt)
     return info_pkt;
 }
 
+static config_t build_config_pkt(const route_info_t *pkt)
+{
+    LOG_INF("Before sorting");
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        if (pkt->route_info[i].device_id != 0xFFFF) {
+            LOG_INF("   %d: Device ID:%d, Hop Num:%d", i, pkt->route_info[i].device_id, pkt->route_info[i].hop_num);
+        }
+    }
+
+    int idx = pkt->data_id;
+    uint32_t addr = CONFIG_PSRAM_BASE + ((uint32_t)idx * CONFIG_MAX_SIZE);
+
+    config_t config_pkt = {
+        .dst_device_id = pkt->device_id,
+        .dst_device_type = pkt->device_type,
+        .data_type = pkt->data_type,
+        .data_id = pkt->data_id,
+        .config_len = config_slots[idx].config_len,
+        .config_crc32 = config_slots[idx].config_crc32,
+    };
+
+    int err = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
+    if (err) {
+        LOG_ERR("psram_read @0x%06x failed (%d)", addr, err);
+        config_pkt.config_len = 0;
+        return config_pkt;
+    }
+
+    for (idx = 0; idx < MAX_DEPTH; idx++) {
+        if (pkt->route_info[idx].device_id == 0xFFFF) {
+            break;
+        }
+    }
+    for (int i = 0; i <= idx - 1; i++) {
+        config_pkt.route_info[i] = pkt->route_info[idx - 1 - i];
+    }
+    for (int i = idx; i < MAX_DEPTH; i++) {
+        config_pkt.route_info[i].device_id = 0xFFFF;
+        config_pkt.route_info[i].hop_num = 0xFF;
+    }
+    LOG_INF("After sorting");
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        if (config_pkt.route_info[i].device_id != 0xFFFF) {
+            LOG_INF("   %d: Device ID:%d, Hop Num:%d", i, config_pkt.route_info[i].device_id, config_pkt.route_info[i].hop_num);
+        }
+    }
+
+    // Print Config pkt except config data for debugging
+    LOG_INF("Built config packet for device %s ID:%d with data type 0x%02x, data ID %d, config len %d, crc32 0x%08x",
+        device_type_str(config_pkt.dst_device_type), config_pkt.dst_device_id, config_pkt.data_type, config_pkt.data_id, config_pkt.config_len, config_pkt.config_crc32);
+
+    return config_pkt;
+}
+
 bool mesh_is_collecting(void)
 {
     return collecting;
@@ -1527,27 +1581,15 @@ void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 // Start sending the Data (Configs for that device)
-                LOG_INF("Received route info for device %s ID:%d, route is below", device_type_str(pkt->device_type), pkt->device_id);
-                for (int i = 0; i < MAX_DEPTH; i++) {
-                    if (pkt->route_info[i].device_id != 0xFFFF) {
-                        LOG_INF("   %d: Device ID:%d, Hop Num:%d", i, pkt->route_info[i].device_id, pkt->route_info[i].hop_num);
-                    }
-                }
+                LOG_INF("Received route info for device %s ID:%d", device_type_str(pkt->device_type), pkt->device_id);
                 // Build config packet and send
-                // int idx = pkt->data_id;
-                // uint32_t addr = CONFIG_PSRAM_BASE + ((uint32_t)idx * CONFIG_MAX_SIZE);
-		        // config_t config_pkt = {
-                //     .dst_device_id = config_slots[idx].dst_device_id,
-                //     .dst_device_type = config_slots[idx].dst_device_type,
-                //     .config_len = config_slots[idx].config_len,
-                //     .config_crc32 = config_slots[idx].config_crc32,
-                // };
-                // int err = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
-                // if (err) {
-                //     LOG_ERR("psram_read @0x%06x failed (%d)", addr, err);
-                //     return;
-                // }
-                // send_config(&config_pkt, pkt->route_info[0].device_id, pkt->route_info[0].device_type, STATUS_SUCCESS);
+                config_t config_pkt = build_config_pkt(pkt);
+                if (config_pkt.config_len == 0) {
+                    LOG_WRN("No config data for device %s ID:%d, cannot send config", device_type_str(pkt->device_type), pkt->device_id);
+                    return;
+                }
+
+                send_config(&config_pkt, dst_id, DEVICE_TYPE_ANCHOR, STATUS_SUCCESS);
             } else {
                 // Reject route info except from anchor
                 return;

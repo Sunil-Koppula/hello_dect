@@ -9,6 +9,7 @@
 / {
 	chosen {
 		nordic,pm-ext-flash = &gd25wb256;
+		zephyr,slm-uart     = &uart1;
 	};
 
 	device_type_pins {

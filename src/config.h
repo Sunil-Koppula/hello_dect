@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include "protocol.h"
 #include "psram.h"
+#include "timeout.h"
 
 #define CONFIG_PSRAM_BASE        PSRAM_CONFIG_BASE
 #define CONFIG_SLOT_COUNT        512
@@ -15,10 +16,14 @@
 struct config_slot {
 	bool active;
 	bool is_sent;
+	bool is_ready;
+	bool is_applied;
 	uint16_t dst_device_id;
 	uint8_t dst_device_type;
+	uint16_t config_id;
 	uint8_t config_len;
 	uint32_t config_crc32;
+	struct nbtimeout timeout;
 };
 
 extern struct config_slot config_slots[CONFIG_SLOT_COUNT];
@@ -28,6 +33,9 @@ int config_init(void);
 
 /* Call from main loop to expire stale slots. */
 void config_tick(void);
+
+/* Validate a config slot and it is used for serial communication */
+int validate_config_slot(uint16_t device_id, uint8_t device_type, uint16_t config_id, uint8_t config_len, uint32_t config_crc32);
 
 /* TX helpers */
 int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);

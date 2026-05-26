@@ -26,8 +26,10 @@ target_sources(app PRIVATE
   src/config.c
   src/large_data.c
   src/spi_bus.c
-  src/serial.c
   src/storage.c
+  src/slm_at_uart.c
+  src/slm_at_sub.c
+  src/slm_at_main.c
 )
 
 # Testing utilities

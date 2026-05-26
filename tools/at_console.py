@@ -14,8 +14,8 @@ response stream is unambiguous.
 
 Examples:
     python at_console.py --port COM7                       # interactive REPL
-    python at_console.py --port COM7 AT+DEVTYPE?           # one-shot
-    python at_console.py --port /dev/ttyACM0 AT+VERSION? AT+HOP?
+    python at_console.py --port COM7 AT#DEVTYPE?           # one-shot
+    python at_console.py --port /dev/ttyACM0 AT#VERSION? AT#HOP?
 
 Requires: pyserial  (pip install pyserial)
 """
@@ -127,7 +127,7 @@ def run_oneshot(client: ATClient, commands: Iterable[str]) -> int:
 
 def run_repl(client: ATClient) -> int:
     print("hello_dect AT console — type 'quit' or Ctrl-D/Ctrl-C to exit")
-    print("Useful commands: AT, AT+VERSION?, AT+DEVTYPE?, AT+DEVID?, AT+SN?, AT+HOP?, AT+REBOOT")
+    print("Useful commands: AT, AT#VERSION?, AT#DEVTYPE?, AT#DEVID?, AT#SN?, AT#HOP?, AT#REBOOT")
     while True:
         try:
             line = input("AT> ").strip()

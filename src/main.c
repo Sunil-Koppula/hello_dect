@@ -14,7 +14,7 @@
 #include "storage.h"
 #include "main_sub.h"
 #include "psram.h"
-#include "serial.h"
+#include "slm_at_main.h"
 #include "testing/buttons.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
@@ -94,9 +94,9 @@ int main(void)
 		LOG_WRN("PSRAM init failed, err %d (tracker will not work)", err);
 	}
 
-	err = at_command_init();
+	err = slm_at_init();
 	if (err) {
-		LOG_WRN("AT command init failed, err %d", err);
+		LOG_WRN("SLM AT init failed, err %d", err);
 	}
 
 	/* Testing Purpose Only*/
