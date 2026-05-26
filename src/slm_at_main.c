@@ -165,56 +165,73 @@ static int validate_data_info(const data_init_info_t *info)
     }
 
     switch (info->data_type) {
-    case DATA_TYPE_REPORT:
-        return 0;
-
-    case DATA_TYPE_CONFIG: {
-        if (info->data_len > MAX_CONFIG_SIZE && info->data_len != 0) {
-            return -EINVAL;
+        case DATA_TYPE_REPORT:
+        {
+            return 0;
         }
-        if (DEVICE_TYPE != DEVICE_TYPE_GATEWAY) {
-            return -EINVAL;
-        }
+        break;
 
-        uint16_t idx = 0;
-        for (idx = 0; idx < mesh_count; idx++) {
-            if (mesh_devices[idx].serial_num == info->sn) {
-                LOG_INF("Found device SN:%llu @ mesh[%d] %s ID:%d",
-                        info->sn, idx,
-                        device_type_str(mesh_devices[idx].device_type),
-                        mesh_devices[idx].device_id);
-                break;
-            }
-            if (idx == mesh_count - 1) {
-                LOG_INF("Device SN:%llu not in mesh", info->sn);
+        case DATA_TYPE_CONFIG:
+        {
+            if (info->data_len > MAX_CONFIG_SIZE && info->data_len != 0) {
                 return -EINVAL;
             }
-        }
+            if (DEVICE_TYPE != DEVICE_TYPE_GATEWAY) {
+                return -EINVAL;
+            }
 
-        int err = validate_config_slot(mesh_devices[idx].device_id,
-                                       mesh_devices[idx].device_type,
-                                       info->data_id, info->data_len,
-                                       info->data_crc32);
-        if (err < 0) {
+            uint16_t idx = 0;
+            for (idx = 0; idx < mesh_count; idx++) {
+                if (mesh_devices[idx].serial_num == info->sn) {
+                    LOG_INF("Found device SN:%llu @ mesh[%d] %s ID:%d",
+                            info->sn, idx,
+                            device_type_str(mesh_devices[idx].device_type),
+                            mesh_devices[idx].device_id);
+                    break;
+                }
+                if (idx == mesh_count - 1) {
+                    LOG_INF("Device SN:%llu not in mesh", info->sn);
+                    return -EINVAL;
+                }
+            }
+
+            int err = validate_config_slot(mesh_devices[idx].device_id,
+                                        mesh_devices[idx].device_type,
+                                        info->data_id, info->data_len,
+                                        info->data_crc32);
+            if (err < 0) {
+                return -EINVAL;
+            }
+
+            // Store the info for the upcoming AT#DATA chunks to validate against and know where to route the config data when the slot is ready.
+            data_info.data_type = info->data_type;
+            data_info.data_id = info->data_id;
+            data_info.data_idx = err;
+            data_info.page = 0;
+            data_info.chunk = 0;
+
+            LOG_INF("Allocated config slot %d for %s ID:%d", err, device_type_str(mesh_devices[idx].device_type), mesh_devices[idx].device_id);
+            return 0;
+        }
+        break;
+
+        case DATA_TYPE_LARGE:
+        {
+            return 0;
+        }
+        break;
+
+        case DATA_TYPE_OTA:
+        {
+            return 0;
+        }
+        break;
+
+        default:
+        {
             return -EINVAL;
         }
-
-        // Store the info for the upcoming AT#DATA chunks to validate against and know where to route the config data when the slot is ready.
-        data_info.data_type = info->data_type;
-        data_info.data_id = info->data_id;
-        data_info.data_idx = err;
-        data_info.page = 0;
-        data_info.chunk = 0;
-
-        LOG_INF("Allocated config slot %d for %s ID:%d", err, device_type_str(mesh_devices[idx].device_type), mesh_devices[idx].device_id);
-        return 0;
-    }
-
-    case DATA_TYPE_LARGE:
-        return 0;
-
-    default:
-        return -EINVAL;
+        break;
     }
 }
 
@@ -422,6 +439,18 @@ static void cmd_data(const char *args)
                 at_error();
                 return;
             }
+
+            if(validate_config_data(data_info.data_idx, data_info.data_id, payload) != 0) {
+                at_error();
+                return;
+            }
+
+            // Reset the data_info to be ready for the next config transfer
+            data_info.data_type = 0;
+            data_info.data_id = 0;
+            data_info.data_idx = -1;
+            data_info.page = 0;
+            data_info.chunk = 0;
         }
         break;
         
@@ -501,6 +530,12 @@ static void dispatch(char *line)
 
 int slm_at_init(void)
 {
+    data_info.data_type = 0;
+    data_info.data_id = 0;
+    data_info.data_idx = -1;
+    data_info.page = 0;
+    data_info.chunk = 0;
+
     return slm_at_uart_init();
 }
 
