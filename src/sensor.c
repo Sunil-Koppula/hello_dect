@@ -187,6 +187,11 @@ void sensor_main(void)
 		switch (state) {
 			case MAIN_SUB_INIT:
 			{
+				if (SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) {
+					// LOG_WRN("Serial Number not set, waiting");
+					state = MAIN_SUB_SLM_AT;
+					break;
+				}
 				err = sensor_init();
 				if (err) {
 					LOG_ERR("Sensor init failed, err %d", err);
@@ -199,7 +204,7 @@ void sensor_main(void)
 
 			case MAIN_SUB_RX_WINDOW:
 			{
-				err = receive(1, 30);
+				err = receive(1, 25);
 				if (err) {
 					LOG_ERR("Reception failed, err %d", err);
 					state = MAIN_SUB_ERROR;
@@ -248,6 +253,10 @@ void sensor_main(void)
 			case MAIN_SUB_SLM_AT:
 			{
 				slm_at_run_cycle();
+				if (SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) {
+					state = MAIN_SUB_INIT;
+					break;
+				}
 				state = MAIN_SUB_TRACKER;
 			}
 			break;

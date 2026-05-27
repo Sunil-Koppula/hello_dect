@@ -183,6 +183,11 @@ void anchor_main(void)
 		switch (state) {
 			case MAIN_SUB_INIT:
 			{
+				if (SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) {
+					// LOG_WRN("Serial Number not set, waiting");
+					state = MAIN_SUB_SLM_AT;
+					break;
+				}
 				err = anchor_init();
 				if (err) {
 					LOG_ERR("Anchor init failed, err %d", err);
@@ -243,6 +248,10 @@ void anchor_main(void)
 			case MAIN_SUB_SLM_AT:
 			{
 				slm_at_run_cycle();
+				if (SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) {
+					state = MAIN_SUB_INIT;
+					break;
+				}
 				state = MAIN_SUB_TRACKER;
 			}
 			break;

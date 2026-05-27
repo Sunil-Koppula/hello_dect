@@ -90,7 +90,7 @@ int product_info_init(void)
 
 	hwinfo_get_device_id((void *)&hw_id, sizeof(hw_id));
 	radio_set_device_id(hw_id);
-	SERIAL_NUMBER = ((uint64_t)hw_id << 40) | 0x00DEADBEEFULL;
+	SERIAL_NUMBER = 0xFFFFFFFFFFFFFFFF;
 
 	/* Set initial hop and connected device based on device type. */
 	CONNECTED_DEVICE_ID = 0xFFFF;  /* invalid ID by default */
@@ -263,6 +263,39 @@ void ping_known_devices(uint16_t gen_id, uint8_t status)
 			send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, gen_id, status);
 			infra_devices[i].is_ping_packet_sent = true;
 		}
+	}
+}
+
+uint8_t get_hop_num(uint16_t device_id, uint8_t device_type)
+{
+	if (device_id == 0xFFFF) {
+		return 0xFF;
+	}
+
+	if (device_type == DEVICE_TYPE_SENSOR) {
+		for (int i = 0; i < mesh_count; i++) {
+			if (mesh_devices[i].device_id == device_id && mesh_devices[i].device_type == device_type) {
+				for (int j = 0; j < mesh_count; j++) {
+					if (mesh_devices[i].connected_device_id == mesh_devices[j].device_id) {
+						return mesh_devices[j].hop_num;
+					}
+				}
+				LOG_WRN("Connected device ID %d for device ID %d not found in mesh devices", mesh_devices[i].connected_device_id, device_id);
+				return 0xFF;
+			}
+		}
+		LOG_WRN("Device ID %d not found in mesh devices", device_id);
+		return 0xFF;
+	} else if (device_type == DEVICE_TYPE_ANCHOR) {
+		for (int i = 0; i < infra_count; i++) {
+			if (infra_devices[i].entry.device_id == device_id && infra_devices[i].entry.device_type == device_type) {
+				return infra_devices[i].entry.hop_num;
+			}
+		}
+		return 0xFF;
+	} else {
+		LOG_WRN("Unknown device type %d in get_hop_num", device_type);
+		return 0xFF;
 	}
 }
 

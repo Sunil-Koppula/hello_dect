@@ -49,6 +49,9 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm);
 /* Ping all known devices at initialization. */
 void ping_known_devices(uint16_t gen_id, uint8_t status);
 
+/* Get the hop number for a device. */
+uint8_t get_hop_num(uint16_t device_id, uint8_t device_type);
+
 /* Factory Reset */
 void factory_reset(void);
 

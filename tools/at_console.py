@@ -54,11 +54,11 @@ DATA_TYPE_LARGE  = 3
 # radio chunk; firmware splits each AT chunk into 1..N radio chunks when
 # forwarding.
 #
-# Wire format (all hex, no separators, no '=' after the command name):
-#   AT#DATA<id:2B><page:1B><chunk:1B><crc32:4B><payload_hex>
-# At 500 B payload: 7 prefix ("AT#DATA") + 16 header/CRC hex + 1000 payload
-# hex + CR = 1024 chars, exactly SLM_UART_AT_COMMAND_LEN (1024).
-DATA_CHUNK_MAX = 500
+# Wire format (quoted hex fields):
+#   AT#DATA="<id>","<page>","<chunk>","<crc32>","<payload_hex>"
+# At 450 B payload: 'AT#DATA=' (8) + framing 30 + 900 payload hex + CR
+# = 939 chars, within SLM_UART_AT_COMMAND_LEN (1024).
+DATA_CHUNK_MAX = 450
 LARGE_CHUNKS_PER_PAGE = 20  # matches large_data.c
 
 
@@ -99,8 +99,13 @@ class ATClient:
             pass
 
     def send_raw(self, line: str) -> list[str]:
-        """Send a single AT line and return the response lines (without the
-        terminator). Raises TimeoutError if no OK/ERROR arrives in time."""
+        """Send a single AT line and return any response lines collected.
+
+        Protocol contract (no trailing OK): a command is considered
+        SUCCESSFUL unless the device sends an 'ERROR' line. Queries reply
+        with a '#...:' data line; commands that are silent on success return
+        an empty list. Use response_is_error() to test the result.
+        """
         if not line.endswith("\r"):
             line = line + "\r"
         self.ser.write(line.encode("ascii", errors="replace"))
@@ -108,15 +113,28 @@ class ATClient:
         return self._read_response()
 
     def _read_response(self) -> list[str]:
-        """Collect lines until OK or ERROR. Returns the data lines plus the
-        terminator as the last element."""
+        """Collect response lines for this command.
+
+        Since there is no OK terminator, we can't wait for one. Instead:
+          - Wait up to self.timeout_s for the FIRST byte of a response.
+          - Once bytes arrive, keep reading until the line goes quiet for
+            QUIET_GAP_S (the device finished its response).
+          - If 'ERROR' is seen, return immediately.
+          - If nothing arrives within the timeout, return [] (success for
+            commands that are silent on success).
+        """
+        QUIET_GAP_S = 0.05
         deadline = time.monotonic() + self.timeout_s
         buf = bytearray()
         lines: list[str] = []
+        got_anything = False
+        last_rx = None
 
-        while time.monotonic() < deadline:
+        while True:
             chunk = self.ser.read(64)
             if chunk:
+                got_anything = True
+                last_rx = time.monotonic()
                 buf.extend(chunk)
                 # Split on CR, LF, or CRLF — keep any partial trailing line in buf.
                 text = buf.decode("ascii", errors="replace")
@@ -127,13 +145,28 @@ class ATClient:
                     if not piece:
                         continue
                     lines.append(piece)
-                    if piece in ("OK", "ERROR"):
+                    if piece == "ERROR":
                         return lines
             else:
-                # No data this poll — short pause to avoid busy-looping.
+                now = time.monotonic()
+                if got_anything:
+                    # Response started; stop once the line has been quiet
+                    # long enough that the device is clearly done.
+                    if last_rx is not None and (now - last_rx) >= QUIET_GAP_S:
+                        # Flush any complete trailing line left in buf.
+                        tail = buf.decode("ascii", errors="replace").strip()
+                        if tail:
+                            lines.append(tail)
+                        return lines
+                elif now >= deadline:
+                    # Nothing came back at all → silent success.
+                    return lines
                 time.sleep(0.01)
 
-        raise TimeoutError(f"no OK/ERROR within {self.timeout_s:.1f}s; got {lines!r}")
+    @staticmethod
+    def response_is_error(lines: list[str]) -> bool:
+        """True if the device reported ERROR for the command."""
+        return any(l == "ERROR" for l in lines)
 
     def send_data(
         self,
@@ -148,22 +181,23 @@ class ATClient:
 
         Two phases:
 
-        1. AT#DATAINIT<sn:8><type:1><id:2><len:2><crc32:4>    (34 hex chars)
-           announces the transfer and is validated by the device.
+        1. AT#DATAINIT="<SN>","<TYPE>","<ID>","<LEN>","<CRC>"
+           all fields uppercase hex; announces + validates the transfer.
 
-        2. AT#DATA<id:2><page:1><chunk:1><crc32:4><payload:N>  (all hex)
-           one or more chunks carrying the payload, ≤500 B each at the
-           UART layer. crc32 is crc32_ieee of just the payload bytes; on
-           mismatch the firmware returns ERROR and the host should retry.
+        2. AT#DATA="<ID>","<PAGE>","<CHUNK>","<CRC>","<DATA>"
+           one or more chunks, ≤450 B payload each at the UART layer. CRC is
+           crc32_ieee of just that chunk's payload; on mismatch the firmware
+           returns ERROR and the host should retry the chunk.
 
         Chunk layout by data_type:
             CONFIG (2): one chunk only, page=0 chunk=0  (≤128 B for the
                         config payload itself; firmware enforces).
-            REPORT (1): one chunk only, page=0 chunk=0  (≤360 B at AT layer;
+            REPORT (1): one chunk only, page=0 chunk=0  (≤450 B at AT layer;
                         firmware DATA_MAX_TRANSFER_SIZE = 256 B further caps).
             LARGE  (3): pages of 20 chunks each, page=0..N-1 chunk=0..19.
 
-        Raises RuntimeError on any ERROR response, TimeoutError on a hang.
+        Success is implicit (no OK is sent); only an 'ERROR' line means
+        failure. Raises RuntimeError if the device returns ERROR.
         """
         if not (0 <= sn < (1 << 64)):
             raise ValueError(f"sn out of range: {sn}")
@@ -181,24 +215,23 @@ class ATClient:
         crc32 = zlib.crc32(payload) & 0xFFFFFFFF
 
         # Phase 1 — DATAINIT.
-        init_blob = (
-            sn.to_bytes(8, "big")
-            + data_type.to_bytes(1, "big")
-            + data_id.to_bytes(2, "big")
-            + len(payload).to_bytes(2, "big")
-            + crc32.to_bytes(4, "big")
+        # Format: AT#DATAINIT="<SN>","<TYPE>","<ID>","<LEN>","<CRC>"
+        # Every field is an uppercase hex string (no 0x prefix).
+        cmd = (
+            'AT#DATAINIT='
+            f'"{sn:016X}",'
+            f'"{data_type:02X}",'
+            f'"{data_id:04X}",'
+            f'"{len(payload):04X}",'
+            f'"{crc32:08X}"'
         )
-        init_hex = init_blob.hex()
-        assert len(init_hex) == 34, f"DATAINIT hex must be 34 chars, got {len(init_hex)}"
-
-        cmd = f"AT#DATAINIT{init_hex}"
         if verbose:
             print(f">>> {cmd}")
         lines = self.send_raw(cmd)
         for line in lines:
             if verbose:
                 print(line)
-        if not lines or lines[-1] != "OK":
+        if self.response_is_error(lines):
             raise RuntimeError(f"AT#DATAINIT failed: {lines!r}")
 
         if not payload:
@@ -229,25 +262,27 @@ class ATClient:
                     f"(max {DATA_CHUNK_MAX} B, got {len(payload)} B)"
                 )
 
-            header = (
-                data_id.to_bytes(2, "big")
-                + page.to_bytes(1, "big")
-                + chunk_no.to_bytes(1, "big")
-            )
             chunk_crc32 = zlib.crc32(chunk) & 0xFFFFFFFF
-            crc_bytes = chunk_crc32.to_bytes(4, "big")
-            # Wire order: header | crc | payload. Hex blob is uppercase.
-            # No '=' separator: payload hex follows "AT#DATA" directly.
-            cmd = "AT#DATA" + (header + crc_bytes + chunk).hex().upper()
+            # Format: AT#DATA="<ID>","<PAGE>","<CHUNK>","<CRC>","<DATA>"
+            # All fields uppercase hex strings; DATA is the hex payload.
+            cmd = (
+                'AT#DATA='
+                f'"{data_id:04X}",'
+                f'"{page:02X}",'
+                f'"{chunk_no:02X}",'
+                f'"{chunk_crc32:08X}",'
+                f'"{chunk.hex().upper()}"'
+            )
 
             if verbose:
-                print(f">>> AT#DATA<id={data_id} page={page} chunk={chunk_no} "
-                      f"len={n}>  [{sent + n}/{total}]")
+                print(f">>> AT#DATA=\"{data_id:04X}\",\"{page:02X}\","
+                      f"\"{chunk_no:02X}\",\"{chunk_crc32:08X}\",<{n} B hex>  "
+                      f"[{sent + n}/{total}]")
             lines = self.send_raw(cmd)
             for line in lines:
                 if verbose:
                     print(line)
-            if not lines or lines[-1] != "OK":
+            if self.response_is_error(lines):
                 raise RuntimeError(
                     f"AT#DATA page={page} chunk={chunk_no} failed at "
                     f"offset {sent}: {lines!r}"
@@ -274,16 +309,14 @@ def run_oneshot(client: ATClient, commands: Iterable[str]) -> int:
         if not cmd:
             continue
         print(f">>> {cmd}")
-        try:
-            lines = client.send_raw(cmd)
-        except TimeoutError as e:
-            print(f"!!! {e}")
-            rc = 2
-            continue
+        lines = client.send_raw(cmd)
         for line in lines:
             print(line)
-        if lines and lines[-1] == "ERROR":
+        if client.response_is_error(lines):
             rc = 1
+        elif not lines:
+            # No reply line and no ERROR → silent success.
+            print("(ok)")
     return rc
 
 
@@ -300,13 +333,13 @@ def run_repl(client: ATClient) -> int:
             continue
         if line.lower() in ("quit", "exit"):
             return 0
-        try:
-            lines = client.send_raw(line)
-        except TimeoutError as e:
-            print(f"!!! {e}")
-            continue
-        for resp in lines:
-            print(resp)
+        lines = client.send_raw(line)
+        if lines:
+            for resp in lines:
+                print(resp)
+        else:
+            # No reply and no ERROR → command accepted silently.
+            print("(ok)")
 
 
 def main(argv: list[str]) -> int:
@@ -353,11 +386,8 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(f"error: cannot open {port}: {e}\n")
         return 2
 
-    # Disable device-side echo so responses are unambiguous.
-    try:
-        client.send_raw("ATE0")
-    except TimeoutError:
-        pass  # device may not respond if it was mid-boot — keep going
+    # Note: the firmware does not echo and does not send OK on success — a
+    # command is treated as successful unless it returns an 'ERROR' line.
 
     # Data-push mode short-circuits the REPL / one-shot paths.
     send_sn_hex = args.send_config or args.send_report or args.send_large

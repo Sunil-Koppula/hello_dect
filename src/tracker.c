@@ -11,13 +11,13 @@
 
 #include <string.h>
 #include <zephyr/kernel.h>
-#include <zephyr/logging/log.h>
 #include <zephyr/sys/crc.h>
 #include "tracker.h"
 #include "queue.h"
 #include "protocol.h"
 #include "mesh.h"
 #include "psram.h"
+#include "log_color.h"
 
 LOG_MODULE_REGISTER(tracker, CONFIG_TRACKER_LOG_LEVEL);
 
@@ -317,7 +317,7 @@ void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exha
 		return;
 	}
 
-	LOG_INF("Tracker 0x%02x (pkt: 0x%02x) for device %d retry %d/%d",
+	LOG_INF_CYAN("Tracker 0x%02x (pkt: 0x%02x) for device %d retry %d/%d",
 		entry->tracking_id, entry->packet_type, entry->dst_id,
 		nbtimeout_retries(&entry->timeout),
 		nbtimeout_max_retries(&entry->timeout));
