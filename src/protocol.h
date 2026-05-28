@@ -10,7 +10,7 @@
 #define MAX_DEPTH           8
 #define MAX_ANCHORS         8
 #define MAX_SENSORS         64
-#define MAX_DEVICES         512
+#define MAX_DEVICES         256
 #define MAX_KNOWN_DEVICES   (MAX_ANCHORS + MAX_SENSORS)
 
 /* Device Type */

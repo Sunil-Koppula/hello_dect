@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 import zlib
 from pathlib import Path
@@ -102,6 +103,17 @@ class ATClient:
         self.ser.write(line.encode("ascii", errors="replace"))
         self.ser.flush()
         return self._read_response()
+
+    def send_raw_no_wait(self, line: str) -> None:
+        """Send a single AT line without reading the response.
+
+        For REPL use when a background reader owns the RX path. Caller must
+        not also call send_raw / _read_response — they'd race on ser.read().
+        """
+        if not line.endswith("\r"):
+            line = line + "\r"
+        self.ser.write(line.encode("ascii", errors="replace"))
+        self.ser.flush()
 
     def _read_response(self) -> list[str]:
         """Collect response lines for this command.
@@ -286,6 +298,80 @@ def _handle_at_config_line(line: str) -> tuple[bool, str, dict | None]:
     return True, summary, parsed
 
 
+# Status codes mirrored from src/protocol.h. Used to render AT#CONFIGRES.
+_STATUS_NAMES = {
+    0x00: "SUCCESS",
+    0x01: "FAILURE",
+    0x02: "CRC_FAIL",
+    0x03: "TIMEOUT",
+    0x04: "RESOURCE_UNAVAILABLE",
+    0x05: "INVALID_PARAMETER",
+    0x06: "NOT_SUPPORTED",
+    0x07: "REJECTED",
+    0x08: "ALREADY_EXISTS",
+    0x09: "NOT_FOUND",
+    0x0A: "BUSY",
+    0x0B: "VERSION_MISMATCH",
+    0x0C: "DEVICE_JOINED",
+    0x0D: "STORAGE_FULL",
+    0x0E: "DEVICE_REMOVED",
+    0x0F: "AUTH_FAILED",
+    0x10: "COMPLETE",
+    0x1F: "VENDOR_SPECIFIC",
+}
+
+
+def _handle_at_configres_line(line: str) -> tuple[bool, str]:
+    """Parse an 'AT#CONFIGRES="<sn>","<config_id>","<status>"' URC from the gateway.
+
+    The gateway sends this after a CONFIG_RECEIVED arrives — i.e. the host's
+    earlier AT#CONFIG= push has reached the destination. The 'status' field
+    indicates whether the destination accepted (SUCCESS) or rejected the
+    config; the firmware currently only emits CONFIGRES on success but we
+    parse the field defensively in case that changes.
+
+    This is informational only; the host doesn't reply.
+
+    Returns (ok, summary).
+    """
+    fields = _extract_quoted_fields(line)
+    if fields is None or len(fields) < 3:
+        return False, f"malformed: expected 3 quoted fields, got {fields!r}"
+    try:
+        sn        = int(fields[0], 16)
+        config_id = int(fields[1], 16)
+        status    = int(fields[2], 16)
+    except ValueError as e:
+        return False, f"bad hex: {e}"
+    status_name = _STATUS_NAMES.get(status, f"0x{status:02X}")
+    return True, (f"sn=0x{sn:016X} config_id={config_id} "
+                  f"status={status_name} (0x{status:02X})")
+
+
+def _auto_reply_to_at_config(client: "ATClient", line: str) -> str:
+    """If 'line' is an AT#CONFIG=... command, parse it and write the
+    appropriate OK / ERROR reply back to the serial port.
+
+    Returns a short human-readable status string describing what was done
+    (or None if the line isn't an AT#CONFIG). Used by both --downstream
+    and the REPL reader so the two modes share behaviour.
+    """
+    ok, summary, parsed = _handle_at_config_line(line)
+    if ok:
+        ack = (
+            f'\r\n#CONFIG: "{parsed["sn"]:016X}",'
+            f'"{parsed["data_id"]:04X}"\r\n'
+        ).encode("ascii")
+        client.ser.write(ack)
+        client.ser.write(b"\r\nOK\r\n")
+        client.ser.flush()
+        return f"OK — {summary}"
+    else:
+        client.ser.write(b"\r\nERROR\r\n")
+        client.ser.flush()
+        return f"ERROR — {summary}"
+
+
 def run_downstream(client: "ATClient") -> int:
     """Continuously read lines from the device and respond to AT#CONFIG.
 
@@ -321,21 +407,13 @@ def run_downstream(client: "ATClient") -> int:
                 ts = time.strftime("%H:%M:%S")
                 print(f"[{ts}] <<< {line}")
 
-                if line.startswith("AT#CONFIG"):
-                    ok, summary, parsed = _handle_at_config_line(line)
-                    if ok:
-                        # Ack with which (sn, data_id) was accepted, then OK.
-                        ack = (
-                            f'\r\n#CONFIG: "{parsed["sn"]:016X}",'
-                            f'"{parsed["data_id"]:04X}"\r\n'
-                        ).encode("ascii")
-                        print(f"           OK — {summary}")
-                        client.ser.write(ack)
-                        client.ser.write(b"\r\nOK\r\n")
-                    else:
-                        print(f"           ERROR — {summary}")
-                        client.ser.write(b"\r\nERROR\r\n")
-                    client.ser.flush()
+                if line.startswith("AT#CONFIGRES="):
+                    ok, summary = _handle_at_configres_line(line)
+                    print(f"           #CONFIGRES delivered ({summary})" if ok
+                          else f"           #CONFIGRES malformed: {summary}")
+                elif line.startswith("AT#CONFIG="):
+                    status = _auto_reply_to_at_config(client, line)
+                    print(f"           {status}")
                 elif line.startswith("AT"):
                     print("           (unknown AT command, replying ERROR)")
                     client.ser.write(b"\r\nERROR\r\n")
@@ -375,26 +453,88 @@ def run_oneshot(client: ATClient, commands: Iterable[str]) -> int:
     return rc
 
 
+_PROMPT = "AT> "
+
+
+def _reader_loop(client: ATClient, stop_evt: threading.Event,
+                 lock: threading.Lock) -> None:
+    """Background thread: read serial bytes, print complete lines.
+
+    Each line is printed on its own row preceded by a timestamp and '<<<'.
+    The 'AT> ' prompt is redrawn after each line so the user's view of the
+    prompt stays at the bottom. Stops when stop_evt is set.
+    """
+    buf = bytearray()
+    while not stop_evt.is_set():
+        try:
+            chunk = client.ser.read(256)  # blocks up to ser.timeout (0.1s)
+        except Exception:
+            break
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        text = buf.decode("ascii", errors="replace")
+        parts = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        buf = bytearray(parts[-1], "ascii")
+        for raw in parts[:-1]:
+            line = raw.strip()
+            if not line:
+                continue
+            ts = time.strftime("%H:%M:%S")
+            # Discriminate between the two AT#CONFIG variants:
+            #   AT#CONFIG=...      command from a peer → auto-reply OK/ERROR
+            #   AT#CONFIGRES=...   URC from gateway saying "config landed" → log only
+            extra = None
+            if line.startswith("AT#CONFIGRES="):
+                ok, summary = _handle_at_configres_line(line)
+                extra = (f">>> #CONFIGRES delivered ({summary})" if ok
+                         else f">>> #CONFIGRES malformed: {summary}")
+            elif line.startswith("AT#CONFIG="):
+                extra = f">>> {_auto_reply_to_at_config(client, line)}"
+            with lock:
+                # '\r' clears the typed prompt position; then we print the
+                # line + a fresh prompt so the user's cursor still sees 'AT> '.
+                sys.stdout.write(f"\r[{ts}] <<< {line}\n")
+                if extra is not None:
+                    sys.stdout.write(f"           {extra}\n")
+                sys.stdout.write(_PROMPT)
+                sys.stdout.flush()
+
+
 def run_repl(client: ATClient) -> int:
     print("hello_dect AT console — type 'quit' or Ctrl-D/Ctrl-C to exit")
     print("Useful commands: AT, AT#VERSION?, AT#DEVTYPE?, AT#DEVID?, AT#SN?, AT#HOP?, AT#REBOOT")
-    while True:
-        try:
-            line = input("AT> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 0
-        if not line:
-            continue
-        if line.lower() in ("quit", "exit"):
-            return 0
-        lines = client.send_raw(line)
-        if lines:
-            for resp in lines:
-                print(resp)
-        else:
-            # No reply and no ERROR → command accepted silently.
-            print("(ok)")
+    print("(incoming device lines are printed live, prefixed with '<<<')")
+
+    stop_evt = threading.Event()
+    # Serialise prints from the reader and the main thread so they don't
+    # interleave mid-line.
+    lock = threading.Lock()
+    reader = threading.Thread(target=_reader_loop, args=(client, stop_evt, lock),
+                              name="at-reader", daemon=True)
+    reader.start()
+
+    rc = 0
+    try:
+        while True:
+            try:
+                line = input(_PROMPT).strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not line:
+                continue
+            if line.lower() in ("quit", "exit"):
+                break
+            # Fire-and-forget: the reader will print whatever the device
+            # replies (or stays silent on success).
+            client.send_raw_no_wait(line)
+    finally:
+        stop_evt.set()
+        # Reader is a daemon; we don't strictly need to join, but give it a
+        # tick to drain so the final prompt doesn't get mangled on exit.
+        reader.join(timeout=0.3)
+    return rc
 
 
 def main(argv: list[str]) -> int:

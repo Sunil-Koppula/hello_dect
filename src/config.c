@@ -376,8 +376,26 @@ void handle_config_received(const config_received_t *pkt, uint16_t dst_id, int16
 				int idx;
 				int ret = find_config_slot(pkt->dst_device_id, &idx);
 				if (ret >= 0) {
-					LOG_INF("Freeing config slot %d for device %s ID:%d based on CONFIG_RECEIVED", idx, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
-					config_slot_free(idx);
+					if (pkt->hdr.status == STATUS_SUCCESS) {
+						for (int i = 0; i < mesh_count; i++) {
+							if (mesh_devices[i].device_id   == pkt->dst_device_id && mesh_devices[i].device_type == pkt->dst_device_type) {
+								char cmd[SLM_UART_AT_COMMAND_LEN];
+								int n = snprintf(cmd, sizeof(cmd), "AT#CONFIGRES=\"%016llX\",\"%04X\",\"%04X\"\r",
+													(unsigned long long)mesh_devices[i].serial_num, config_slots[idx].config_id, pkt->hdr.status);
+								if (n < 0 || (size_t)n >= sizeof(cmd)) {
+									LOG_ERR("snprintf overflow building AT#CONFIGRES");
+									break;
+								}
+								int tx_err = slm_at_tx_write((const uint8_t *)cmd, (size_t)n, false);
+								if (tx_err) {
+									LOG_ERR("Failed to write AT#CONFIGRES to UART (%d)", tx_err);
+								}
+								break;
+							}
+						}
+						LOG_INF("Freeing config slot %d for device %s ID:%d based on CONFIG_RECEIVED", idx, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
+						config_slot_free(idx);
+					}
 				} else {
 					LOG_WRN("CONFIG_RECEIVED but no matching config slot found for device %s ID:%d", device_type_str(pkt->dst_device_type), pkt->dst_device_id);
 				}
