@@ -15,9 +15,19 @@
 #ifndef SLM_AT_MAIN_H_
 #define SLM_AT_MAIN_H_
 
+#include "protocol.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef struct {
+    uint16_t device_id;
+    uint8_t device_type;
+    uint16_t data_id;
+    uint8_t data_len;
+    uint32_t data_crc32;
+} slm_at_config_t;
 
 /**
  * @brief  Initialize the AT command processor (brings up the UART transport).

@@ -192,24 +192,34 @@ static void gateway_process_rx(const uint8_t *data, uint16_t sender_id, int16_t 
 void gateway_main(void)
 {
 	int err;
-	main_sub_state_t state = MAIN_SUB_INIT;
+	main_sub_state_t main_sub_state = MAIN_SUB_INIT;
+	bool initialized = false;
+
+	static main_sub_state_t main_sub_state_debug = MAIN_SUB_INIT;
 
 	while (1) {
-		switch (state) {
+
+		if (main_sub_state_debug != main_sub_state) {
+			main_sub_state_debug = main_sub_state;
+			LOG_DBG("Main sub state: %d", main_sub_state);
+		}
+		
+		switch (main_sub_state) {
 			case MAIN_SUB_INIT:
 			{
 				if (SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) {
 					// LOG_WRN("Serial Number not set, waiting");
-					state = MAIN_SUB_SLM_AT;
+					main_sub_state = MAIN_SUB_SLM_AT;
 					break;
 				}
 				err = gateway_init();
 				if (err) {
 					LOG_ERR("Gateway init failed, err %d", err);
-					state = MAIN_SUB_ERROR;
+					main_sub_state = MAIN_SUB_ERROR;
 					break;
 				}
-				state = MAIN_SUB_RX_WINDOW;
+				initialized = true;
+				main_sub_state = MAIN_SUB_RX_WINDOW;
 			}
 			break;
 
@@ -218,11 +228,11 @@ void gateway_main(void)
 				err = receive(1, 25);
 				if (err) {
 					LOG_ERR("Reception failed, err %d", err);
-					state = MAIN_SUB_ERROR;
+					main_sub_state = MAIN_SUB_ERROR;
 					break;
 				}
 				k_sem_take(&operation_sem, K_FOREVER);
-				state = MAIN_SUB_RX_PROCESS;
+				main_sub_state = MAIN_SUB_RX_PROCESS;
 			}
 			break;
 
@@ -236,7 +246,7 @@ void gateway_main(void)
 					gateway_process_rx(rx_item.data, rx_item.sender_id, rx_item.rssi_2);
 					rx_count++;
 				}
-				state = MAIN_SUB_TX_PROCESS;
+				main_sub_state = MAIN_SUB_TX_PROCESS;
 			}
 			break;
 
@@ -250,66 +260,67 @@ void gateway_main(void)
 					err = transmit(0, tx_item.data, tx_item.data_len, 0);
 					if (err) {
 						LOG_ERR("TX failed, err %d", err);
-						state = MAIN_SUB_ERROR;
+						main_sub_state = MAIN_SUB_ERROR;
 						break;
 					}
 					k_sem_take(&operation_sem, K_FOREVER);
 					tx_count++;
 				}
-				state = MAIN_SUB_SLM_AT;
+				main_sub_state = MAIN_SUB_SLM_AT;
 			}
 			break;
 
 			case MAIN_SUB_SLM_AT:
 			{
 				slm_at_run_cycle();
-				if (SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) {
-					state = MAIN_SUB_INIT;
+				if ((SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) && !initialized) {
+					SERIAL_NUMBER = ((uint64_t)radio_get_device_id() << 40) | 0x00DEADBEEFULL;
+					main_sub_state = MAIN_SUB_INIT;
 					break;
 				}
-				state = MAIN_SUB_TRACKER;
+				main_sub_state = MAIN_SUB_TRACKER;
 			}
 			break;
 			
 			case MAIN_SUB_TRACKER:
 			{
 				tracker_tick(tracker_default_expired_cb);
-				state = MAIN_SUB_CONFIG;
+				main_sub_state = MAIN_SUB_CONFIG;
 			}
 			break;
 
 			case MAIN_SUB_CONFIG:
 			{
 				config_tick();
-				state = MAIN_SUB_REPORT;
+				main_sub_state = MAIN_SUB_REPORT;
 			}
 			break;
 
 			case MAIN_SUB_REPORT:
 			{
 				data_tick();
-				state = MAIN_SUB_LARGE_DATA;
+				main_sub_state = MAIN_SUB_LARGE_DATA;
 			}
 			break;
 
 			case MAIN_SUB_LARGE_DATA:
 			{
 				large_data_tick();
-				state = MAIN_SUB_OTA;
+				main_sub_state = MAIN_SUB_OTA;
 			}
 			break;
 
 			case MAIN_SUB_OTA:
 			{
 				// Implement later
-				state = MAIN_SUB_PING_DEVICES;
+				main_sub_state = MAIN_SUB_PING_DEVICES;
 			}
 			break;
 
 			case MAIN_SUB_PING_DEVICES:
 			{
 				known_devices_tick();
-				state = MAIN_SUB_RX_WINDOW;
+				main_sub_state = MAIN_SUB_RX_WINDOW;
 			}
 			break;
 
@@ -317,13 +328,13 @@ void gateway_main(void)
 			{
 				LOG_ERR("Gateway in error state, waiting 10s before retry");
 				k_msleep(10000);
-				state = MAIN_SUB_INIT;
+				main_sub_state = MAIN_SUB_INIT;
 			}
 			break;
 
 			default:
 			{
-				LOG_ERR("Gateway in unknown state %d", state);
+				LOG_ERR("Gateway in unknown state %d", main_sub_state);
 				// Reset the device to recover from unknown state
 				sys_reboot(SYS_REBOOT_COLD);
 			}

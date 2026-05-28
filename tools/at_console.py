@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 """AT command client for the hello_dect firmware (Gateway / Anchor / Sensor).
 
-The firmware exposes an AT-style line protocol on uart1 (see src/serial.c).
-The wire format echoes 3GPP modems:
+The firmware exposes an AT-style line protocol on uart1 (see
+src/slm_at_main.c). Wire format:
 
-    host -> device:   AT<suffix><CR>
-    device -> host:   <CR><LF>+TAG: value<CR><LF>     (optional data line)
-                      <CR><LF>OK<CR><LF>              (terminator)
-                      <CR><LF>ERROR<CR><LF>           (on failure)
+    host -> device:   AT#CMD?<CR>                          (query)
+                      AT#CMD="<arg1>","<arg2>"...<CR>      (set / push)
+    device -> host:   <CR><LF>#TAG: value<CR><LF>          (data line, if any)
+                      <CR><LF>OK<CR><LF>                   (some commands)
+                      <CR><LF>ERROR<CR><LF>                (on failure)
 
-Echo is enabled by default; this script issues ATE0 at startup so the
-response stream is unambiguous.
+Success is implicit for data commands (AT#CONFIG): the device replies with
+a '#TAG: …' line and no OK. Only 'ERROR' indicates failure.
 
 Examples:
     python at_console.py --port COM7                       # interactive REPL
     python at_console.py --port COM7 AT#DEVTYPE?           # one-shot
     python at_console.py --port /dev/ttyACM0 AT#VERSION? AT#HOP?
 
-    # Push a config payload to a device, addressed by its SN:
-    python at_console.py --port COM26 \
+    # Set the device serial number (16 hex chars, quoted):
+    python at_console.py --port COM26 'AT#SN="00CAFE00DEADBEEF"'
+
+    # Push a config payload to a mesh device, addressed by its SN:
+    python at_console.py --port COM26 \\
         --send-config 0x004AD000DEADBEEF --file config.bin
 
 Requires: pyserial  (pip install pyserial)
@@ -44,22 +48,9 @@ except ImportError:
 DEFAULT_BAUD = 1000000  # uart1 current-speed in nrf9151dk_nrf9151_ns.overlay
 DEFAULT_TIMEOUT_S = 2.0
 
-# Must match firmware protocol.h DATA_TYPE_*.
-DATA_TYPE_REPORT = 1
-DATA_TYPE_CONFIG = 2
-DATA_TYPE_LARGE  = 3
-
-# Max binary bytes per AT#DATA chunk over UART (must match firmware's
-# AT_DATA_PAYLOAD_MAX). The radio still ships SEND_DATA_MAX = 180 B per
-# radio chunk; firmware splits each AT chunk into 1..N radio chunks when
-# forwarding.
-#
-# Wire format (quoted hex fields):
-#   AT#DATA="<id>","<page>","<chunk>","<crc32>","<payload_hex>"
-# At 450 B payload: 'AT#DATA=' (8) + framing 30 + 900 payload hex + CR
-# = 939 chars, within SLM_UART_AT_COMMAND_LEN (1024).
-DATA_CHUNK_MAX = 450
-LARGE_CHUNKS_PER_PAGE = 20  # matches large_data.c
+# Max config payload size in bytes — must match firmware MAX_CONFIG_SIZE
+# (see protocol.h). The firmware's AT#CONFIG handler enforces this.
+MAX_CONFIG_SIZE = 128
 
 
 def parse_sn_hex(s: str) -> int:
@@ -168,127 +159,191 @@ class ATClient:
         """True if the device reported ERROR for the command."""
         return any(l == "ERROR" for l in lines)
 
-    def send_data(
+    def send_config(
         self,
         sn: int,
-        data_type: int,
         data_id: int,
         payload: bytes,
-        chunk_size: int = DATA_CHUNK_MAX,
         verbose: bool = True,
     ) -> None:
-        """Push a binary payload to a remote device via AT#DATAINIT + AT#DATA.
+        """Push a CONFIG payload to a mesh device via a single AT#CONFIG line.
 
-        Two phases:
+        Wire format (all fields uppercase hex inside quotes):
+            AT#CONFIG="<SN:16>","<ID:4>","<LEN:4>","<CRC32:8>","<DATA hex>"
 
-        1. AT#DATAINIT="<SN>","<TYPE>","<ID>","<LEN>","<CRC>"
-           all fields uppercase hex; announces + validates the transfer.
+        The firmware (gateway only) validates the SN against its mesh table,
+        allocates a config slot, verifies the CRC, persists the payload, and
+        config_tick() drives the radio TX from there.
 
-        2. AT#DATA="<ID>","<PAGE>","<CHUNK>","<CRC>","<DATA>"
-           one or more chunks, ≤450 B payload each at the UART layer. CRC is
-           crc32_ieee of just that chunk's payload; on mismatch the firmware
-           returns ERROR and the host should retry the chunk.
-
-        Chunk layout by data_type:
-            CONFIG (2): one chunk only, page=0 chunk=0  (≤128 B for the
-                        config payload itself; firmware enforces).
-            REPORT (1): one chunk only, page=0 chunk=0  (≤450 B at AT layer;
-                        firmware DATA_MAX_TRANSFER_SIZE = 256 B further caps).
-            LARGE  (3): pages of 20 chunks each, page=0..N-1 chunk=0..19.
-
-        Success is implicit (no OK is sent); only an 'ERROR' line means
-        failure. Raises RuntimeError if the device returns ERROR.
+        Success is implicit: only an 'ERROR' line means failure. The device
+        also emits a '#CONFIG: …' acknowledgement line on success.
         """
         if not (0 <= sn < (1 << 64)):
             raise ValueError(f"sn out of range: {sn}")
-        if not (0 <= data_type < (1 << 8)):
-            raise ValueError(f"data_type out of range: {data_type}")
         if not (0 <= data_id < (1 << 16)):
             raise ValueError(f"data_id out of range: {data_id}")
-        if len(payload) >= (1 << 16):
-            raise ValueError(f"payload too large for uint16 length: {len(payload)}")
-        if chunk_size <= 0 or chunk_size > DATA_CHUNK_MAX:
+        if not (0 < len(payload) <= MAX_CONFIG_SIZE):
             raise ValueError(
-                f"chunk_size must be 1..{DATA_CHUNK_MAX} (got {chunk_size})"
+                f"payload must be 1..{MAX_CONFIG_SIZE} bytes (got {len(payload)})"
             )
 
         crc32 = zlib.crc32(payload) & 0xFFFFFFFF
-
-        # Phase 1 — DATAINIT.
-        # Format: AT#DATAINIT="<SN>","<TYPE>","<ID>","<LEN>","<CRC>"
-        # Every field is an uppercase hex string (no 0x prefix).
         cmd = (
-            'AT#DATAINIT='
+            'AT#CONFIG='
             f'"{sn:016X}",'
-            f'"{data_type:02X}",'
             f'"{data_id:04X}",'
             f'"{len(payload):04X}",'
-            f'"{crc32:08X}"'
+            f'"{crc32:08X}",'
+            f'"{payload.hex().upper()}"'
         )
         if verbose:
-            print(f">>> {cmd}")
+            print(f">>> AT#CONFIG=\"{sn:016X}\",\"{data_id:04X}\","
+                  f"\"{len(payload):04X}\",\"{crc32:08X}\",<{len(payload)} B hex>")
         lines = self.send_raw(cmd)
         for line in lines:
             if verbose:
                 print(line)
         if self.response_is_error(lines):
-            raise RuntimeError(f"AT#DATAINIT failed: {lines!r}")
+            raise RuntimeError(f"AT#CONFIG failed: {lines!r}")
 
-        if not payload:
-            if verbose:
-                print("(no payload bytes — DATAINIT-only)")
-            return
 
-        # Phase 2 — chunked payload with page/chunk numbering.
-        total = len(payload)
-        sent = 0
-        # global_chunk = chunks-since-start; page/chunk derived from it.
-        global_chunk = 0
-        while sent < total:
-            n = min(chunk_size, total - sent)
-            chunk = payload[sent : sent + n]
-            page  = global_chunk // LARGE_CHUNKS_PER_PAGE
-            chunk_no = global_chunk %  LARGE_CHUNKS_PER_PAGE
+# ---------------------------------------------------------------------------
+# Downstream-MCU emulation: act as an AT *server* on the UART, accepting
+# AT#CONFIG lines emitted by a hello_dect sensor (see config.c, sensor branch
+# of config_tick). Verify CRC32 and reply OK / ERROR.
+# ---------------------------------------------------------------------------
 
-            # Per-type layout sanity (firmware also enforces).
-            if data_type == DATA_TYPE_CONFIG and global_chunk > 0:
-                raise ValueError(
-                    f"CONFIG payload too large for one chunk "
-                    f"(max {DATA_CHUNK_MAX} B, got {len(payload)} B)"
-                )
-            if data_type == DATA_TYPE_REPORT and global_chunk > 0:
-                raise ValueError(
-                    f"REPORT payload too large for one chunk "
-                    f"(max {DATA_CHUNK_MAX} B, got {len(payload)} B)"
-                )
+def _extract_quoted_fields(line: str) -> list[str] | None:
+    """Return the list of strings between consecutive ""..."" pairs in 'line'.
 
-            chunk_crc32 = zlib.crc32(chunk) & 0xFFFFFFFF
-            # Format: AT#DATA="<ID>","<PAGE>","<CHUNK>","<CRC>","<DATA>"
-            # All fields uppercase hex strings; DATA is the hex payload.
-            cmd = (
-                'AT#DATA='
-                f'"{data_id:04X}",'
-                f'"{page:02X}",'
-                f'"{chunk_no:02X}",'
-                f'"{chunk_crc32:08X}",'
-                f'"{chunk.hex().upper()}"'
-            )
+    Mirrors the firmware's field_get() semantics: scans for matched '"'
+    delimiters in order. Returns None if any quote is unbalanced.
+    """
+    fields: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        # Find next opening quote.
+        a = line.find('"', i)
+        if a < 0:
+            break
+        b = line.find('"', a + 1)
+        if b < 0:
+            return None  # unbalanced
+        fields.append(line[a + 1 : b])
+        i = b + 1
+    return fields
 
-            if verbose:
-                print(f">>> AT#DATA=\"{data_id:04X}\",\"{page:02X}\","
-                      f"\"{chunk_no:02X}\",\"{chunk_crc32:08X}\",<{n} B hex>  "
-                      f"[{sent + n}/{total}]")
-            lines = self.send_raw(cmd)
-            for line in lines:
-                if verbose:
-                    print(line)
-            if self.response_is_error(lines):
-                raise RuntimeError(
-                    f"AT#DATA page={page} chunk={chunk_no} failed at "
-                    f"offset {sent}: {lines!r}"
-                )
-            sent += n
-            global_chunk += 1
+
+def _handle_at_config_line(line: str) -> tuple[bool, str, dict | None]:
+    """Parse one AT#CONFIG line and verify it.
+
+    Wire format:
+        AT#CONFIG="<SN>","<ID>","<LEN>","<CRC32>","<DATA hex>"
+
+    Returns (ok, summary, parsed):
+      ok       — True on a fully-validated config.
+      summary  — human-readable one-liner (success or failure reason).
+      parsed   — {'sn', 'data_id', 'data_len', 'crc32', 'payload'} on success,
+                 None on failure.
+    """
+    fields = _extract_quoted_fields(line)
+    if fields is None or len(fields) < 5:
+        return False, f"malformed: expected 5 quoted fields, got {fields!r}", None
+
+    sn_hex, id_hex, len_hex, crc_hex, data_hex = fields[:5]
+    try:
+        sn        = int(sn_hex, 16)
+        data_id   = int(id_hex, 16)
+        data_len  = int(len_hex, 16)
+        crc32     = int(crc_hex, 16)
+    except ValueError as e:
+        return False, f"bad hex in header: {e}", None
+
+    if len(data_hex) != data_len * 2:
+        return (False,
+                f"len mismatch: header says {data_len} B "
+                f"({data_len * 2} hex chars), got {len(data_hex)} hex chars",
+                None)
+
+    try:
+        payload = bytes.fromhex(data_hex)
+    except ValueError as e:
+        return False, f"bad hex in payload: {e}", None
+
+    calc = zlib.crc32(payload) & 0xFFFFFFFF
+    if calc != crc32:
+        return (False,
+                f"CRC32 mismatch: header 0x{crc32:08X}, calc 0x{calc:08X}",
+                None)
+
+    summary = (f"sn=0x{sn:016X} id={data_id} len={data_len} "
+               f"crc=0x{crc32:08X}\n  payload: {payload.hex().upper()}")
+    parsed = {
+        "sn": sn, "data_id": data_id, "data_len": data_len,
+        "crc32": crc32, "payload": payload,
+    }
+    return True, summary, parsed
+
+
+def run_downstream(client: "ATClient") -> int:
+    """Continuously read lines from the device and respond to AT#CONFIG.
+
+    Acts as the application MCU on the sensor's downstream UART:
+      - Wait for incoming complete lines (CR/LF terminated).
+      - For each AT#CONFIG line: parse + CRC-verify, then reply OK or ERROR.
+      - Other AT#... lines: reply ERROR (we only implement #CONFIG here).
+      - Non-AT lines: log them and ignore (don't reply).
+
+    Ctrl-C exits cleanly.
+    """
+    print("hello_dect downstream-MCU emulator — Ctrl-C to exit")
+    print(f"Listening on {client.ser.port} @ {client.ser.baudrate} baud")
+    print("Replies OK after CRC32 verification, ERROR on any failure.\n")
+
+    buf = bytearray()
+    try:
+        while True:
+            chunk = client.ser.read(256)
+            if not chunk:
+                time.sleep(0.005)
+                continue
+            buf.extend(chunk)
+            # Split on CR/LF/CRLF; keep the partial last line in buf.
+            text = buf.decode("ascii", errors="replace")
+            parts = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            buf = bytearray(parts[-1], "ascii")
+
+            for raw in parts[:-1]:
+                line = raw.strip()
+                if not line:
+                    continue
+                ts = time.strftime("%H:%M:%S")
+                print(f"[{ts}] <<< {line}")
+
+                if line.startswith("AT#CONFIG"):
+                    ok, summary, parsed = _handle_at_config_line(line)
+                    if ok:
+                        # Ack with which (sn, data_id) was accepted, then OK.
+                        ack = (
+                            f'\r\n#CONFIG: "{parsed["sn"]:016X}",'
+                            f'"{parsed["data_id"]:04X}"\r\n'
+                        ).encode("ascii")
+                        print(f"           OK — {summary}")
+                        client.ser.write(ack)
+                        client.ser.write(b"\r\nOK\r\n")
+                    else:
+                        print(f"           ERROR — {summary}")
+                        client.ser.write(b"\r\nERROR\r\n")
+                    client.ser.flush()
+                elif line.startswith("AT"):
+                    print("           (unknown AT command, replying ERROR)")
+                    client.ser.write(b"\r\nERROR\r\n")
+                    client.ser.flush()
+                # else: silent log of garbage / partial bytes
+    except KeyboardInterrupt:
+        print("\n(exit)")
+        return 0
 
 
 def autodetect_port() -> str | None:
@@ -350,22 +405,20 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--no-rtscts", action="store_true", help="disable RTS/CTS flow control (firmware default has it ON)")
     parser.add_argument("--list", action="store_true", help="list available serial ports and exit")
 
-    # Data push: announce via AT#DATAINIT, then stream chunks via AT#DATA<hex>.
-    # The SN identifies the destination device on the mesh. data_id defaults
-    # to 1 — override with --data-id if needed.
-    send_group = parser.add_mutually_exclusive_group()
-    send_group.add_argument("--send-config", metavar="SN_HEX",
-                            help="push a CONFIG payload to the device with this 0x-prefixed SN")
-    send_group.add_argument("--send-report", metavar="SN_HEX",
-                            help="push a REPORT payload to the device with this 0x-prefixed SN")
-    send_group.add_argument("--send-large", metavar="SN_HEX",
-                            help="push a LARGE payload to the device with this 0x-prefixed SN")
+    # Single-line config push via AT#CONFIG. The SN identifies the destination
+    # device on the mesh. data_id is an application-level id (default 1).
+    parser.add_argument("--send-config", metavar="SN_HEX",
+                        help="push a CONFIG payload to the device with this 0x-prefixed SN")
     parser.add_argument("--file", metavar="PATH",
-                        help="binary payload file (required when using --send-*)")
-    parser.add_argument("--data-id", type=int, default=1,
+                        help="binary payload file (required with --send-config)")
+    parser.add_argument("--data-id", type=lambda s: int(s, 0), default=1,
                         help="data_id field for the transfer (default: 1)")
-    parser.add_argument("--chunk-size", type=int, default=DATA_CHUNK_MAX,
-                        help=f"bytes per AT#DATA chunk (default: {DATA_CHUNK_MAX})")
+
+    # Downstream-MCU emulator: listen on the UART for AT#CONFIG lines emitted
+    # by the sensor's config_tick(), verify CRC32, reply OK/ERROR.
+    parser.add_argument("--downstream", action="store_true",
+                        help="act as the downstream application MCU: listen for "
+                             "AT#CONFIG lines and reply OK/ERROR after verifying CRC32")
 
     parser.add_argument("commands", nargs="*", help="AT commands to run (REPL if none given)")
     args = parser.parse_args(argv)
@@ -389,15 +442,26 @@ def main(argv: list[str]) -> int:
     # Note: the firmware does not echo and does not send OK on success — a
     # command is treated as successful unless it returns an 'ERROR' line.
 
-    # Data-push mode short-circuits the REPL / one-shot paths.
-    send_sn_hex = args.send_config or args.send_report or args.send_large
-    if send_sn_hex:
-        if not args.file:
-            sys.stderr.write("error: --send-* requires --file <PATH>\n")
+    # Downstream-MCU emulator mode short-circuits everything else.
+    if args.downstream:
+        if args.send_config or args.commands:
+            sys.stderr.write("error: --downstream cannot be combined with "
+                             "--send-config or positional commands\n")
             client.close()
             return 2
         try:
-            sn = parse_sn_hex(send_sn_hex)
+            return run_downstream(client)
+        finally:
+            client.close()
+
+    # Config-push mode short-circuits the REPL / one-shot paths.
+    if args.send_config:
+        if not args.file:
+            sys.stderr.write("error: --send-config requires --file <PATH>\n")
+            client.close()
+            return 2
+        try:
+            sn = parse_sn_hex(args.send_config)
         except ValueError as e:
             sys.stderr.write(f"error: {e}\n")
             client.close()
@@ -409,17 +473,9 @@ def main(argv: list[str]) -> int:
             client.close()
             return 2
 
-        if args.send_config:
-            dtype = DATA_TYPE_CONFIG
-        elif args.send_report:
-            dtype = DATA_TYPE_REPORT
-        else:
-            dtype = DATA_TYPE_LARGE
-
         try:
-            client.send_data(sn, dtype, args.data_id, payload,
-                             chunk_size=args.chunk_size)
-        except (RuntimeError, TimeoutError, ValueError) as e:
+            client.send_config(sn, args.data_id, payload)
+        except (RuntimeError, ValueError) as e:
             sys.stderr.write(f"error: {e}\n")
             return 1
         finally:

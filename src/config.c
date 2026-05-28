@@ -12,6 +12,8 @@
 #include "storage.h"
 #include "main_sub.h"
 #include "slm_at_main.h"
+#include "slm_at_uart.h"
+#include "slm_at_common.h"
 #include "log_color.h"
 
 LOG_MODULE_REGISTER(config, CONFIG_CONFIG_LOG_LEVEL);
@@ -52,9 +54,6 @@ static void config_slot_free(int idx)
 {
 	config_slots[idx].active = false;
 	config_slots[idx].is_sent = false;
-	config_slots[idx].is_ready = false;
-	config_slots[idx].is_applied = false;
-	nbtimeout_stop(&config_slots[idx].timeout);
 }
 
 static uint8_t validate_config(const config_t *pkt)
@@ -81,8 +80,6 @@ static uint8_t validate_config(const config_t *pkt)
 
 	config_slots[idx].active = true;
 	config_slots[idx].is_sent = false;
-	config_slots[idx].is_ready = false;
-	config_slots[idx].is_applied = false;
 	config_slots[idx].dst_device_id = pkt->dst_device_id;
 	config_slots[idx].dst_device_type = pkt->dst_device_type;
 	config_slots[idx].config_id = pkt->data_id;
@@ -105,7 +102,6 @@ static uint8_t validate_config(const config_t *pkt)
 		config_slot_free(idx);
 		return STATUS_FAILURE;
 	}
-	config_slots[idx].is_ready = true;
 
 	return STATUS_SUCCESS;
 }
@@ -229,14 +225,14 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 				// validate config packet and store it if valid, if not reject the packet
 				uint8_t status = validate_config(pkt);
 				ack.hdr.status = status;
-				// Send config received packet to confirm the config is received and processed
-				config_received_t recv_pkt = {
-					.dst_device_id = pkt->dst_device_id,
-					.dst_device_type = pkt->dst_device_type,
-					.data_type = pkt->data_type,
-					.data_id = pkt->data_id,
-				};
-				send_config_received(&recv_pkt, dst_id, pkt->hdr.device_type);
+				// // Send config received packet to confirm the config is received and processed
+				// config_received_t recv_pkt = {
+				// 	.dst_device_id = pkt->dst_device_id,
+				// 	.dst_device_type = pkt->dst_device_type,
+				// 	.data_type = pkt->data_type,
+				// 	.data_id = pkt->data_id,
+				// };
+				// send_config_received(&recv_pkt, dst_id, pkt->hdr.device_type);
 			} else {
 				// Reject config packet except from gateway and anchor
 				return;
@@ -465,7 +461,7 @@ void config_tick(void)
 		case DEVICE_TYPE_GATEWAY:
 		{
 			for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
-				if (config_slots[i].active && !config_slots[i].is_sent && config_slots[i].is_ready) {
+				if (config_slots[i].active && !config_slots[i].is_sent) {
 					LOG_INF("Config slot %d is active and ready but not sent, sending route discovery to find route to device %s ID:%d", i, device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
 					// Get hop num to the destination device, if no route found, free the slot and do not send config
 					uint8_t hop_num = get_hop_num(config_slots[i].dst_device_id, config_slots[i].dst_device_type);
@@ -488,15 +484,6 @@ void config_tick(void)
 					}
 
 					config_slots[i].is_sent = true;
-					// start timer
-					nbtimeout_init(&config_slots[i].timeout, 5 * 60 * 1000, 0);
-					nbtimeout_start(&config_slots[i].timeout);
-				} else if (config_slots[i].active && config_slots[i].is_sent && config_slots[i].is_ready) {
-					// Check timer is expired or not, if expired, mark is_sent to false to trigger resend in next tick
-					if (nbtimeout_expired(&config_slots[i].timeout)) {
-						config_slots[i].is_sent = false;
-						LOG_WRN("Config slot %d for device %s ID:%d timed out waiting for CONFIG_ACK, marking as not sent to trigger resend", i, device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
-					}
 				}
 			} 
 		}
@@ -510,12 +497,58 @@ void config_tick(void)
 
 		case DEVICE_TYPE_SENSOR:
 		{
+			static const char HEX_LUT[] = "0123456789ABCDEF";
+
 			for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
-				if (config_slots[i].active && config_slots[i].is_ready && !config_slots[i].is_applied) {
-					// Start sending AT command to apply config, send AT#DATAINIT<sn><data-type><data_id><len><crc32>
-					LOG_INF("Applying config from slot %d for device %s ID:%d", i, device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
-					
+				if (!config_slots[i].active || config_slots[i].is_sent) {
+					continue;
 				}
+				LOG_INF("Applying config from slot %d (config_id=%u len=%u)", i, config_slots[i].config_id, config_slots[i].config_len);
+
+				/* Read the binary payload back from PSRAM. */
+				uint8_t payload[CONFIG_MAX_SIZE];
+				uint32_t addr = config_slot_psram_addr(i);
+				int err = psram_read(addr, payload, config_slots[i].config_len);
+				if (err) {
+					LOG_ERR("psram_read @0x%06x failed (%d), cannot apply config", addr, err);
+					continue;
+				}
+
+				/* Build the AT line. Worst-case at 128 B payload:
+				 *   'AT#CONFIG=' (10) + framing 30 + 256 payload hex + CR (1)
+				 *   = 297 chars, within SLM_UART_AT_COMMAND_LEN. */
+				char cmd[SLM_UART_AT_COMMAND_LEN];
+				int n = snprintf(cmd, sizeof(cmd), "AT#CONFIG=\"%016llX\",\"%04X\",\"%04X\",\"%08lX\",\"",
+					(unsigned long long)SERIAL_NUMBER, config_slots[i].config_id, (unsigned)config_slots[i].config_len,
+					(unsigned long)config_slots[i].config_crc32);
+				
+				if (n < 0 || (size_t)n >= sizeof(cmd)) {
+					LOG_ERR("snprintf overflow building AT#CONFIG header");
+					continue;
+				}
+
+				/* Append payload as uppercase hex, then closing quote + CR. */
+				size_t need = (size_t)n + (size_t)config_slots[i].config_len * 2 + 2;
+				if (need >= sizeof(cmd)) {
+					LOG_ERR("AT#CONFIG line too long (%u bytes needed)", (unsigned)need);
+					continue;
+				}
+				for (uint16_t b = 0; b < config_slots[i].config_len; b++) {
+					cmd[n++] = HEX_LUT[(payload[b] >> 4) & 0x0F];
+					cmd[n++] = HEX_LUT[payload[b] & 0x0F];
+				}
+				cmd[n++] = '"';
+				cmd[n++] = '\r';
+
+				int tx_err = slm_at_tx_write((const uint8_t *)cmd, (size_t)n, false);
+				if (tx_err) {
+					LOG_ERR("slm_at_tx_write failed (%d) for slot %d", tx_err, i);
+					continue;
+				}
+
+				LOG_INF("AT#CONFIG emitted for slot %d, marking as sent", i);
+				config_slots[i].is_sent = true;
+				break; // Send one config at a time, wait for next tick to send next config if exists
 			}
 		}
 		break;
@@ -526,85 +559,75 @@ void config_tick(void)
 
 }
 
-int validate_config_slot(uint16_t device_id, uint8_t device_type, uint16_t config_id, uint8_t config_len, uint32_t config_crc32)
+int config_slot_release_by_id(uint16_t config_id, bool is_success)
 {
-	// check is slot exists for the device
-	int idx;
-	for (idx = 0; idx < CONFIG_SLOT_COUNT; idx++) {
-		if (config_slots[idx].dst_device_id == device_id && config_slots[idx].dst_device_type == device_type && config_slots[idx].active) {
-			config_slots[idx].active = true;
-			config_slots[idx].is_sent = false;
-			config_slots[idx].is_ready = false;
-			config_slots[idx].is_applied = false;
-			config_slots[idx].dst_device_id = device_id;
-			config_slots[idx].dst_device_type = device_type;
-			config_slots[idx].config_id = config_id;
-			config_slots[idx].config_len = config_len;
-			config_slots[idx].config_crc32 = config_crc32;
-			return idx;
+	for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
+		if (config_slots[i].active && config_slots[i].is_sent && config_slots[i].config_id == config_id) {
+			if (is_success) {
+				// Send config received packet to confirm the config is received and free the slot
+				config_received_t recv_pkt = {
+					.dst_device_id = config_slots[i].dst_device_id,
+					.dst_device_type = config_slots[i].dst_device_type,
+					.data_type = DATA_TYPE_CONFIG,
+					.data_id = config_slots[i].config_id,
+				};
+				send_config_received(&recv_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type);
+				LOG_INF("Freeing config slot %d (config_id=%u) on downstream ack", i, config_id);
+				config_slot_free(i);
+				return 0;
+			} else {
+				LOG_WRN("Downstream NACK for config_id=%u, slot %d will be retried on next tick", config_id, i);
+				config_slots[i].is_sent = false; // Mark slot as not sent to trigger resend on next tick
+			}		
 		}
 	}
-	// if not exist, find a free slot and allocate it for the device
-	if (idx >= CONFIG_SLOT_COUNT) {
-		// allocate new slot
-		for (idx = 0; idx < CONFIG_SLOT_COUNT; idx++) {
-			if (!config_slots[idx].active) {
-				// Initialize the slot
-				config_slots[idx].active = true;
-				config_slots[idx].is_sent = false;
-				config_slots[idx].is_ready = false;
-				config_slots[idx].is_applied = false;
-				config_slots[idx].dst_device_id = device_id;
-				config_slots[idx].dst_device_type = device_type;
-				config_slots[idx].config_id = config_id;
-				config_slots[idx].config_len = config_len;
-				config_slots[idx].config_crc32 = config_crc32;
-				return idx;
-			}
-		}
-	}
-	return -1;
+	LOG_WRN("Downstream ack for config_id=%u but no matching sent slot", config_id);
+	return -ENOENT;
 }
 
-int validate_config_data(int idx, uint16_t config_id, const uint8_t *data)
+int validate_at_config(const slm_at_config_t *config, const uint8_t *data)
 {
-	int err = 0;
-
-	if (idx < 0 || idx >= CONFIG_SLOT_COUNT) {
-		LOG_WRN("Invalid config slot index %d", idx);
-		return -1;
+	if (config == NULL || data == NULL) {
+		return -EINVAL;
+	}
+	if (config->data_len == 0 || config->data_len > CONFIG_MAX_SIZE) {
+		return -EINVAL;
 	}
 
-	if (!config_slots[idx].active) {
-		LOG_WRN("Config slot %d is not active", idx);
-		return -1;
+	/* Find an existing slot for this device, otherwise allocate a fresh one. */
+	int idx = -1;
+	for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
+		if (config_slots[i].active &&
+		    config_slots[i].dst_device_id == config->device_id &&
+		    config_slots[i].dst_device_type == config->device_type) {
+			idx = i;
+			break;
+		}
+	}
+	if (idx < 0) {
+		idx = alloc_config_slot();
+		if (idx < 0) {
+			LOG_WRN("No free config slot for %s ID:%d",
+				device_type_str(config->device_type), config->device_id);
+			return -ENOMEM;
+		}
 	}
 
-	if (config_slots[idx].config_id != config_id) {
-		LOG_WRN("Config ID mismatch for slot %d (expected 0x%04X, got 0x%04X)", idx, config_slots[idx].config_id, config_id);
-		return -1;
-	}
+	config_slots[idx].active = true;
+	config_slots[idx].is_sent = false;
+	config_slots[idx].dst_device_id = config->device_id;
+	config_slots[idx].dst_device_type = config->device_type;
+	config_slots[idx].config_id = config->data_id;
+	config_slots[idx].config_len = config->data_len;
+	config_slots[idx].config_crc32 = config->data_crc32;
 
-	// Verify CRC of received bytes first (no PSRAM round-trip needed).
-	uint32_t calc_crc32 = crc32_ieee(data, config_slots[idx].config_len);
-	if (calc_crc32 != config_slots[idx].config_crc32) {
-		LOG_WRN("Config data CRC32 mismatch for slot %d (expected 0x%08X, got 0x%08X)", idx, config_slots[idx].config_crc32, calc_crc32);
-		config_slot_free(idx);
-		return -1;
-	}
-
-	// CRC OK — persist to PSRAM.
 	uint32_t addr = config_slot_psram_addr(idx);
-	err = psram_write(addr, data, config_slots[idx].config_len);
+	int err = psram_write(addr, data, config->data_len);
 	if (err) {
-		LOG_ERR("psram_write @0x%06x failed (%d), aborting config store for slot %d", addr, err, idx);
+		LOG_ERR("psram_write @0x%06x failed (%d), aborting AT config store", addr, err);
 		config_slot_free(idx);
-		return -1;
+		return -EIO;
 	}
 
-	config_slots[idx].is_ready = true;
-	config_slots[idx].is_sent = false; // Mark as not sent to trigger resend if needed
-	config_slots[idx].is_applied = false; // Mark as not applied
-	
-	return err;
+	return idx;
 }

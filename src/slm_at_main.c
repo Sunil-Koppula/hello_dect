@@ -46,21 +46,27 @@ LOG_MODULE_REGISTER(slm_at_main, CONFIG_MAIN_LOG_LEVEL);
 #include "psram.h"
 #include "protocol.h"
 
-typedef struct {
-    uint8_t data_type;
-    uint16_t data_id;
-    int  data_idx;
-    uint8_t page;
-    uint8_t chunk;
-} data_info_t;
-
-static data_info_t data_info;
-
 #define AT_DATA_PAYLOAD_MAX 450
 
 /* ---- Public response strings (extern'd from other modules if needed). ---- */
 const char AT_RESP_OK[]    = {"\r\nOK\r\n"};
 const char AT_RESP_ERROR[] = {"\r\nERROR\r\n"};
+
+typedef struct {
+    uint8_t data_type;
+    uint64_t sn;
+    uint16_t id;
+    uint8_t page;
+    uint8_t chunk;
+} at_pending_ack_t;
+
+static at_pending_ack_t pending_ack = {
+    .data_type = 0,
+    .sn = 0,
+    .id = 0,
+    .page = 0,
+    .chunk = 0,
+};
 
 /* ---- Local helpers ---------------------------------------------------- */
 
@@ -94,16 +100,6 @@ static const char *device_type_name(void)
     default:                  return "UNKNOWN";
     }
 }
-
-/* ---- Data init parsing (kept compatible with the old +DATAINIT format). */
-
-typedef struct {
-    uint64_t sn;
-    uint8_t  data_type;
-    uint16_t data_id;
-    uint16_t data_len;
-    uint32_t data_crc32;
-} data_init_info_t;
 
 static int hex_nibble(char c)
 {
@@ -158,110 +154,6 @@ static int field_hex_u64(const char *args, unsigned idx, uint64_t *out)
     return 0;
 }
 
-/* AT#DATAINIT="<SN>","<TYPE>","<ID>","<LEN>","<CRC>"  — all fields hex. */
-static int parse_data_init(const char *args, data_init_info_t *out)
-{
-    if (args == NULL || out == NULL) {
-        return -EINVAL;
-    }
-
-    uint64_t sn, dtype, did, dlen, crc;
-    if (field_hex_u64(args, 0, &sn)    != 0) return -EINVAL;
-    if (field_hex_u64(args, 1, &dtype) != 0) return -EINVAL;
-    if (field_hex_u64(args, 2, &did)   != 0) return -EINVAL;
-    if (field_hex_u64(args, 3, &dlen)  != 0) return -EINVAL;
-    if (field_hex_u64(args, 4, &crc)   != 0) return -EINVAL;
-
-    if (dtype > 0xFF || did > 0xFFFF || dlen > 0xFFFF || crc > 0xFFFFFFFF) {
-        return -EINVAL;
-    }
-
-    out->sn         = sn;
-    out->data_type  = (uint8_t)dtype;
-    out->data_id    = (uint16_t)did;
-    out->data_len   = (uint16_t)dlen;
-    out->data_crc32 = (uint32_t)crc;
-    return 0;
-}
-
-static int validate_data_info(const data_init_info_t *info)
-{
-    if (data_info.data_type != 0) {
-        LOG_WRN("Another data transfer in progress (type %u id %u), rejecting new one", data_info.data_type, data_info.data_id);
-        return -EBUSY;
-    }
-
-    switch (info->data_type) {
-        case DATA_TYPE_REPORT:
-        {
-            return 0;
-        }
-        break;
-
-        case DATA_TYPE_CONFIG:
-        {
-            if (info->data_len > MAX_CONFIG_SIZE && info->data_len != 0) {
-                return -EINVAL;
-            }
-            if (DEVICE_TYPE != DEVICE_TYPE_GATEWAY) {
-                return -EINVAL;
-            }
-
-            uint16_t idx = 0;
-            for (idx = 0; idx < mesh_count; idx++) {
-                if (mesh_devices[idx].serial_num == info->sn) {
-                    LOG_INF("Found device SN:%llu @ mesh[%d] %s ID:%d",
-                            info->sn, idx,
-                            device_type_str(mesh_devices[idx].device_type),
-                            mesh_devices[idx].device_id);
-                    break;
-                }
-                if (idx == mesh_count - 1) {
-                    LOG_INF("Device SN:%llu not in mesh", info->sn);
-                    return -EINVAL;
-                }
-            }
-
-            int err = validate_config_slot(mesh_devices[idx].device_id,
-                                        mesh_devices[idx].device_type,
-                                        info->data_id, info->data_len,
-                                        info->data_crc32);
-            if (err < 0) {
-                return -EINVAL;
-            }
-
-            // Store the info for the upcoming AT#DATA chunks to validate against and know where to route the config data when the slot is ready.
-            data_info.data_type = info->data_type;
-            data_info.data_id = info->data_id;
-            data_info.data_idx = err;
-            data_info.page = 0;
-            data_info.chunk = 0;
-
-            LOG_INF("Allocated config slot %d for %s ID:%d", err, device_type_str(mesh_devices[idx].device_type), mesh_devices[idx].device_id);
-            return 0;
-        }
-        break;
-
-        case DATA_TYPE_LARGE:
-        {
-            return 0;
-        }
-        break;
-
-        case DATA_TYPE_OTA:
-        {
-            return 0;
-        }
-        break;
-
-        default:
-        {
-            return -EINVAL;
-        }
-        break;
-    }
-}
-
 /* ---- Hex helper for the AT#DATA payload --------------------- */
 
 static int hex_decode(const char *hex, size_t hex_len, uint8_t *out, size_t out_max)
@@ -296,6 +188,7 @@ static void cmd_get_version(void)
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp), "#VERSION: %d", FIRMWARE_VERSION);
     at_send_line(resp);
+    at_ok();
 }
 
 static void cmd_get_devtype(void)
@@ -303,6 +196,11 @@ static void cmd_get_devtype(void)
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp), "#DEVTYPE: %s", device_type_name());
     at_send_line(resp);
+    if (DEVICE_TYPE > 3 || DEVICE_TYPE == 0) {
+        at_error();
+    } else {
+        at_ok();
+    }
 }
 
 static void cmd_get_devid(void)
@@ -310,6 +208,11 @@ static void cmd_get_devid(void)
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp), "#DEVID: %u", radio_get_device_id());
     at_send_line(resp);
+    if (radio_get_device_id() == 0xFFFF || radio_get_device_id() == 0) {
+        at_error();
+    } else {
+        at_ok();
+    }
 }
 
 static void cmd_get_sn(void)
@@ -319,6 +222,11 @@ static void cmd_get_sn(void)
     snprintf(resp, sizeof(resp), "#SN: 0x%08x%08x",
              (unsigned)(sn >> 32), (unsigned)(sn & 0xFFFFFFFF));
     at_send_line(resp);
+    if (SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) {
+        at_error();
+    } else {
+        at_ok();
+    }
 }
 
 static void cmd_get_hop(void)
@@ -326,6 +234,11 @@ static void cmd_get_hop(void)
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp), "#HOP: %u", DEVICE_HOP_NUMBER);
     at_send_line(resp);
+    if (DEVICE_HOP_NUMBER == 0xFF) {
+        at_error();
+    } else {
+        at_ok();
+    }
 }
 
 static void cmd_set_sn(const char *sn_str)
@@ -349,6 +262,7 @@ static void cmd_set_sn(const char *sn_str)
     snprintf(resp, sizeof(resp), "#SN: 0x%08x%08x",
              (unsigned)(sn >> 32), (unsigned)(sn & 0xFFFFFFFF));
     at_send_line(resp);
+    at_ok();
 }
 
 static void cmd_reboot(void)
@@ -358,180 +272,154 @@ static void cmd_reboot(void)
     sys_reboot(SYS_REBOOT_COLD);
 }
 
-static void cmd_get_data(void)
-{
-    if (data_info.data_type == 0) {
-        char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
-        snprintf(resp, sizeof(resp), "#DATAINFO: ""%u""", 0);
-        at_send_line(resp);
-    } else {
-        char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
-        snprintf(resp, sizeof(resp), "#DATAINFO: ""%u"",""%u"",""%d"",""%u"",""%u""",
-                 data_info.data_type, data_info.data_id, data_info.data_idx, data_info.page, data_info.chunk);
-        at_send_line(resp);
-    }
-}
-
-/* AT#DATAINIT="<SN>","<TYPE>","<ID>","<LEN>","<CRC>" */
-static void cmd_data_init(const char *args)
-{
-    data_init_info_t info;
-    char             resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
-
-    if (parse_data_init(args, &info) != 0) {
-        at_error();
-        return;
-    }
-    if (validate_data_info(&info) != 0) {
-        at_error();
-        return;
-    }
-
-    snprintf(resp, sizeof(resp),
-             "#DATAINIT: sn=%llu type=%u id=%u len=%u crc=0x%08lx",
-             (unsigned long long)info.sn,
-             info.data_type, info.data_id, info.data_len,
-             (unsigned long)info.data_crc32);
-    at_send_line(resp);
-}
-
-/* AT#DATA="<ID>","<PAGE>","<CHUNK>","<CRC>","<DATA>"
+/* AT#CONFIG="<SN>","<ID>","<LEN>","<CRC32>","<DATA>"  (gateway only)
  *
- * All fields are quoted hex strings:
- *   ID    : data id (must match the most recent AT#DATAINIT)
- *   PAGE  : page number
- *   CHUNK : chunk number within the page
- *   CRC   : CRC32-IEEE of the payload bytes
- *   DATA  : payload, hex-encoded, ≤ AT_DATA_PAYLOAD_MAX (450) bytes
+ * One-shot CONFIG push. All fields are uppercase hex strings:
+ *   SN    : 8-byte destination serial number
+ *   ID    : 2-byte data/config id
+ *   LEN   : 2-byte payload length (≤ MAX_CONFIG_SIZE = 128)
+ *   CRC32 : crc32_ieee of the binary payload
+ *   DATA  : payload hex, 2*LEN chars
  *
- * Radio still emits SEND_DATA_MAX (180 B) per radio chunk; the firmware
- * is expected to split each AT chunk into 1..N radio chunks when forwarding.
+ * Validates SN against the mesh table, allocates a config slot, verifies
+ * CRC, persists to PSRAM, and marks the slot ready. config_tick() then
+ * drives the actual radio TX.
  *
- * Chunking rules by data_type (set via AT#DATAINIT):
- *   CONFIG : exactly one chunk  → page=0, chunk=0
- *   REPORT : exactly one chunk  → page=0, chunk=0
- *   LARGE  : pages × 20 chunks  → page=0..N-1, chunk=0..19
- *
- * A CRC32 mismatch on the chunk payload returns ERROR so the host can retry
- * just that chunk.
+ * On success: '#CONFIG: sn=… id=… len=… crc=0x… slot=…' then OK.
+ * On any failure: ERROR.
  */
-static void cmd_data(const char *args)
+static void cmd_config(const char *args)
 {
-    /* Fields 0..3: id, page, chunk, crc (all quoted hex). */
-    uint64_t v_id, v_page, v_chunk, v_crc;
-    if (field_hex_u64(args, 0, &v_id)    != 0) { at_error(); return; }
-    if (field_hex_u64(args, 1, &v_page)  != 0) { at_error(); return; }
-    if (field_hex_u64(args, 2, &v_chunk) != 0) { at_error(); return; }
-    if (field_hex_u64(args, 3, &v_crc)   != 0) { at_error(); return; }
-
-    if (v_id > 0xFFFF || v_page > 0xFF || v_chunk > 0xFF || v_crc > 0xFFFFFFFF) {
+    if (DEVICE_TYPE != DEVICE_TYPE_GATEWAY) {
         at_error();
         return;
     }
-    uint16_t hdr_id    = (uint16_t)v_id;
-    uint8_t  hdr_page  = (uint8_t)v_page;
-    uint8_t  hdr_chunk = (uint8_t)v_chunk;
-    uint32_t hdr_crc32 = (uint32_t)v_crc;
+
+    /* Fields 0..3: sn, id, len, crc32 (all quoted hex). */
+    uint64_t v_sn, v_id, v_len, v_crc;
+    if (field_hex_u64(args, 0, &v_sn)  != 0) { at_error(); return; }
+    if (field_hex_u64(args, 1, &v_id)  != 0) { at_error(); return; }
+    if (field_hex_u64(args, 2, &v_len) != 0) { at_error(); return; }
+    if (field_hex_u64(args, 3, &v_crc) != 0) { at_error(); return; }
+
+    if (v_id > 0xFFFF || v_len == 0 || v_len > MAX_CONFIG_SIZE || v_crc > 0xFFFFFFFF) {
+        at_error();
+        return;
+    }
+
+    slm_at_config_t config = {
+        .data_id = (uint16_t)v_id,
+        .data_len = (uint8_t)v_len,
+        .data_crc32 = (uint32_t)v_crc,
+    };
+
+    uint64_t sn      = v_sn;
 
     /* Field 4: the payload hex. */
-    size_t      payload_chars;
-    const char *payload_hex = field_get(args, 4, &payload_chars);
-    if (payload_hex == NULL || payload_chars == 0 || (payload_chars % 2) != 0) {
-        at_error();
-        return;
-    }
-    if ((payload_chars / 2) > AT_DATA_PAYLOAD_MAX) {
+    size_t      hex_len;
+    const char *payload_hex = field_get(args, 4, &hex_len);
+    if (payload_hex == NULL || hex_len != (size_t)config.data_len * 2) {
         at_error();
         return;
     }
 
-    uint8_t payload[AT_DATA_PAYLOAD_MAX];
-    int     decoded = hex_decode(payload_hex, payload_chars,
-                                 payload, sizeof(payload));
-    if (decoded < 0) {
+    uint8_t payload[MAX_CONFIG_SIZE];
+    int     decoded = hex_decode(payload_hex, hex_len, payload, sizeof(payload));
+    if (decoded < 0 || decoded != config.data_len) {
         at_error();
         return;
     }
 
-    /* Verify CRC32 over the decoded payload. */
+    /* CRC32 over the payload must match. */
     uint32_t calc_crc32 = crc32_ieee(payload, (size_t)decoded);
-    if (calc_crc32 != hdr_crc32) {
-        LOG_WRN("AT#DATA id=%u page=%u chunk=%u CRC mismatch: got 0x%08x, calc 0x%08x", hdr_id, hdr_page, hdr_chunk, hdr_crc32, calc_crc32);
+    if (calc_crc32 != config.data_crc32) {
+        LOG_WRN("AT#CONFIG sn=0x%016llx id=%u CRC mismatch: got 0x%08x, calc 0x%08x",
+                (unsigned long long)sn, config.data_id, config.data_crc32, calc_crc32);
         at_error();
         return;
     }
 
-    /* Must have a prior AT#DATAINIT establishing the transfer context. */
-    if (data_info.data_type == 0) {
+    /* SN must be a known mesh device. */
+    uint16_t mesh_idx;
+    uint8_t hop_num;
+    bool     found = false;
+    for (mesh_idx = 0; mesh_idx < mesh_count; mesh_idx++) {
+        if (mesh_devices[mesh_idx].serial_num == sn) {
+            found = true;
+            break;
+        }
+    }
+    if (found) {
+        hop_num = get_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
+        if (hop_num == 0xFF) {
+            found = false;
+            LOG_WRN("AT#CONFIG: SN 0x%016llx in mesh but no route found", (unsigned long long)sn);
+        }
+    }
+    if (!found) {
+        LOG_WRN("AT#CONFIG: SN 0x%016llx not in mesh", (unsigned long long)sn);
         at_error();
         return;
     }
-    if (hdr_id != data_info.data_id) {
+
+    config.device_id = mesh_devices[mesh_idx].device_id;
+    config.device_type = mesh_devices[mesh_idx].device_type;
+
+    /* Allocate / reuse a slot, persist to PSRAM. */
+    int err = validate_at_config(&config, payload);
+    if (err < 0) {
         at_error();
         return;
     }
 
-    /* Per-type chunk layout checks. */
-    switch (data_info.data_type) {
-        case DATA_TYPE_REPORT:
-        {
-            if (hdr_page != 0 || hdr_chunk != 0) {
-                at_error();
-                return;
-            }
-        }
-        break;
-
-        case DATA_TYPE_CONFIG:
-        {
-            if (hdr_page != 0 || hdr_chunk != 0) {
-                at_error();
-                return;
-            }
-
-            if(validate_config_data(data_info.data_idx, data_info.data_id, payload) != 0) {
-                at_error();
-                return;
-            }
-
-            // Reset the data_info to be ready for the next config transfer
-            data_info.data_type = 0;
-            data_info.data_id = 0;
-            data_info.data_idx = -1;
-            data_info.page = 0;
-            data_info.chunk = 0;
-        }
-        break;
-        
-        case DATA_TYPE_LARGE:
-        {
-            at_error();
-            return;
-            // Implement later
-        }
-        break;
-
-        case DATA_TYPE_OTA:
-        {
-            at_error();
-            return;
-            // Implement later
-        }
-
-        default:
-        {
-            at_error();
-            return;
-        }
-        break;
-    }
-
-    LOG_INF("AT#DATA id=%u page=%u chunk=%u len=%d",
-            hdr_id, hdr_page, hdr_chunk, decoded);
+    LOG_INF("AT#CONFIG accepted: sn=0x%016llx %s ID:%d cfg_id=%u len=%u",
+            (unsigned long long)sn,
+            device_type_str(config.device_type),
+            config.device_id, config.data_id, config.data_len);
 
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
-    snprintf(resp, sizeof(resp), "#DATA: id=%u page=%u chunk=%u len=%d", hdr_id, hdr_page, hdr_chunk, decoded);
+    snprintf(resp, sizeof(resp),
+        "#CONFIG: sn=0x%016llx id=%u len=%u crc=0x%08lx",
+        (unsigned long long)sn, config.data_id, config.data_len,
+        (unsigned long)config.data_crc32);
     at_send_line(resp);
+    at_ok();
+}
+
+static void cmd_config_ack(const char *args)
+{
+    uint64_t v_sn, v_id;
+    if (field_hex_u64(args, 0, &v_sn) != 0) {
+        LOG_WRN("AT#CONFIG_ACK missing or invalid SN field");
+        return;
+    }
+    if (field_hex_u64(args, 1, &v_id) != 0) {
+        LOG_WRN("AT#CONFIG_ACK missing or invalid ID field");
+        return;
+    }
+
+    if (v_id > 0xFFFF) {
+        LOG_WRN("AT#CONFIG_ACK invalid ID value %lu", (unsigned long)v_id);
+        return;
+    }
+
+    /* The SN field in the downstream ack must match THIS sensor's SN —
+     * that's the SN we put in the outgoing AT#CONFIG. Mismatched acks
+     * mean the downstream is misbehaving or a stale message slipped in;
+     * drop without touching pending_ack so we don't free the wrong slot. */
+    if (v_sn != SERIAL_NUMBER) {
+        LOG_WRN("AT#CONFIG_ACK SN mismatch: got 0x%016llx, expected 0x%016llx", (unsigned long long)v_sn, (unsigned long long)SERIAL_NUMBER);
+        return;
+    }
+
+    pending_ack.data_type = DATA_TYPE_CONFIG;
+    pending_ack.sn = v_sn;
+    pending_ack.id = (uint16_t)v_id;
+    pending_ack.page = 0;
+    pending_ack.chunk = 0;
+
+    LOG_INF("Received AT#CONFIG_ACK for SN 0x%016llx ID %u",
+            (unsigned long long)v_sn, (unsigned)v_id);
 }
 
 /* ---- Dispatch ------------------------------------------------------- */
@@ -539,6 +427,81 @@ static void cmd_data(const char *args)
 /* Flat strstr() chain — no dispatch table, matching the h745 codebase. */
 static void dispatch(char *line)
 {
+    if (strcmp(line, "OK") == 0) {
+        switch (pending_ack.data_type) {
+            case DATA_TYPE_CONFIG:
+                (void)config_slot_release_by_id(pending_ack.id, true);
+                break;
+
+            default:
+                LOG_WRN("Received OK for unknown pending ack type %u", pending_ack.data_type);
+                break;
+        }
+        /* Consume the pending ack so a later spurious OK doesn't re-fire. */
+        pending_ack.data_type = 0;
+        return;
+    }
+    if (strcmp(line, "ERROR") == 0) {
+        switch (pending_ack.data_type) {
+            case DATA_TYPE_CONFIG:
+                (void)config_slot_release_by_id(pending_ack.id, false);
+                break;
+
+            default:
+                LOG_WRN("Received ERROR for unknown pending ack type %u", pending_ack.data_type);
+                break;
+        }
+        pending_ack.data_type = 0;
+        return;
+    }
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            if (strstr(line, "AT#CONFIG") != NULL) {
+                char *p = strstr(line, "AT#CONFIG") + strlen("AT#CONFIG");
+                cmd_config(p);
+                return;
+            } else if (strstr(line, "AT#OTA") != NULL) {
+                // Implement later
+                at_ok();
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            if (strstr(line, "AT#REPORT") != NULL) {
+                // Implement later
+                at_ok();
+                return;
+            } else if (strstr(line, "AT#LD") != NULL) {
+                // Implement later
+                at_ok();
+                return;
+            } else if (strstr(line, "#CONFIG") != NULL) {
+                char *p = strstr(line, "#CONFIG");
+                cmd_config_ack(p);
+                return;
+            }
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any AT command if this device has invalid type
+            at_error();
+            return;
+        }
+    }
+
     /* h745 commands are case-sensitive; we accept exactly that. */
     if (strstr(line, "AT#VERSION?") != NULL) {
         cmd_get_version();
@@ -555,14 +518,6 @@ static void dispatch(char *line)
         cmd_set_sn(p);
     } else if (strstr(line, "AT#REBOOT") != NULL) {
         cmd_reboot();
-    } else if (strstr(line, "AT#DATA?") != NULL) {
-        cmd_get_data();
-    } else if (strstr(line, "AT#DATAINIT") != NULL) {
-        char *p = strstr(line, "AT#DATAINIT") + strlen("AT#DATAINIT");
-        cmd_data_init(p);
-    } else if (strstr(line, "AT#DATA") != NULL) {
-        char *p = strstr(line, "AT#DATA") + strlen("AT#DATA");
-        cmd_data(p);
     } else if (strstr(line, "AT") != NULL) {
         /* Plain "AT" — must come last because it matches any AT command. */
         /* Make sure no '+' / '#' follows the AT, otherwise it's an unknown
@@ -583,18 +538,12 @@ static void dispatch(char *line)
 
 int slm_at_init(void)
 {
-    data_info.data_type = 0;
-    data_info.data_id = 0;
-    data_info.data_idx = -1;
-    data_info.page = 0;
-    data_info.chunk = 0;
-
     return slm_at_uart_init();
 }
 
 void slm_at_run_cycle(void)
 {
-    char line[SLM_UART_AT_COMMAND_LEN];
+    char buf[SLM_UART_AT_COMMAND_LEN];
 
     /* Non-blocking peek: if no message is ready, return immediately so the
      * outer state machine can do other work. */
@@ -602,6 +551,32 @@ void slm_at_run_cycle(void)
         return;
     }
 
-    slm_at_get_message_copy(line);
-    dispatch(line);
+    slm_at_get_message_copy(buf);
+
+    /* The UART consumer merges everything queued in the ring buffer into one
+     * NUL-terminated chunk, so a single message may contain multiple lines
+     * (e.g. a downstream peer replying '#CONFIG: ...\r\nOK\r\n'). Split on
+     * CR/LF and dispatch each non-empty line in order. */
+    char *p = buf;
+    while (*p) {
+        /* Skip leading CR/LF separators. */
+        while (*p == '\r' || *p == '\n') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        /* Find the end of this line. */
+        char *end = p;
+        while (*end != '\0' && *end != '\r' && *end != '\n') {
+            end++;
+        }
+        /* NUL-terminate this line so dispatch() sees just it. */
+        char saved = *end;
+        *end = '\0';
+        dispatch(p);
+        /* Restore (not strictly needed, but keeps buf re-walkable). */
+        *end = saved;
+        p = (saved == '\0') ? end : end + 1;
+    }
 }
