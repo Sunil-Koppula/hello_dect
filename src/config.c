@@ -25,7 +25,7 @@ struct config_slot config_slots[CONFIG_SLOT_COUNT];
 
 static uint32_t config_slot_psram_addr(int idx)
 {
-	return CONFIG_PSRAM_BASE + ((uint32_t)idx * CONFIG_MAX_SIZE);
+	return PSRAM_CONFIG_BASE + ((uint32_t)idx * MAX_CONFIG_SIZE);
 }
 
 static int find_config_slot(uint16_t dst_device_id, int *idx_out)
@@ -171,7 +171,7 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		.dst_device_type = pkt->dst_device_type,
 	};
 
-	if (pkt->config_len == 0 || pkt->config_len > CONFIG_MAX_SIZE) {
+	if (pkt->config_len == 0 || pkt->config_len > MAX_CONFIG_SIZE) {
 		LOG_WRN("CONFIG rejected: invalid config_len %d", pkt->config_len);
 		ack.hdr.status = STATUS_INVALID_PARAMETER;
 		send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
@@ -292,7 +292,7 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 							.config_len = config_slots[idx].config_len,
 							.config_crc32 = config_slots[idx].config_crc32,
 						};
-						uint32_t addr = CONFIG_PSRAM_BASE + ((uint32_t)idx * CONFIG_MAX_SIZE);
+						uint32_t addr = PSRAM_CONFIG_BASE + ((uint32_t)idx * MAX_CONFIG_SIZE);
 						int err = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
 						if (err) {
 							LOG_ERR("psram_read @0x%06x failed (%d), cannot resend config", addr, err);
@@ -462,8 +462,8 @@ int config_init(void)
     }
 
     LOG_INF("Config Module Initialized with %d slots (slot size=%d) at PSRAM 0x%06x-0x%06x",
-        CONFIG_SLOT_COUNT, CONFIG_MAX_SIZE,
-        CONFIG_PSRAM_BASE, CONFIG_PSRAM_BASE + CONFIG_PSRAM_SIZE - 1);
+        CONFIG_SLOT_COUNT, MAX_CONFIG_SIZE,
+        PSRAM_CONFIG_BASE, PSRAM_CONFIG_BASE + CONFIG_PSRAM_SIZE - 1);
 
     return 0;
 }
@@ -524,7 +524,7 @@ void config_tick(void)
 				LOG_INF("Applying config from slot %d (config_id=%u len=%u)", i, config_slots[i].config_id, config_slots[i].config_len);
 
 				/* Read the binary payload back from PSRAM. */
-				uint8_t payload[CONFIG_MAX_SIZE];
+				uint8_t payload[MAX_CONFIG_SIZE];
 				uint32_t addr = config_slot_psram_addr(i);
 				int err = psram_read(addr, payload, config_slots[i].config_len);
 				if (err) {
@@ -608,7 +608,7 @@ int validate_at_config(const slm_at_config_t *config, const uint8_t *data)
 	if (config == NULL || data == NULL) {
 		return -EINVAL;
 	}
-	if (config->data_len == 0 || config->data_len > CONFIG_MAX_SIZE) {
+	if (config->data_len == 0 || config->data_len > MAX_CONFIG_SIZE) {
 		return -EINVAL;
 	}
 

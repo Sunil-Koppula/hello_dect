@@ -22,13 +22,6 @@ typedef enum
 #define PACKET_TIMEOUT_MS     500
 #define PACKET_MAX_RETRIES    5
 
-/* Gateway main loop (RX → process → TX, runs forever). */
-void gateway_main(void);
-
-/* Anchor main loop (RX → process → TX, runs forever). */
-void anchor_main(void);
-
-/* Sensor main loop. */
-void sensor_main(void);
+void main_sub_run(void);
 
 #endif /* MAIN_SUB_H */

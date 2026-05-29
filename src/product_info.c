@@ -244,6 +244,10 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 
 void known_devices_tick(void)
 {
+	if (DEVICE_TYPE != DEVICE_TYPE_GATEWAY) {
+		return;
+	}
+	
 	uint64_t now = k_uptime_get();
 
 	for (int i = 0; i < infra_count; i++) {

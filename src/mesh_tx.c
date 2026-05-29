@@ -414,7 +414,9 @@ int send_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, uint8_t ds
 void mesh_time_init(void)
 {
     /* Gateway-only: anchor mesh_time at 0 for the moment of startup. */
-    mesh_time_offset = -k_uptime_get();
+    if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
+        mesh_time_offset = -k_uptime_get();
+    }
 }
 
 uint64_t mesh_time_get(void)

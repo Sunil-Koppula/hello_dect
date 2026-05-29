@@ -15,6 +15,11 @@
 #include "main_sub.h"
 #include "psram.h"
 #include "slm_at_main.h"
+#include "config.h"
+#include "data.h"
+#include "large_data.h"
+#include "mesh.h"
+#include "tracker.h"
 #include "testing/buttons.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
@@ -101,20 +106,27 @@ int main(void)
 
 	/* Testing Purpose Only*/
 	buttons_init();
+	SERIAL_NUMBER = ((uint64_t)radio_get_device_id() << 40) | 0x00DEADBEEFULL;
 
-	switch (DEVICE_TYPE) {
-	case DEVICE_TYPE_GATEWAY:
-		gateway_main();
-		break;
-	case DEVICE_TYPE_ANCHOR:
-		anchor_main();
-		break;
-	case DEVICE_TYPE_SENSOR:
-		sensor_main();
-		break;
-	default:
-		LOG_ERR("Unable to detect device type");
-		break;
+	while (1) {
+		// Main Sub State Machine
+		main_sub_run();
+		// SLM AT Command Processor
+		slm_at_run_cycle();
+		// Mesh Processor
+		mesh_tick();
+		// Tracker Processor
+		tracker_tick(tracker_default_expired_cb);
+		// Config Processor
+		config_tick();
+		// Report/Data Processor
+		data_tick();
+		// Large Data Processor
+		large_data_tick();
+		// Implement OTA later
+		// ota_tick();
+		// PIng known devices
+		known_devices_tick();
 	}
 
 	return 0;

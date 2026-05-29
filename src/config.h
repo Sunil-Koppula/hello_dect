@@ -9,19 +9,19 @@
 #include "timeout.h"
 #include "slm_at_main.h"
 
-#define CONFIG_PSRAM_BASE        PSRAM_CONFIG_BASE
-#define CONFIG_SLOT_COUNT        512
-#define CONFIG_MAX_SIZE          (128 + 32) /* config data max size (128 bytes) + CRC */
-#define CONFIG_PSRAM_SIZE        (CONFIG_SLOT_COUNT * CONFIG_MAX_SIZE)
+#define CONFIG_SLOT_COUNT        MAX_DEVICES
+#define CONFIG_PSRAM_SIZE        (CONFIG_SLOT_COUNT * MAX_CONFIG_SIZE)
 
 struct config_slot {
 	bool active;
 	bool is_sent;
+	bool is_applied;
 	uint16_t dst_device_id;
 	uint8_t dst_device_type;
 	uint16_t config_id;
 	uint8_t config_len;
 	uint32_t config_crc32;
+	struct nbtimeout timeout;
 };
 
 extern struct config_slot config_slots[CONFIG_SLOT_COUNT];

@@ -11,14 +11,12 @@ project(hello_dect)
 
 target_sources(app PRIVATE
   src/main.c
+  src/main_sub.c
   src/radio.c
   src/queue.c
   src/product_info.c
   src/mesh.c
   src/mesh_tx.c
-  src/sensor.c
-  src/gateway.c
-  src/anchor.c
   src/timeout.c
   src/tracker.c
   src/psram.c

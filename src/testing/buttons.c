@@ -152,7 +152,7 @@ static uint32_t slot_psram_addr(int idx)
 
 static uint32_t config_slot_psram_addr(int idx)
 {
-	return CONFIG_PSRAM_BASE + ((uint32_t)idx * CONFIG_MAX_SIZE);
+	return PSRAM_CONFIG_BASE + ((uint32_t)idx * MAX_CONFIG_SIZE);
 }
 
 int button_register_handler(int idx, button_handler_t handler)

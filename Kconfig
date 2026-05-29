@@ -52,23 +52,11 @@ config MAIN_LOG_LEVEL
 	help
 	   Choose the log level for the main module.
 
-config GATEWAY_LOG_LEVEL
-	int "Gateway log level"
+config MAIN_SUB_LOG_LEVEL
+	int "Main Sub log level"
 	default 4
 	help
-	   Choose the log level for the gateway module.
-
-config ANCHOR_LOG_LEVEL
-	int "Anchor log level"
-	default 4
-	help
-	   Choose the log level for the anchor module.
-
-config SENSOR_LOG_LEVEL
-	int "Sensor log level"
-	default 4
-	help
-	   Choose the log level for the sensor module.
+	   Choose the log level for the main sub module.
 
 config RADIO_LOG_LEVEL
 	int "Radio log level"

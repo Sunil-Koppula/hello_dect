@@ -519,9 +519,6 @@ static void dispatch(char *line)
     } else if (strstr(line, "AT#REBOOT") != NULL) {
         cmd_reboot();
     } else if (strstr(line, "AT") != NULL) {
-        /* Plain "AT" — must come last because it matches any AT command. */
-        /* Make sure no '+' / '#' follows the AT, otherwise it's an unknown
-         * command, not a bare AT. */
         char *at = strstr(line, "AT");
         char  next = at[2];
         if (next == '\r' || next == '\n' || next == '\0') {

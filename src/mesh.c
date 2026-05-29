@@ -272,13 +272,13 @@ static config_t build_config_pkt(const route_info_t *pkt)
     }
 
     int idx = pkt->data_id;
-    uint32_t addr = CONFIG_PSRAM_BASE + ((uint32_t)idx * CONFIG_MAX_SIZE);
+    uint32_t addr = PSRAM_CONFIG_BASE + ((uint32_t)idx * MAX_CONFIG_SIZE);
 
     config_t config_pkt = {
         .dst_device_id = pkt->device_id,
         .dst_device_type = pkt->device_type,
         .data_type = pkt->data_type,
-        .data_id = pkt->data_id,
+        .data_id = config_slots[idx].config_id,
         .config_len = config_slots[idx].config_len,
         .config_crc32 = config_slots[idx].config_crc32,
     };
@@ -1693,6 +1693,11 @@ void handle_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, int16_t
 
 void mesh_tick(void)
 {
+    if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
+        // Gateway does not need to collect candidates and select anchors, just return here
+        return;
+    }
+    
     if (process_next_request && resp_candidate_idx > 0) {
         process_next_request = false;
         select_and_confirm(resp_candidate_count - resp_candidate_idx);
