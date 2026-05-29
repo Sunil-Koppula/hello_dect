@@ -221,7 +221,7 @@ static void default_button1_handler(void)
 			written += n;
 		}
 
-		data_init_t init_pkt = {
+		report_init_t init_pkt = {
 			.gen_device_id = sender.gen_device_id,
 			.data_id = sender.data_id,
 			.total_size = sender.total_size,
@@ -229,7 +229,7 @@ static void default_button1_handler(void)
 			.last_chunk_size = sender.last_chunk_size,
 			.crc32 = sender.crc32,
 		};
-		send_data_init(&init_pkt, sender.dst_id, entry.device_type, sender.priority);
+		send_report_init(&init_pkt, sender.dst_id, entry.device_type, sender.priority);
 	}
 }
 

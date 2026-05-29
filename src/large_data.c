@@ -289,7 +289,7 @@ int send_large_data_chunk_ack(large_data_chunk_ack_t *pkt, uint16_t dst_id, uint
     return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
-int send_large_data_received(large_data_receive_t *pkt, uint16_t dst_id, uint8_t dst_type)
+int send_large_data_received(large_data_received_t *pkt, uint16_t dst_id, uint8_t dst_type)
 {
     pkt->hdr.packet_type = PACKET_LARGE_DATA_RECEIVED;
     pkt->hdr.device_type = DEVICE_TYPE;
@@ -298,6 +298,18 @@ int send_large_data_received(large_data_receive_t *pkt, uint16_t dst_id, uint8_t
     pkt->hdr.device_id = dst_id;
 
     LOG_INF("----> Sending LARGE_DATA_RECEIVED to device %s ID:%d for DATA ID:%d", device_type_str(dst_type), dst_id, pkt->data_id);
+    return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+int send_large_data_received_ack(large_data_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
+{
+    pkt->hdr.packet_type = PACKET_LARGE_DATA_RECEIVED_ACK;
+    pkt->hdr.device_type = DEVICE_TYPE;
+    pkt->hdr.priority = priority;
+    pkt->hdr.tracking_id = tracking_id;
+    pkt->hdr.device_id = dst_id;
+
+    LOG_INF("----> Sending LARGE_DATA_RECEIVED_ACK to device %s ID:%d for DATA ID:%d", device_type_str(dst_type), dst_id, pkt->data_id);
     return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -407,7 +419,7 @@ void handle_large_data_init_ack(const large_data_init_ack_t *pkt, uint16_t dst_i
                     ld_sender.active = false;
                     free_large_data_slot(find_large_data_slot(ld_sender.gen_device_id, ld_sender.data_id));
 
-                    large_data_receive_t recv_pkt = {
+                    large_data_received_t recv_pkt = {
                         .gen_device_id = pkt->gen_device_id,
                         .data_id = pkt->data_id,
                     };
@@ -496,7 +508,7 @@ void handle_large_data_chunk(const large_data_chunk_t *pkt, uint16_t dst_id, int
     if (idx >= 0 && slots[idx].upstream_ready && DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
         // Notify Sensor large data received
         LOG_ERR("Need to Send Large Data Received Packet to Sensor for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
-        large_data_receive_t recv_pkt = {
+        large_data_received_t recv_pkt = {
             .gen_device_id = pkt->gen_device_id,
             .data_id = pkt->data_id,
         };
@@ -608,7 +620,7 @@ void handle_large_data_chunk_ack(const large_data_chunk_ack_t *pkt, uint16_t dst
     return;
 }
 
-void handle_large_data_received(const large_data_receive_t *pkt, uint16_t dst_id, int16_t rssi_2)
+void handle_large_data_received(const large_data_received_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
     if (pkt->hdr.device_id != radio_get_device_id()) {
@@ -634,7 +646,7 @@ void handle_large_data_received(const large_data_receive_t *pkt, uint16_t dst_id
         case DEVICE_TYPE_ANCHOR:
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-                large_data_receive_t recv_pkt = {
+                large_data_received_t recv_pkt = {
                     .gen_device_id = pkt->gen_device_id,
                     .data_id = pkt->data_id,
                 };

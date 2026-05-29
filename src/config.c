@@ -148,6 +148,18 @@ int send_config_received(config_received_t *pkt, uint16_t dst_id, uint8_t dst_ty
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
+int send_config_received_ack(config_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
+{
+	pkt->hdr.packet_type = PACKET_CONFIG_RECEIVED_ACK;
+	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.priority = priority;
+	pkt->hdr.tracking_id = tracking_id;
+	pkt->hdr.device_id = dst_id;
+
+	LOG_INF_GRN("----> Sending CONFIG_RECEIVED_ACK to device %s ID:%d", device_type_str(dst_type), dst_id);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------------**** Handlers Functions ****--------------------------------------------------------------------------- */
 

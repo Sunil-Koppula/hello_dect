@@ -49,12 +49,12 @@ typedef enum {
 	PACKET_ROUTE_DISCOVERY_ACK		= 0x0E,
 	PACKET_ROUTE_INFO				= 0x0F,
 	PACKET_ROUTE_INFO_ACK			= 0x10,
-	PACKET_DATA_INIT				= 0x11,
-	PACKET_DATA_INIT_ACK			= 0x12,
-	PACKET_DATA_CHUNK				= 0x13,
-	PACKET_DATA_CHUNK_ACK			= 0x14,
-	PACKET_DATA_RECEIVED			= 0x15,
-	PACKET_DATA_RECEIVED_ACK		= 0x16,
+	PACKET_REPORT_INIT				= 0x11,
+	PACKET_REPORT_INIT_ACK			= 0x12,
+	PACKET_REPORT_CHUNK				= 0x13,
+	PACKET_REPORT_CHUNK_ACK			= 0x14,
+	PACKET_REPORT_RECEIVED			= 0x15,
+	PACKET_REPORT_RECEIVED_ACK		= 0x16,
 	PACKET_CONFIG					= 0x17,
 	PACKET_CONFIG_ACK				= 0x18,
 	PACKET_CONFIG_RECEIVED			= 0x19,
@@ -289,7 +289,7 @@ typedef struct {
 
 #define SEND_DATA_MAX 180 /* Max data size per chunk: keeps data_chunk_t (190 B with 10 B header overhead) within 14 DECT subslots @ MCS 2 with margin. */
 
-/* DATA INIT Packet */
+/* REPORT INIT Packet */
 typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
@@ -298,48 +298,57 @@ typedef struct {
 	uint8_t chunk_count;			/* total number of chunks that will be sent */
 	uint8_t last_chunk_size;		/* size of the last chunk (since it may be smaller than the others) */
 	uint32_t crc32;					/* CRC32 of the entire data for integrity checking */
-} __attribute__((packed)) data_init_t;
+} __attribute__((packed)) report_init_t;
 
-#define DATA_INIT_PACKET_SIZE sizeof(data_init_t)
+#define REPORT_INIT_PACKET_SIZE sizeof(report_init_t)
 
-/* DATA INIT ACK Packet */
+/* REPORT INIT ACK Packet */
 typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
 	uint8_t data_id;				/* ID of the data being acknowledged */
-} __attribute__((packed)) data_init_ack_t;
+} __attribute__((packed)) report_init_ack_t;
 
-#define DATA_INIT_ACK_PACKET_SIZE sizeof(data_init_ack_t)
+#define REPORT_INIT_ACK_PACKET_SIZE sizeof(report_init_ack_t)
 
-/* DATA CHUNK Packet */
+/* REPORT CHUNK Packet */
 typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
 	uint8_t data_id;				/* ID of the data being sent (for the sender's reference, e.g. to match with ACKs) */
 	uint8_t chunk_index;			/* index of this chunk (starting from 0) */
 	uint8_t data[SEND_DATA_MAX];	/* chunk data */
-} __attribute__((packed)) data_chunk_t;
+} __attribute__((packed)) report_chunk_t;
 
-#define DATA_CHUNK_PACKET_SIZE sizeof(data_chunk_t)
+#define REPORT_CHUNK_PACKET_SIZE sizeof(report_chunk_t)
 
-/* DATA CHUNK ACK Packet */
+/* REPORT CHUNK ACK Packet */
 typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
 	uint8_t data_id;				/* ID of the data being acknowledged */
 	uint8_t chunk_index;			/* index of the chunk being acknowledged */
-} __attribute__((packed)) data_chunk_ack_t;
+} __attribute__((packed)) report_chunk_ack_t;
 
-#define DATA_CHUNK_ACK_PACKET_SIZE sizeof(data_chunk_ack_t)
+#define REPORT_CHUNK_ACK_PACKET_SIZE sizeof(report_chunk_ack_t)
 
-/* DATA RECEIVED Packet */
+/* REPORT RECEIVED Packet */
 typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
 	uint8_t data_id;				/* ID of the data being received */
-} __attribute__((packed)) data_receive_t;
+} __attribute__((packed)) report_received_t;
 
-#define DATA_RECEIVE_PACKET_SIZE sizeof(data_receive_t)
+#define REPORT_RECEIVED_PACKET_SIZE sizeof(report_received_t)
+
+/* REPORT RECEIVED ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t data_id;				/* ID of the data being acknowledged */
+} __attribute__((packed)) report_received_ack_t;
+
+#define REPORT_RECEIVED_ACK_PACKET_SIZE sizeof(report_received_ack_t)
 
 /* LARGE DATA INIT Packet */
 typedef struct {
@@ -389,9 +398,18 @@ typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
 	uint8_t data_id;				/* ID of the data being received */
-} __attribute__((packed)) large_data_receive_t;
+} __attribute__((packed)) large_data_received_t;
 
-#define LARGE_DATA_RECEIVE_PACKET_SIZE sizeof(large_data_receive_t)
+#define LARGE_DATA_RECEIVED_PACKET_SIZE sizeof(large_data_received_t)
+
+/* LARGE DATA RECEIVED ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t data_id;				/* ID of the data being acknowledged */
+} __attribute__((packed)) large_data_received_ack_t;
+
+#define LARGE_DATA_RECEIVED_ACK_PACKET_SIZE sizeof(large_data_received_ack_t)
 
 #define MAX_CONFIG_SIZE 128
 
@@ -429,6 +447,17 @@ typedef struct {
 } __attribute__((packed)) config_received_t;
 
 #define CONFIG_RECEIVED_PACKET_SIZE sizeof(config_received_t)
+
+/* CONFIG RECEIVED ACK Packet */
+typedef struct {
+	packet_header_t hdr;
+	uint16_t dst_device_id;			/* short device ID of the device being configured */
+	uint8_t dst_device_type;		/* device_type_t of the device being configured */
+	uint8_t data_type;				/* data_type_t of the config data */
+	uint16_t data_id;				/* ID of the config data */
+} __attribute__((packed)) config_received_ack_t;
+
+#define CONFIG_RECEIVED_ACK_PACKET_SIZE sizeof(config_received_ack_t)
 
 /* Get device type as string */
 static inline const char *device_type_str(device_type_t type)

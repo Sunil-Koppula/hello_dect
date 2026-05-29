@@ -46,13 +46,14 @@ int send_large_data_init(large_data_init_t *pkt, uint16_t dst_id, uint8_t dst_ty
 int send_large_data_init_ack(large_data_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
 int send_large_data_chunk(large_data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
 int send_large_data_chunk_ack(large_data_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
-int send_large_data_received(large_data_receive_t *pkt, uint16_t dst_id, uint8_t dst_type);
+int send_large_data_received(large_data_received_t *pkt, uint16_t dst_id, uint8_t dst_type);
+int send_large_data_received_ack(large_data_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
 
 /* RX handlers — wire into each device's RX dispatch switch. */
 void handle_large_data_init(const large_data_init_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_large_data_init_ack(const large_data_init_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_large_data_chunk(const large_data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_large_data_chunk_ack(const large_data_chunk_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
-void handle_large_data_received(const large_data_receive_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_large_data_received(const large_data_received_t *pkt, uint16_t dst_id, int16_t rssi_2);
 
 #endif /* LARGE_DATA_H */

@@ -35,17 +35,19 @@ int data_init(void);
 void data_tick(void);
 
 /* TX helpers */
-int send_data_init(data_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
-int send_data_init_ack(data_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
-int send_data_chunk(data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
-int send_data_chunk_ack(data_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
-int send_data_received(data_receive_t *pkt, uint16_t dst_id, uint8_t dst_type);
+int send_report_init(report_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
+int send_report_init_ack(report_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
+int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
+int send_report_chunk_ack(report_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
+int send_report_received(report_received_t *pkt, uint16_t dst_id, uint8_t dst_type);
+int send_report_received_ack(report_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
 
 /* RX handlers — wire into each device's RX dispatch switch. */
-void handle_data_init(const data_init_t *pkt, uint16_t dst_id, int16_t rssi_2);
-void handle_data_init_ack(const data_init_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
-void handle_data_chunk(const data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2);
-void handle_data_chunk_ack(const data_chunk_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
-void handle_data_received(const data_receive_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_report_init(const report_init_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_report_received_ack(const report_received_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 
 #endif /* DATA_H */

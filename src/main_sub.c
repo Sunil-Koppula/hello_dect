@@ -150,28 +150,28 @@ static void process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 			handle_route_info_ack((const route_info_ack_t *)data, sender_id, rssi_2);
 			break;
 
-		case PACKET_DATA_INIT:
-			handle_data_init((const data_init_t *)data, sender_id, rssi_2);
+		case PACKET_REPORT_INIT:
+			handle_report_init((const report_init_t *)data, sender_id, rssi_2);
 			break;
 
-		case PACKET_DATA_INIT_ACK:
-			handle_data_init_ack((const data_init_ack_t *)data, sender_id, rssi_2);
+		case PACKET_REPORT_INIT_ACK:
+			handle_report_init_ack((const report_init_ack_t *)data, sender_id, rssi_2);
 			break;
 
-		case PACKET_DATA_CHUNK:
-			handle_data_chunk((const data_chunk_t *)data, sender_id, rssi_2);
+		case PACKET_REPORT_CHUNK:
+			handle_report_chunk((const report_chunk_t *)data, sender_id, rssi_2);
 			break;
 
-		case PACKET_DATA_CHUNK_ACK:
-			handle_data_chunk_ack((const data_chunk_ack_t *)data, sender_id, rssi_2);
+		case PACKET_REPORT_CHUNK_ACK:
+			handle_report_chunk_ack((const report_chunk_ack_t *)data, sender_id, rssi_2);
 			break;
 
-		case PACKET_DATA_RECEIVED:
-			handle_data_received((const data_receive_t *)data, sender_id, rssi_2);
+		case PACKET_REPORT_RECEIVED:
+			handle_report_received((const report_received_t *)data, sender_id, rssi_2);
 			break;
 
-        case PACKET_DATA_RECEIVED_ACK:
-            // handle_data_received_ack((const data_received_ack_t *)data, sender_id, rssi_2);
+        case PACKET_REPORT_RECEIVED_ACK:
+            // handle_report_received_ack((const report_received_ack_t *)data, sender_id, rssi_2);
             break;
 		
 		case PACKET_CONFIG:
@@ -207,7 +207,7 @@ static void process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 			break;
 
 		case PACKET_LARGE_DATA_RECEIVED:
-			handle_large_data_received((const large_data_receive_t *)data, sender_id, rssi_2);
+			handle_large_data_received((const large_data_received_t *)data, sender_id, rssi_2);
 			break;
 
         case PACKET_LARGE_DATA_RECEIVED_ACK:

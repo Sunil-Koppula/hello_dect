@@ -42,10 +42,12 @@ int config_slot_release_by_id(uint16_t config_id, bool is_success);
 int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
 int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
 int send_config_received(config_received_t *pkt, uint16_t dst_id, uint8_t dst_type);
+int send_config_received_ack(config_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
 
 /* RX handlers — wire into each device's RX dispatch switch. */
 void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 void handle_config_received(const config_received_t *pkt, uint16_t dst_id, int16_t rssi_2);
+void handle_config_received_ack(const config_received_ack_t *pkt, uint16_t dst_id, int16_t rssi_2);
 
 #endif /* CONFIG_H */
