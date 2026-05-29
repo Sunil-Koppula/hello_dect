@@ -164,7 +164,7 @@ static uint8_t check_mesh_storage(uint16_t device_id)
 }
 
 /* Update Mesh Storage */
-static void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, uint16_t connected_device_id, uint8_t sensor_count)
+static void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, uint16_t connected_device_id, uint8_t sensor_cnt)
 {
     mesh_entry_t entry;
     for (int i = 0; i < storage_mesh_count(); i++) {
@@ -178,8 +178,8 @@ static void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t ve
             if (entry.connected_device_id != connected_device_id && connected_device_id != 0xFFFF) {
                 entry.connected_device_id = connected_device_id;
             }
-            if (entry.sensor_count != sensor_count && sensor_count != 0xFF) {
-                entry.sensor_count = sensor_count;
+            if (entry.sensor_count != sensor_cnt && sensor_cnt != 0xFF) {
+                entry.sensor_count = sensor_cnt;
             }
             int err = storage_mesh_update(i, &entry);
             if (err) {
@@ -942,6 +942,25 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
 
         case DEVICE_TYPE_ANCHOR:
         {
+            if (pkt->dst_device_id != 0 && pkt->dst_device_id != 0xFFFF) {
+                for (int i = 0; i < sensor_count; i++) {
+                    if (sensor_devices[i].entry.device_id == pkt->dst_device_id) {
+                        // Send device updated
+                        LOG_INF("Sensor Count: %d", storage_sensor_count());
+                        device_updated_t du_pkt = {
+                            .device_type = DEVICE_TYPE,
+                            .device_id = radio_get_device_id(),
+                            .serial_num = SERIAL_NUMBER,
+                            .version = FIRMWARE_VERSION,
+                            .connected_device_id = 0xFFFF,
+                            .hop_num = DEVICE_HOP_NUMBER,
+                            .sensor_count = storage_sensor_count(),
+                        };
+                        send_device_updated(&du_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
+                        break;
+                    }
+                }
+            }
             if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
                 // Check if we need to update hop number
                 if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
@@ -1123,7 +1142,7 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
         case DEVICE_TYPE_GATEWAY:
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
-                status = check_mesh_storage(pkt->hdr.device_id);
+                status = check_mesh_storage(dst_id);
                 if (status == STATUS_ALREADY_EXISTS) {
                     update_mesh_storage(pkt->hdr.device_id, pkt->hop_num, pkt->version, pkt->connected_device_id, pkt->sensor_count);
                     LOG_INF("Updated mesh storage for device %s ID:%d based on DEVICE_UPDATED", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);

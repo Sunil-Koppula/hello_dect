@@ -233,8 +233,9 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 				if (err) {
 					LOG_ERR("Failed to remove device from sensor storage, err %d", err);
 				}
+				// Send Device Updated packet to gateway that sensor is removed because it's unreachable
+				
 
-				// Also remove from Route Table and send route update to gateway
 			}
 			return;
 		}

@@ -17,6 +17,7 @@
 #include "protocol.h"
 #include "mesh.h"
 #include "psram.h"
+#include "storage.h"
 #include "log_color.h"
 
 LOG_MODULE_REGISTER(tracker, CONFIG_TRACKER_LOG_LEVEL);
@@ -310,7 +311,7 @@ void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exha
 			temp_id = 0xFFFF;
 		}
 
-		if (entry->packet_type == PACKET_PING_DEVICE) {
+		if (entry->packet_type == PACKET_JOINED_NETWORK) {
 			known_device_update_comm_time(entry->dst_id, false);
 		}
 
