@@ -17,15 +17,22 @@
 #define MAX_COMM_FAILURES                   3
 #define MAX_PAIR_RESPONSE_CANDIDATES        16
 
-static uint16_t temp_id;
+/* Initialize the mesh network. */
+void mesh_init(void);
 
 /* Call each main loop cycle to check response collection timer. */
 void mesh_tick(void);
 
+/* Get the current mesh network time. */
 uint64_t mesh_time_get(void);
+
+/* Set the current mesh network time. */
 void mesh_time_set(uint64_t remote_mesh_time);
 
+/* Set the temporary ID for the mesh network. */
 void set_temp_id(uint16_t id);
+
+/* Get the temporary ID for the mesh network. */
 uint16_t get_temp_id(void);
 
 uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool is_it_sensor);

@@ -15,6 +15,9 @@
 #include "config.h"
 #include "log_color.h"
 #include "slm_at_main.h"
+#include "mesh_layers/mesh_pairing.h"
+#include "mesh_layers/mesh_session.h"
+#include "mesh_layers/mesh_routing.h"
 
 LOG_MODULE_REGISTER(main_sub, CONFIG_MAIN_SUB_LOG_LEVEL);
 

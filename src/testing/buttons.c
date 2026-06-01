@@ -24,6 +24,7 @@
 #include "../protocol.h"
 #include "../storage.h"
 #include "../mesh.h"
+#include "../mesh_layers/mesh_routing.h"
 
 LOG_MODULE_REGISTER(buttons, CONFIG_MAIN_LOG_LEVEL);
 

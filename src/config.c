@@ -14,6 +14,7 @@
 #include "slm_at_main.h"
 #include "slm_at_uart.h"
 #include "slm_at_common.h"
+#include "mesh_layers/mesh_routing.h"
 #include "log_color.h"
 
 LOG_MODULE_REGISTER(config, CONFIG_CONFIG_LOG_LEVEL);

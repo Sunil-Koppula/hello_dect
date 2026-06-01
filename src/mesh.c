@@ -21,6 +21,7 @@
 LOG_MODULE_REGISTER(mesh, CONFIG_MESH_LOG_LEVEL);
 
 static bool mesh_initialized = false;
+static uint16_t temp_id;
 
 static int64_t mesh_time_offset;
 

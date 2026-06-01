@@ -21,6 +21,8 @@
 #include "radio.h"
 #include "mesh.h"
 #include "storage.h"
+#include "mesh_layers/mesh_pairing.h"
+#include "mesh_layers/mesh_session.h"
 
 LOG_MODULE_REGISTER(product_info, CONFIG_PRODUCT_INFO_LOG_LEVEL);
 
