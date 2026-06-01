@@ -238,7 +238,7 @@ static uint8_t validate_large_data_chunk(const large_data_chunk_t *pkt)
 int send_large_data_init(large_data_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
 {
     pkt->hdr.packet_type = PACKET_LARGE_DATA_INIT;
-    pkt->hdr.device_type = DEVICE_TYPE;
+    pkt->hdr.device_type = get_device_type();
     pkt->hdr.priority = priority;
     pkt->hdr.tracking_id = tracker_next_id();
     pkt->hdr.device_id = dst_id;
@@ -253,7 +253,7 @@ int send_large_data_init(large_data_init_t *pkt, uint16_t dst_id, uint8_t dst_ty
 int send_large_data_init_ack(large_data_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
     pkt->hdr.packet_type = PACKET_LARGE_DATA_INIT_ACK;
-    pkt->hdr.device_type = DEVICE_TYPE;
+    pkt->hdr.device_type = get_device_type();
     pkt->hdr.priority = priority;
     pkt->hdr.tracking_id = tracking_id;
     pkt->hdr.device_id = dst_id;
@@ -265,7 +265,7 @@ int send_large_data_init_ack(large_data_init_ack_t *pkt, uint16_t dst_id, uint8_
 int send_large_data_chunk(large_data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
 {
     pkt->hdr.packet_type = PACKET_LARGE_DATA_CHUNK;
-    pkt->hdr.device_type = DEVICE_TYPE;
+    pkt->hdr.device_type = get_device_type();
     pkt->hdr.priority = priority;
     pkt->hdr.tracking_id = tracker_next_id();
     pkt->hdr.device_id = dst_id;
@@ -280,7 +280,7 @@ int send_large_data_chunk(large_data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_
 int send_large_data_chunk_ack(large_data_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
     pkt->hdr.packet_type = PACKET_LARGE_DATA_CHUNK_ACK;
-    pkt->hdr.device_type = DEVICE_TYPE;
+    pkt->hdr.device_type = get_device_type();
     pkt->hdr.priority = priority;
     pkt->hdr.tracking_id = tracking_id;
     pkt->hdr.device_id = dst_id;
@@ -292,7 +292,7 @@ int send_large_data_chunk_ack(large_data_chunk_ack_t *pkt, uint16_t dst_id, uint
 int send_large_data_received(large_data_received_t *pkt, uint16_t dst_id, uint8_t dst_type)
 {
     pkt->hdr.packet_type = PACKET_LARGE_DATA_RECEIVED;
-    pkt->hdr.device_type = DEVICE_TYPE;
+    pkt->hdr.device_type = get_device_type();
     pkt->hdr.priority = PACKET_PRIORITY_HIGH;
     pkt->hdr.tracking_id = tracker_next_id();
     pkt->hdr.device_id = dst_id;
@@ -304,7 +304,7 @@ int send_large_data_received(large_data_received_t *pkt, uint16_t dst_id, uint8_
 int send_large_data_received_ack(large_data_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
     pkt->hdr.packet_type = PACKET_LARGE_DATA_RECEIVED_ACK;
-    pkt->hdr.device_type = DEVICE_TYPE;
+    pkt->hdr.device_type = get_device_type();
     pkt->hdr.priority = priority;
     pkt->hdr.tracking_id = tracking_id;
     pkt->hdr.device_id = dst_id;
@@ -343,7 +343,7 @@ void handle_large_data_init(const large_data_init_t *pkt, uint16_t dst_id, int16
         return;
     }
 
-    switch (DEVICE_TYPE) {
+    switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         case DEVICE_TYPE_ANCHOR:
         {
@@ -394,7 +394,7 @@ void handle_large_data_init_ack(const large_data_init_ack_t *pkt, uint16_t dst_i
     // Remove tracker
     tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
-    switch (DEVICE_TYPE) {
+    switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         {
             // Gateway will never receive large data init ack because only anchor and sensor can receive data init ack, so just ignore if received
@@ -472,7 +472,7 @@ void handle_large_data_chunk(const large_data_chunk_t *pkt, uint16_t dst_id, int
         .chunk_index = pkt->chunk_index,
     };
 
-    switch (DEVICE_TYPE) {
+    switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         case DEVICE_TYPE_ANCHOR:
         {
@@ -505,7 +505,7 @@ void handle_large_data_chunk(const large_data_chunk_t *pkt, uint16_t dst_id, int
     send_large_data_chunk_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 
     int idx = find_large_data_slot(pkt->gen_device_id, pkt->data_id);
-    if (idx >= 0 && slots[idx].upstream_ready && DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
+    if (idx >= 0 && slots[idx].upstream_ready && get_device_type() == DEVICE_TYPE_GATEWAY) {
         // Notify Sensor large data received
         LOG_ERR("Need to Send Large Data Received Packet to Sensor for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
         large_data_received_t recv_pkt = {
@@ -557,7 +557,7 @@ void handle_large_data_chunk_ack(const large_data_chunk_ack_t *pkt, uint16_t dst
         return;
     }
 
-    switch (DEVICE_TYPE) {
+    switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         {
             // Gateway will never receive large data chunk ack because only anchor and sensor can receive data chunk ack, so just ignore if received
@@ -635,7 +635,7 @@ void handle_large_data_received(const large_data_received_t *pkt, uint16_t dst_i
 
     LOG_INF("Received LARGE_DATA_RECEIVED from %s ID:%d for DATA ID:%d", device_type_str(pkt->hdr.device_type), dst_id, pkt->data_id);
 
-    switch (DEVICE_TYPE) {
+    switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         {
             // Gateway will never receive large data received because only anchor can receive data received, so just ignore if received
@@ -712,7 +712,7 @@ void large_data_tick(void)
         if (slots[i].active && nbtimeout_expired(&slots[i].idle_timeout)) {
             LOG_WRN("Large data slot for gen %d data_id %d timed out, freeing slot", slots[i].gen_device_id, slots[i].data_id);
             free_large_data_slot(i);
-        } else if (slots[i].active && slots[i].upstream_ready && DEVICE_TYPE == DEVICE_TYPE_ANCHOR && !ld_sender.active) {
+        } else if (slots[i].active && slots[i].upstream_ready && get_device_type() == DEVICE_TYPE_ANCHOR && !ld_sender.active) {
             // Need to Upstream
             LOG_INF("Starting to upstream large data for gen %d data_id %d to gateway", slots[i].gen_device_id, slots[i].data_id);
             infra_entry_t entry;

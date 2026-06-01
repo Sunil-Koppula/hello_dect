@@ -16,7 +16,9 @@ target_sources(app PRIVATE
   src/queue.c
   src/product_info.c
   src/mesh.c
-  src/mesh_tx.c
+  src/mesh_layers/mesh_pairing.c
+  src/mesh_layers/mesh_routing.c
+  src/mesh_layers/mesh_session.c
   src/timeout.c
   src/tracker.c
   src/psram.c

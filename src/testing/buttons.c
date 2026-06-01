@@ -179,7 +179,7 @@ static void default_button0_handler(void)
 static void default_button1_handler(void)
 {
 	LOG_WRN("Data Button pressed and Sender initialized: %d", sender.active);
-	if (DEVICE_TYPE == DEVICE_TYPE_SENSOR && !sender.active) {
+	if (get_device_type() == DEVICE_TYPE_SENSOR && !sender.active) {
 		uint16_t size = 256;
 
 		infra_entry_t entry;
@@ -236,7 +236,7 @@ static void default_button1_handler(void)
 static void default_button2_handler(void)
 {
 	LOG_WRN("Config Button pressed");
-	if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
+	if (get_device_type() == DEVICE_TYPE_GATEWAY) {
 		int idx = 0; // For testing, always use config slot 0
 		if (idx < 0) {
 			LOG_WRN("No free data slot available");
@@ -327,7 +327,7 @@ static void default_button2_handler(void)
 			send_route_discovery(&rd_pkt, infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
 		}
 
-	} else if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+	} else if (get_device_type() == DEVICE_TYPE_SENSOR) {
 		LOG_WRN("Large Data Button pressed");
 		// For testing, always use slot 0 and send large data to gateway
 		uint32_t size = 100 * 1024; // 100KB large data

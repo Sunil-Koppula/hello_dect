@@ -30,11 +30,9 @@ LOG_MODULE_REGISTER(product_info, CONFIG_PRODUCT_INFO_LOG_LEVEL);
 static const struct gpio_dt_spec pin0 = GPIO_DT_SPEC_GET(DEVTYPE_PIN0_NODE, gpios);
 static const struct gpio_dt_spec pin1 = GPIO_DT_SPEC_GET(DEVTYPE_PIN1_NODE, gpios);
 
-device_type_t DEVICE_TYPE;
-uint64_t SERIAL_NUMBER;
-uint8_t DEVICE_HOP_NUMBER;
 uint16_t CONNECTED_DEVICE_ID;
-uint16_t MESH_DEVICES_COUNT;
+
+static device_info_t device_info;
 
 int product_info_init(void)
 {
@@ -73,16 +71,20 @@ int product_info_init(void)
 
 	switch (code) {
 	case 0x00:
-		DEVICE_TYPE = DEVICE_TYPE_GATEWAY;
+		set_device_id(DEVICE_TYPE_GATEWAY);
 		break;
+
 	case 0x01:
-		DEVICE_TYPE = DEVICE_TYPE_ANCHOR;
+		set_device_id(DEVICE_TYPE_ANCHOR);
 		break;
+
 	case 0x02:
 	case 0x03:
-	default:
-		DEVICE_TYPE = DEVICE_TYPE_SENSOR;
+		set_device_id(DEVICE_TYPE_SENSOR);
 		break;
+
+	default:
+		return -EINVAL;
 	}
 
 	/* Build serial number: 0x00{device_id_16}00DEADBEEF */
@@ -90,39 +92,112 @@ int product_info_init(void)
 
 	hwinfo_get_device_id((void *)&hw_id, sizeof(hw_id));
 	radio_set_device_id(hw_id);
-	SERIAL_NUMBER = 0xFFFFFFFFFFFFFFFF;
+	set_device_id(hw_id);
+
+	set_serial_number(0xFFFFFFFFFFFFFFFF);
 
 	/* Set initial hop and connected device based on device type. */
 	CONNECTED_DEVICE_ID = 0xFFFF;  /* invalid ID by default */
+	set_connected_device_id(0xFFFF);  /* invalid ID by default */
 
 	/* Set initial mesh devices count. */
-	MESH_DEVICES_COUNT = 0;
+	set_mesh_devices_count(0);
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 	case DEVICE_TYPE_GATEWAY:
-		DEVICE_HOP_NUMBER = 0;
+		set_hop_number(0);
 		break;
+	case DEVICE_TYPE_ANCHOR:
 	case DEVICE_TYPE_SENSOR:
-		DEVICE_HOP_NUMBER = 0xFF;  /* sensors don't have hop */
+		set_hop_number(0xFF);
 		break;
 	default:
-		DEVICE_HOP_NUMBER = 0xFF;  /* anchor: updated after pairing */
-		break;
+		return -EINVAL;
 	}
 
 	return 0;
 }
 
+void set_device_type(device_type_t type)
+{
+	device_info.device_type = type;
+}
+
+device_type_t get_device_type(void)
+{
+	return device_info.device_type;
+}
+
+void set_device_id(uint16_t device_id)
+{
+	device_info.device_id = device_id;
+}
+
+uint16_t get_device_id(void)
+{
+	return device_info.device_id;
+}
+
+void set_serial_number(uint64_t serial_num)
+{
+	device_info.serial_number = serial_num;
+}
+
+uint64_t get_serial_number(void)
+{
+	return device_info.serial_number;
+}
+
+void set_hop_number(uint8_t hop_num)
+{
+	device_info.hop_num = hop_num;
+}
+
+uint8_t get_hop_number(void)
+{
+	return device_info.hop_num;
+}
+
+void set_firmware_version(uint16_t firmware_version)
+{
+	device_info.firmware_version = firmware_version;
+}
+
+uint16_t get_firmware_version(void)
+{
+	return device_info.firmware_version;
+}
+
+void set_mesh_devices_count(uint16_t mesh_devices_count)
+{
+	device_info.mesh_devices_count = mesh_devices_count;
+}
+
+uint16_t get_mesh_devices_count(void)
+{
+	return device_info.mesh_devices_count;
+}
+
+void set_connected_device_id(uint16_t device_id)
+{
+	device_info.connected_device_id = device_id;
+}
+
+uint16_t get_connected_device_id(void)
+{
+	return device_info.connected_device_id;
+}
+
 void device_info_update(void)
 {
-	if (DEVICE_TYPE != DEVICE_TYPE_ANCHOR) {
+	if (get_device_type() != DEVICE_TYPE_ANCHOR) {
 		return;
 	}
 
 	if (infra_count == 0) {
 		LOG_WRN("No infra devices found, setting hop number to 0xFF and connected device ID to 0xFFFF");
-		DEVICE_HOP_NUMBER = 0xFF;
-		CONNECTED_DEVICE_ID = 0xFFFF;
+		set_hop_number(0xFF);
+		set_connected_device_id(0xFFFF);
 		return;
 	}
 
@@ -137,18 +212,18 @@ void device_info_update(void)
 	uint8_t temp_hop_num = (entry.hop_num < 0xFE) ? entry.hop_num + 1 : 0xFF;
 
 	/* Best entry is now at index 0. */
-	if (temp_hop_num != DEVICE_HOP_NUMBER && DEVICE_HOP_NUMBER != 0xFF) {
-		LOG_INF("Updating hop number from %d to %d", DEVICE_HOP_NUMBER, temp_hop_num);
+	if (temp_hop_num != get_hop_number() && get_hop_number() != 0xFF) {
+		LOG_INF("Updating hop number from %d to %d", get_hop_number(), temp_hop_num);
 		// Send device updated packet to gateway to update hop number and connected device ID
 		// Implement Later
 	}
-	DEVICE_HOP_NUMBER = temp_hop_num;
-	CONNECTED_DEVICE_ID = entry.device_id;
+	set_hop_number(temp_hop_num);
+	set_connected_device_id(entry.device_id);
 }
 
 bool is_known_device(uint16_t device_id)
 {
-	if (temp_id != 0xFFFF && temp_id == device_id) {
+	if (get_temp_id() != 0xFFFF && get_temp_id() == device_id) {
 		return true;
 	}
 
@@ -175,15 +250,15 @@ bool is_known_device(uint16_t device_id)
 
 void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 {
-	if (DEVICE_TYPE == DEVICE_TYPE_SENSOR && !is_successful_comm) {
+	if (get_device_type() == DEVICE_TYPE_SENSOR && !is_successful_comm) {
 		// Clear Infra Storage and Known Devices
 		storage_infra_clear();
 
 		// Send Pair Request because connected device is unreachable, and sensor should send data to gateway through new paired device.
-		LOG_WRN("%s ID:%d is unreachable, send PAIR_REQUEST to find new route to gateway", device_type_str(DEVICE_TYPE), device_id);
+		LOG_WRN("%s ID:%d is unreachable, send PAIR_REQUEST to find new route to gateway", device_type_str(get_device_type()), device_id);
 		send_pair_request();
 		return;
-	} else if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+	} else if (get_device_type() == DEVICE_TYPE_SENSOR) {
 		infra_devices[0].last_comm_ms = k_uptime_get();
 		infra_devices[0].comm_failures = 0;
 		infra_devices[0].is_ping_packet_sent = false;
@@ -234,7 +309,7 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 					LOG_ERR("Failed to remove device from sensor storage, err %d", err);
 				}
 				// Send Device Updated packet to gateway that sensor is removed because it's unreachable
-				
+
 
 			}
 			return;
@@ -245,7 +320,7 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 
 void known_devices_tick(void)
 {
-	if (DEVICE_TYPE != DEVICE_TYPE_GATEWAY) {
+	if (get_device_type() != DEVICE_TYPE_GATEWAY) {
 		return;
 	}
 	
@@ -263,7 +338,7 @@ void known_devices_tick(void)
 void ping_known_devices(uint16_t gen_id, uint8_t status)
 {
 	for (int i = 0; i < infra_count; i++) {
-		if (infra_devices[i].entry.hop_num > DEVICE_HOP_NUMBER) {
+		if (infra_devices[i].entry.hop_num > get_hop_number()) {
 			// Send Ping Device packet to check if device is still reachable
 			send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, gen_id, status);
 			infra_devices[i].is_ping_packet_sent = true;

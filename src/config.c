@@ -58,7 +58,7 @@ static void config_slot_free(int idx)
 
 static uint8_t validate_config(const config_t *pkt)
 {
-	if (pkt->dst_device_id != radio_get_device_id() && DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+	if (pkt->dst_device_id != radio_get_device_id() && get_device_type() == DEVICE_TYPE_SENSOR) {
 		return STATUS_FAILURE;
 	}
 
@@ -112,7 +112,7 @@ static uint8_t validate_config(const config_t *pkt)
 int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
@@ -127,7 +127,7 @@ int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priori
 int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG_ACK;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
@@ -139,7 +139,7 @@ int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_
 int send_config_received(config_received_t *pkt, uint16_t dst_id, uint8_t dst_type)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG_RECEIVED;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = PACKET_PRIORITY_HIGH;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
@@ -151,7 +151,7 @@ int send_config_received(config_received_t *pkt, uint16_t dst_id, uint8_t dst_ty
 int send_config_received_ack(config_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG_RECEIVED_ACK;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
@@ -192,7 +192,7 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
 	send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			// Gateway will not process any config, so reject any incoming config packet
@@ -281,7 +281,7 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 	// Remove tracker
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
@@ -378,7 +378,7 @@ void handle_config_received(const config_received_t *pkt, uint16_t dst_id, int16
 
 	LOG_INF_MAG("Received CONFIG_RECEIVED from %s ID:%d for %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
@@ -487,7 +487,7 @@ void config_tick(void)
 	// 	return;
 	// }
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
@@ -549,7 +549,7 @@ void config_tick(void)
 				 *   = 297 chars, within SLM_UART_AT_COMMAND_LEN. */
 				char cmd[SLM_UART_AT_COMMAND_LEN];
 				int n = snprintf(cmd, sizeof(cmd), "AT#CONFIG=\"%016llX\",\"%04X\",\"%04X\",\"%08lX\",\"",
-					(unsigned long long)SERIAL_NUMBER, config_slots[i].config_id, (unsigned)config_slots[i].config_len,
+					(unsigned long long)get_serial_number(), config_slots[i].config_id, (unsigned)config_slots[i].config_len,
 					(unsigned long)config_slots[i].config_crc32);
 				
 				if (n < 0 || (size_t)n >= sizeof(cmd)) {
@@ -584,7 +584,7 @@ void config_tick(void)
 		break;
 
 		default:
-			LOG_ERR("Unknown device type %d in config_tick", DEVICE_TYPE);
+			LOG_ERR("Unknown device type %d in config_tick", get_device_type());
 	}
 
 }
