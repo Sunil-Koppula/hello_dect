@@ -359,11 +359,8 @@ uint8_t get_hop_num(uint16_t device_id, uint8_t device_type)
 	if (device_type == DEVICE_TYPE_SENSOR) {
 		for (int i = 0; i < mesh_count; i++) {
 			if (mesh_devices[i].device_id == device_id && mesh_devices[i].device_type == device_type) {
-				if (mesh_devices[i].connected_device_id == 0xFFFF || mesh_devices[i].connected_device_id == 0) {
-					LOG_WRN("Connected device ID is invalid for device ID %d in mesh devices", device_id);
-					return 0xFF;
-				} else if (mesh_devices[i].connected_device_id == get_device_id()) {
-					return 0; // Sensor is directly connected to this device (gateway), so hop num is 0
+				if (mesh_devices[i].connected_device_id == radio_get_device_id()) {
+					return 0;
 				}
 				for (int j = 0; j < mesh_count; j++) {
 					if (mesh_devices[i].connected_device_id == mesh_devices[j].device_id) {

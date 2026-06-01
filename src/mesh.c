@@ -217,3 +217,1568 @@ void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, 
         }
     }
 }
+
+/* Simple bubble sort candidates by hop (ascending), then RSSI (descending). */
+static void sort_candidates(void)
+{
+    for (int i = 0; i < resp_candidate_count - 1; i++) {
+        for (int j = 0; j < resp_candidate_count - i - 1; j++) {
+            bool swap = false;
+
+            if (resp_candidates[j].hop_num > resp_candidates[j + 1].hop_num) {
+                swap = true;
+            } else if (resp_candidates[j].hop_num == resp_candidates[j + 1].hop_num &&
+                       resp_candidates[j].rssi_2 < resp_candidates[j + 1].rssi_2) {
+                /* Same hop — prefer better (higher) RSSI. */
+                swap = true;
+            }
+
+            if (swap) {
+                struct response_candidate tmp = resp_candidates[j];
+                resp_candidates[j] = resp_candidates[j + 1];
+                resp_candidates[j + 1] = tmp;
+            }
+        }
+    }
+}
+
+/* Select best candidates and send PAIR_CONFIRM to each. */
+static void select_and_confirm(int idx)
+{
+    struct response_candidate *c = &resp_candidates[idx];
+
+    /* Skip if already stored. */
+    uint8_t status = check_infra_storage(c->sender_id, c->device_type, true);
+
+    if (status == STATUS_STORAGE_FULL) {
+        LOG_WRN("Infra storage full, stopping selection");
+        resp_candidate_count = 0;
+        return;
+    }
+
+    if (DEVICE_HOP_NUMBER == 0xFF && c->hop_num == 0xFF) {
+        LOG_WRN("Candidate %s ID:%d has no upstream link or has invalid hop number %d, skipping", device_type_str(c->device_type), c->sender_id, c->hop_num);
+        process_next_request = true;
+        return;
+    }
+
+    send_pair_confirm(c->sender_id, c->device_type, STATUS_SUCCESS);
+
+    if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+        // Sensor only pairs with one anchor, so stop after the first confirmation
+        resp_candidate_count = 0;
+        return;
+    }
+}
+
+static route_info_t build_route_info(const route_info_t *pkt)
+{
+    route_info_t info_pkt = {
+        .device_id = pkt->device_id,
+        .device_type = pkt->device_type,
+        .data_type = pkt->data_type,
+        .data_id = pkt->data_id,
+    };
+
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        if (info_pkt.route_info[i].device_id == 0xFFFF && info_pkt.route_info[i].hop_num == 0xFF) {
+            info_pkt.route_info[i].device_id = radio_get_device_id();
+            info_pkt.route_info[i].hop_num = DEVICE_HOP_NUMBER;
+            break;
+        }
+    }
+    return info_pkt;
+}
+
+static config_t build_config_pkt(const route_info_t *pkt)
+{
+    LOG_INF("Before sorting");
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        if (pkt->route_info[i].device_id != 0xFFFF) {
+            LOG_INF("   %d: Device ID:%d, Hop Num:%d", i, pkt->route_info[i].device_id, pkt->route_info[i].hop_num);
+        }
+    }
+
+    int idx = pkt->data_id;
+    uint32_t addr = PSRAM_CONFIG_BASE + ((uint32_t)idx * MAX_CONFIG_SIZE);
+
+    config_t config_pkt = {
+        .dst_device_id = pkt->device_id,
+        .dst_device_type = pkt->device_type,
+        .data_type = pkt->data_type,
+        .data_id = config_slots[idx].config_id,
+        .config_len = config_slots[idx].config_len,
+        .config_crc32 = config_slots[idx].config_crc32,
+    };
+
+    int err = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
+    if (err) {
+        LOG_ERR("psram_read @0x%06x failed (%d)", addr, err);
+        config_pkt.config_len = 0;
+        return config_pkt;
+    }
+
+    for (idx = 0; idx < MAX_DEPTH; idx++) {
+        if (pkt->route_info[idx].device_id == 0xFFFF) {
+            break;
+        }
+    }
+    for (int i = 0; i <= idx - 1; i++) {
+        config_pkt.route_info[i] = pkt->route_info[idx - 1 - i];
+    }
+    for (int i = idx; i < MAX_DEPTH; i++) {
+        config_pkt.route_info[i].device_id = 0xFFFF;
+        config_pkt.route_info[i].hop_num = 0xFF;
+    }
+    LOG_INF("After sorting");
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        if (config_pkt.route_info[i].device_id != 0xFFFF) {
+            LOG_INF("   %d: Device ID:%d, Hop Num:%d", i, config_pkt.route_info[i].device_id, config_pkt.route_info[i].hop_num);
+        }
+    }
+
+    // Print Config pkt except config data for debugging
+    LOG_INF("Built config packet for device %s ID:%d with data type 0x%02x, data ID %d, config len %d, crc32 0x%08x",
+        device_type_str(config_pkt.dst_device_type), config_pkt.dst_device_id, config_pkt.data_type, config_pkt.data_id, config_pkt.config_len, config_pkt.config_crc32);
+
+    return config_pkt;
+}
+
+bool mesh_is_collecting(void)
+{
+    return collecting;
+}
+
+/* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------**** Handlers Functions ****--------------------------------------------------------------------------- */
+
+/* Handle received pairing request packet. */
+void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Sensor's will not process pair request
+    if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+        return;
+    }
+
+    LOG_INF_MAG("   Recieved PAIR_REQUEST from %s ID:%d and RSSI:%d (status: %d)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in PAIR_REQUEST from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    /* Verify hash: hash should equal compute_pair_hash(sender_id, random_num). */
+    uint32_t expected_hash = compute_pair_hash(dst_id, pkt->random_num);
+
+    if (pkt->hash != expected_hash) {
+        LOG_WRN("PAIR_REQUEST hash mismatch from %d (got 0x%08x, expected 0x%08x)", dst_id, pkt->hash, expected_hash);
+        send_pair_response(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, STATUS_AUTH_FAILED);
+        return;
+    }
+
+    // // For Testing Purpose: Sensor will not pair with gateway
+    // if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR && DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
+    //     return;
+    // }
+
+    uint8_t status;
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Check if device is already paired with this anchor
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
+            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Check if device is already paired with this sensor
+                status = check_sensor_storage(dst_id);
+            } else {
+                // Reject pair request except from anchor and sensor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            // Sensor can't accept pair request only sends pair request, so reject any incoming pair request
+            return;
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any pair request if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    if (status == STATUS_SUCCESS && MESH_DEVICES_COUNT >= MAX_DEVICES) {
+        status = STATUS_STORAGE_FULL;
+    }
+
+    // Send response based on device type and storage check result
+    send_pair_response(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
+
+    return;
+}
+
+/* Handle received pairing response packet.
+ * Collects candidates for 3 seconds, then mesh_tick() selects the best ones. */
+void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Recieved PAIR_RESPONSE from %s ID:%d and RSSI:%d (status: %d)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in PAIR_RESPONSE from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    if (DEVICE_HOP_NUMBER == 0xFF && pkt->hop_num == 0xFF) {
+        // This means the responder is not in the network yet, so reject
+        return;
+    }
+
+    /* Remove tracker entry for the pair request. */
+    tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+    // Process only packets with status_success or status_already_exixts
+    if (pkt->hdr.status != STATUS_SUCCESS && pkt->hdr.status != STATUS_ALREADY_EXISTS) {
+        return;
+    }
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            // Gateway can't accept pair response only sends pair response, so reject any incoming pair response
+            return;
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Check if device is already paired with this gateway/anchor
+                if (check_infra_storage(dst_id, pkt->hdr.device_type, true) == STATUS_ALREADY_EXISTS) {
+                    // send repair request
+                    send_repair_request(dst_id, pkt->hdr.device_type);
+                    return;
+                }
+            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Check if device is already paired with this sensor
+                if (check_sensor_storage(dst_id) == STATUS_ALREADY_EXISTS) {
+                    // send repair request
+                    send_repair_request(dst_id, pkt->hdr.device_type);
+                    return;
+                }
+            } else {
+                // Reject pair response except from anchor, gateway and sensor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Check if device is already paired with this gateway/anchor
+                if (check_infra_storage(dst_id, pkt->hdr.device_type, true) == STATUS_ALREADY_EXISTS) {
+                    // send repair request
+                    send_repair_request(dst_id, pkt->hdr.device_type);
+                    return;
+                }
+            } else {
+                // Reject pair response except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any pair response if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    /* Start collection window on first response. */
+    if (!collecting) {
+        collecting = true;
+        resp_candidate_count = 0;
+        nbtimeout_init(&collect_timer, COLLECT_WINDOW_MS, 0);
+        nbtimeout_start(&collect_timer);
+        LOG_INF("Collection started - gathering responses for %d ms", COLLECT_WINDOW_MS);
+    }
+
+    /* Add to candidates if there's room. */
+    if (resp_candidate_count < MAX_RESPONSE_CANDIDATES) {
+        resp_candidates[resp_candidate_count++] = (struct response_candidate){
+            .sender_id = dst_id,
+            .device_type = pkt->hdr.device_type,
+            .hop_num = pkt->hop_num,
+            .rssi_2 = rssi_2,
+        };
+        LOG_INF("Candidate %d: %s ID:%d hop:%d RSSI:%d.%d", resp_candidate_count, device_type_str(pkt->hdr.device_type), dst_id, pkt->hop_num, (rssi_2 / 2), (rssi_2 & 0b1) * 5);
+    } else {
+        LOG_WRN("Candidate buffer full, ignoring response from %d", dst_id);
+    }
+
+    return;
+}
+
+/* Handle received pairing confirm packet. */
+void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Recieved PAIR_CONFIRM from %s ID:%d and RSSI:%d (status: %d)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in PAIR_CONFIRM from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    // Process only packets with status_success
+    if (pkt->hdr.status != STATUS_SUCCESS) {
+        return;
+    }
+
+    uint8_t status;
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Check if device is already paired with this anchor
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
+                if (status == STATUS_SUCCESS) {
+                    // Add to infra storage
+                    infra_entry_t entry;
+                    entry.device_id = dst_id;
+                    entry.device_type = pkt->hdr.device_type;
+                    entry.hop_num = pkt->hop_num == 0xFF ? DEVICE_HOP_NUMBER + 1 : pkt->hop_num;
+                    entry.rssi_2 = rssi_2;
+                    entry.version = pkt->version;
+                    int err = storage_infra_add(&entry);
+                    if (err) {
+                        LOG_ERR("Failed to store paired anchor, err %d", err);
+                        return;
+                    }
+                    LOG_INF("ANCHOR ID:%d paired and stored in infra (total %d)", dst_id, storage_infra_count());
+                } else if (status == STATUS_ALREADY_EXISTS) {
+                    LOG_INF("ANCHOR ID:%d already paired, received PAIR_CONFIRM with success", dst_id);
+                }
+            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Check if device is already paired with this sensor
+                status = check_sensor_storage(dst_id);
+                if (status == STATUS_SUCCESS) {
+                    // Add to sensor storage
+                    sensor_entry_t entry;
+                    entry.device_id = dst_id;
+                    entry.version = pkt->version;
+                    int err = storage_sensor_add(&entry);
+                    if (err) {
+                        LOG_ERR("Failed to store paired sensor, err %d", err);
+                        return;
+                    }
+                    LOG_INF("SENSOR ID:%d paired and stored (total %d)", dst_id, storage_sensor_count());
+                } else if (status == STATUS_ALREADY_EXISTS) {
+                    LOG_INF("SENSOR ID:%d already paired, received PAIR_CONFIRM with success", dst_id);
+                }
+            } else {
+                // Reject pair confirm except from anchor and sensor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            // Sensor can't accept pair confirm only sends pair confirm, so reject any incoming pair confirm
+            return;
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any pair confirm if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    send_pair_ack(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
+
+    return;
+
+}
+
+/* Handle received pairing acknowledgment packet. */
+void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Recieved PAIR_ACK from %s ID:%d and RSSI:%d (status: %d)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in PAIR_ACK from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    /* Remove tracker entry for the pair request. */
+    tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+    // Process only packets with status_success or status_already_exixts
+    if (pkt->hdr.status != STATUS_SUCCESS && pkt->hdr.status != STATUS_ALREADY_EXISTS) {
+        return;
+    }
+
+    uint8_t status;
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            // Gateway can't accept pair ack only sends pair ack, so reject any incoming pair ack
+            return;
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Check if device is already paired with this gateway/anchor
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
+            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Check if device is already paired with this sensor
+                status = check_sensor_storage(dst_id);
+            } else {
+                // Reject pair ack except from anchor, gateway and sensor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Check if device is already paired with this gateway/anchor
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
+            } else {
+                // Reject pair ack except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any pair confirm if this device has invalid type
+            return;
+        }
+    }
+
+    // If status is success, it means the device is newly paired, add to storage if not exist.
+    if (status == STATUS_SUCCESS) {
+        infra_entry_t entry;
+        entry.device_id = dst_id;
+        entry.device_type = pkt->hdr.device_type;
+        entry.hop_num = pkt->hop_num;
+        entry.rssi_2 = rssi_2;
+        entry.version = pkt->version;
+        int err = storage_infra_add(&entry);
+        if (err) {
+            LOG_ERR("Failed to store paired device, err %d", err);
+            return;
+        }
+        LOG_INF("%s ID:%d paired and stored in infra (total %d)", device_type_str(pkt->hdr.device_type), dst_id, storage_infra_count());
+
+        // Send Joined Network packet to the newly paired device
+        joined_network_t jn_pkt = {
+            .device_type = DEVICE_TYPE,
+            .device_id = radio_get_device_id(),
+            .serial_num = SERIAL_NUMBER,
+            .version = FIRMWARE_VERSION,
+        };
+
+        if (DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+            device_info_update();
+            jn_pkt.connected_device_id = 0xFFFF; // Anchor doesn't have connected device ID at this point, set to 0xFFFF to indicate
+            jn_pkt.hop_num = DEVICE_HOP_NUMBER;
+            jn_pkt.sensor_count = storage_sensor_count();
+        } else if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+            CONNECTED_DEVICE_ID = dst_id;
+            jn_pkt.connected_device_id = dst_id;
+            jn_pkt.hop_num = 0xFF;
+            jn_pkt.sensor_count = 0xFF;
+        }
+
+        if (storage_infra_count() == 1) {
+            send_joined_network(&jn_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
+        }
+
+    } else if (status == STATUS_ALREADY_EXISTS) {
+        LOG_INF("%s ID:%d already paired, received PAIR_ACK with success", device_type_str(pkt->hdr.device_type), dst_id);
+    } else if (status == STATUS_STORAGE_FULL) {
+        LOG_WRN("Storage full, cannot pair with %s ID:%d, received PAIR_ACK with failure", device_type_str(pkt->hdr.device_type), dst_id);
+    }
+    
+    return;
+}
+
+/* Handle joined network packet */
+void handle_joined_network(const joined_network_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received JOINED_NETWORK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in JOINED_NETWORK from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    // Process only packets with status_success
+    if (pkt->hdr.status != STATUS_SUCCESS) {
+        return;
+    }
+
+    uint8_t status;
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Check if device is already in the network with this anchor/sensor
+                status = check_mesh_storage(pkt->device_id);
+                if (status == STATUS_SUCCESS) {
+                    // Add to mesh storage
+                    mesh_entry_t entry;
+                    entry.device_type = pkt->device_type;
+                    entry.device_id = pkt->device_id;
+                    entry.serial_num = pkt->serial_num;
+                    entry.version = pkt->version;
+                    entry.connected_device_id = pkt->connected_device_id;
+                    entry.hop_num = pkt->hop_num;
+                    entry.sensor_count = pkt->sensor_count;
+                    int err = storage_mesh_add(&entry);
+                    if (err) {
+                        LOG_ERR("Failed to store joined mesh device, err %d", err);
+                    }
+                    LOG_INF("%s ID:%d successfully joined network", device_type_str(pkt->device_type), pkt->device_id);
+                } else if (status == STATUS_ALREADY_EXISTS) {
+                    LOG_INF("%s ID:%d already in network, received JOINED_NETWORK with success", device_type_str(pkt->device_type), pkt->device_id);
+                }
+                // Send Ping Device
+                ping_known_devices(pkt->device_id, status);
+            } else {
+                // Reject joined network except from anchor and sensor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Upstream the Packet to Gateway if Anchor receives the JOINED_NETWORK packet from Sensor/Anchor
+                joined_network_ack_t ack_pkt = {
+                    .dst_device_id = pkt->device_id,
+                    .dst_device_type = pkt->device_type,
+                };
+                send_joined_network_ack(&ack_pkt, dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, STATUS_SUCCESS);
+                LOG_INF("Forwarding JOINED_NETWORK from %s ID:%d  for %s ID:%d upstream", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->device_type), pkt->device_id);
+                infra_entry_t entry;
+                storage_infra_get(0, &entry);
+                send_joined_network(pkt, entry.device_id, entry.device_type, STATUS_SUCCESS);
+                return;
+            } else {
+                // Reject joined network except from anchor and sensor
+                return;
+            } 
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            // Sensor can't accept joined network only sends joined network, so reject any incoming joined network
+            return;
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any joined network if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    joined_network_ack_t ack_pkt = {
+        .dst_device_id = pkt->device_id,
+        .dst_device_type = pkt->device_type,
+    };
+    send_joined_network_ack(&ack_pkt, dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
+
+    return;
+}
+
+/* Handle joined network acknowledgment packet */
+void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received JOINED_NETWORK_ACK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in JOINED_NETWORK_ACK from %d, rejecting", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    /* Remove the joined network tracker. */
+    tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            // Gateway can't accept joined network ack only sends joined network ack, so reject any incoming joined network ack
+            return;
+        }
+        break;
+        
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Implement Later
+            }
+            else {
+                // Reject joined network ack except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                if (pkt->hdr.status != STATUS_SUCCESS) {
+                    // Resend joined network packet. 
+                    // Implement later
+                    return;
+                }
+            } else {
+                // Reject joined network ack except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any joined network ack if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    return;
+}
+
+/* Handle ping device packet */
+void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received PING_DEVICE from %s ID:%d with RSSI:%d (status: 0x%02x) (gen_id: %d)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status, pkt->dst_device_id);
+
+    // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in PING_DEVICE from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    if (pkt->dst_device_id != 0 || pkt->dst_device_id != 0xFFFF) {
+        for (int i = 0; i < infra_count; i++) {
+            if (infra_devices[i].entry.device_id == pkt->dst_device_id && pkt->hdr.status != STATUS_ALREADY_EXISTS && pkt->hdr.status != STATUS_SUCCESS) {
+                // Remove from Infra Storage
+                send_ping_device(infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, pkt->dst_device_id, pkt->hdr.status);
+                storage_infra_remove(i);
+                temp_id = infra_devices[i].entry.device_id;
+                break;
+            }
+        }
+        for (int i = 0; i < sensor_count; i++) {
+            if (sensor_devices[i].entry.device_id == pkt->dst_device_id && pkt->hdr.status != STATUS_ALREADY_EXISTS && pkt->hdr.status != STATUS_SUCCESS) {
+                // Remove from Sensor Storage
+                send_ping_device(sensor_devices[i].entry.device_id, DEVICE_TYPE_SENSOR, pkt->dst_device_id, pkt->hdr.status);
+                storage_sensor_remove(i);
+                temp_id = sensor_devices[i].entry.device_id;
+                break;
+            }
+        }
+    }
+
+    if (pkt->dst_device_id == radio_get_device_id()) {
+        if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
+            process_next_request = true;            
+        } else {
+            // factory reset
+            send_ping_ack(dst_id, pkt->hdr.device_type, pkt->dst_device_id, pkt->hdr.tracking_id, STATUS_SUCCESS);
+            factory_reset();
+            return;
+        }
+        
+    }
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            // Gateway never receives ping device because it's the root, but in case it receives ping device just ignore
+            return;
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->dst_device_id != 0 && pkt->dst_device_id != 0xFFFF) {
+                for (int i = 0; i < sensor_count; i++) {
+                    if (sensor_devices[i].entry.device_id == pkt->dst_device_id) {
+                        // Send device updated
+                        LOG_INF("Sensor Count: %d", storage_sensor_count());
+                        device_updated_t du_pkt = {
+                            .device_type = DEVICE_TYPE,
+                            .device_id = radio_get_device_id(),
+                            .serial_num = SERIAL_NUMBER,
+                            .version = FIRMWARE_VERSION,
+                            .connected_device_id = 0xFFFF,
+                            .hop_num = DEVICE_HOP_NUMBER,
+                            .sensor_count = storage_sensor_count(),
+                        };
+                        send_device_updated(&du_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
+                        break;
+                    }
+                }
+            }
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
+                // Check if we need to update hop number
+                if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
+                    LOG_INF("Updated hop number for GATEWAY ID:%d to hop:%d based on PING_DEVICE", dst_id, DEVICE_HOP_NUMBER);
+                    device_updated_t du_pkt = {
+                        .device_type = DEVICE_TYPE,
+                        .device_id = radio_get_device_id(),
+                        .serial_num = SERIAL_NUMBER,
+                        .version = FIRMWARE_VERSION,
+                        .connected_device_id = 0xFFFF,
+                        .hop_num = DEVICE_HOP_NUMBER,
+                        .sensor_count = storage_sensor_count(),
+                    };
+                    send_device_updated(&du_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
+                }
+            } else if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Check if we need to update hop number
+                if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
+                    LOG_INF("Updated hop number for ANCHOR ID:%d to hop:%d based on PING_DEVICE", dst_id, DEVICE_HOP_NUMBER);
+                    device_updated_t du_pkt = {
+                        .device_type = DEVICE_TYPE,
+                        .device_id = radio_get_device_id(),
+                        .serial_num = SERIAL_NUMBER,
+                        .version = FIRMWARE_VERSION,
+                        .connected_device_id = 0xFFFF,
+                        .hop_num = DEVICE_HOP_NUMBER,
+                        .sensor_count = storage_sensor_count(),
+                    };
+                    send_device_updated(&du_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
+                }
+            } else {
+                // Reject ping device except from gateway, anchor, and sensor
+                return;
+            }
+            // Set the mesh time
+            mesh_time_set(pkt->timestamp);
+            MESH_DEVICES_COUNT = pkt->total_devices;
+            ping_known_devices(pkt->dst_device_id, pkt->hdr.status);
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Update mesh time
+                mesh_time_set(pkt->timestamp);
+                update_infra_storage(dst_id, pkt->hop_num, rssi_2);
+            } else {
+                // Reject ping device except from gateway and anchor
+                return;
+            }
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any ping device if this device has invalid type
+            return;
+        }
+        break;
+    }
+    // Send ACK back to the sender
+    send_ping_ack(dst_id, pkt->hdr.device_type, pkt->dst_device_id, pkt->hdr.tracking_id, STATUS_SUCCESS);
+
+    LOG_INF("Mesh Time %llu seconds", mesh_time_get() / 1000);
+    return;
+}
+
+/* Handle ping ack packet */
+void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received PING_ACK from %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in PING_ACK from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    // Remove the ping tracker
+    tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+    if (temp_id != 0xFFFF && temp_id == dst_id) {
+        temp_id = 0xFFFF;
+        return;
+    }
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Update Infra storage with new RSSI and hop number
+                update_infra_storage(dst_id, pkt->hop_num, rssi_2);
+            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Update Sensor storage
+                update_sensor_storage(dst_id, pkt->version);
+            } else {
+                // Reject ping ack except from anchor and sensor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Check if we need to update hop number
+                if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
+                    LOG_INF("Updated hop number for ANCHOR ID:%d to hop:%d based on PING_ACK", dst_id, DEVICE_HOP_NUMBER);
+                    device_updated_t du_pkt = {
+                        .device_type = DEVICE_TYPE,
+                        .device_id = radio_get_device_id(),
+                        .serial_num = SERIAL_NUMBER,
+                        .version = FIRMWARE_VERSION,
+                        .connected_device_id = 0xFFFF,
+                        .hop_num = DEVICE_HOP_NUMBER,
+                        .sensor_count = storage_sensor_count(),
+                    };
+                    send_device_updated(&du_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
+                }
+            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Update Sensor storage
+                update_sensor_storage(dst_id, pkt->version);
+            } else {
+                // Reject ping ack except from gateway, anchor, and sensor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            // Sensor will never receive ping ack, if it receives jut ignore it
+            return;
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any ping ack if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    LOG_INF("Mesh Time %llu seconds", mesh_time_get() / 1000);
+    return;
+}
+
+/* Handle device updated packet */
+void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received DEVICE_UPDATED from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->hdr.device_id), pkt->hdr.device_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in DEVICE_UPDATED from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    // Process only packets with status_success
+    if (pkt->hdr.status != STATUS_SUCCESS) {
+        return;
+    }
+
+    uint8_t status;
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                status = check_mesh_storage(dst_id);
+                if (status == STATUS_ALREADY_EXISTS) {
+                    update_mesh_storage(pkt->hdr.device_id, pkt->hop_num, pkt->version, pkt->connected_device_id, pkt->sensor_count);
+                    LOG_INF("Updated mesh storage for device %s ID:%d based on DEVICE_UPDATED", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                } else {
+                    LOG_WRN("Received DEVICE_UPDATED for device %s ID:%d which is not in mesh storage", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                    status = STATUS_NOT_FOUND;
+                }
+            } else{
+                // Reject device updated except from anchor and sensor
+                return;
+            }
+        }
+        break;
+        
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Upstream the update to gateway
+                status = STATUS_SUCCESS;
+                LOG_INF("Forwarding DEVICE_UPDATED from %s ID:%d, updating infra storage", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                infra_entry_t entry;
+                storage_infra_get(0, &entry);
+                send_device_updated(pkt, entry.device_id, pkt->hdr.device_type, pkt->hdr.status);
+            } else {
+                // Reject device updated except from anchor and sensor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            // Sensor will never receive device updated because only anchor and gateway can send device updated, so just ignore if received
+            return;
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any device updated if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    device_updated_ack_t ack_pkt = {
+        .dst_device_id = pkt->hdr.device_id,
+        .dst_device_type = pkt->hdr.device_type,
+    };
+
+    send_device_updated_ack(&ack_pkt, dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
+
+    return;
+}
+
+/* Handle device updated acknowledgment packet */
+void handle_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received DEVICE_UPDATED_ACK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in DEVICE_UPDATED_ACK from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    // Remove the ping tracker
+    tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            // Gateway will never receive device updated ack because only anchor can send device updated ack, so just ignore if received
+            return;
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+            // Implement any necessary action if needed when anchor receives device updated ack from gateway/anchor
+            }
+            else {
+                // Reject device updated ack except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Implement any necessary action if needed when sensor receives device updated ack from gateway/anchor
+            }
+            else {
+                // Reject device updated ack except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any device updated ack if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    return;
+}
+
+/* Handle repair request packet */
+void handle_repair_request(const repair_request_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received REPAIR_REQUEST from %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in REPAIR_REQUEST from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    /* Verify hash: hash should equal compute_pair_hash(dst_id, req->random_num) */
+    uint32_t expected_hash = compute_pair_hash(dst_id, pkt->random_num);
+
+    if (pkt->hash != expected_hash) {
+        LOG_WRN("REPAIR_REQUEST hash mismatch from %s ID:%d (got 0x%08x, expected 0x%08x)", device_type_str(pkt->hdr.device_type), dst_id, pkt->hash, expected_hash);
+        send_repair_response(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, STATUS_AUTH_FAILED);
+        return;
+    }
+
+    uint8_t status;
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Check if device is already paired with this anchor
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
+                status = (status == STATUS_ALREADY_EXISTS) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
+            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+                // Check if device is already paired with this sensor
+                status = check_sensor_storage(dst_id);
+                status = (status == STATUS_ALREADY_EXISTS) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
+            } else {
+                // Reject repair request except from anchor and sensor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            // Sensor can only receive repair request from gateway/anchor, reject if it's from other sensor
+            return;
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any repair request if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    send_repair_response(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
+
+    return;
+}
+
+/* Handle repair response packet */
+void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received REPAIR_RESPONSE from %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in REPAIR_RESPONSE from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    /* Remove the tracker. */
+    tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+    // Process only packets with status_success
+    if (pkt->hdr.status != STATUS_SUCCESS) {
+        return;
+    }
+
+    uint8_t status;
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            // Gateway never receive repair response because it sends repair response ,so reject incoming repair response
+            return;
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
+                // Check if device is already paired with this anchor/gateway
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
+                if (status == STATUS_ALREADY_EXISTS) {
+                    // Update the infra storage with new hop number and rssi
+                    if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
+                        LOG_INF("Updated infra storage for device %s ID:%d based on REPAIR_RESPONSE", device_type_str(pkt->hdr.device_type), dst_id);
+                    }
+                } else if (status == STATUS_SUCCESS) {
+                    infra_entry_t entry;
+                    entry.device_id = dst_id;
+                    entry.device_type = pkt->hdr.device_type;
+                    entry.hop_num = pkt->hop_num;
+                    entry.rssi_2 = rssi_2;
+                    entry.version = pkt->version;
+                    int err = storage_infra_add(&entry);
+                    if (err) {
+                        LOG_ERR("Failed to store repaired device %s ID:%d, err %d", device_type_str(pkt->hdr.device_type), dst_id, err);
+                        return;
+                    }
+                    LOG_INF("Stored repaired device %s ID:%d successfully", device_type_str(pkt->hdr.device_type), dst_id);
+                    device_info_update();
+                } else {
+                    LOG_WRN("Storage is full, cannot store repaired device %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id);
+                    return;
+                }
+            } else {
+                // Reject repair response except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
+                // Check if device is already paired with this anchor/gateway
+                status = check_infra_storage(pkt->hdr.device_id, pkt->hdr.device_type, false);
+                if (status == STATUS_ALREADY_EXISTS) {
+                    // Update the infra storage with new hop number and rssi
+                    if (update_infra_storage(pkt->hdr.device_id, pkt->hop_num, rssi_2)) {
+                        LOG_INF("Updated infra storage for device %s ID:%d based on REPAIR_RESPONSE", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                    }
+                } else if (status == STATUS_SUCCESS) {
+                    infra_entry_t entry;
+                    entry.device_id = dst_id;
+                    entry.device_type = pkt->hdr.device_type;
+                    entry.hop_num = pkt->hop_num;
+                    entry.rssi_2 = rssi_2;
+                    entry.version = pkt->version;
+                    int err = storage_infra_add(&entry);
+                    if (err) {
+                        LOG_ERR("Failed to store repaired device %s ID:%d, err %d", device_type_str(pkt->hdr.device_type), dst_id, err);
+                        return;
+                    }
+                    LOG_INF("Stored repaired device %s ID:%d successfully", device_type_str(pkt->hdr.device_type), dst_id);
+                    device_info_update();
+                } else {
+                    LOG_WRN("Storage is full, cannot store repaired device %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id);
+                    return;
+                }
+            } else {
+                // Reject repair response except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid Device types, reject any repair response if this device has invlaid type
+            return;
+        }
+        break;
+    }
+    
+    return;
+}
+
+/* Handle route discovery packet */
+void handle_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received ROUTE_DISCOVERY from %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in ROUTE_DISCOVERY from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    // Process only packets with status_success
+    if (pkt->hdr.status != STATUS_SUCCESS) {
+        return;
+    }
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            // Gateway will never receive route discovery because it's the root, so just ignore if received
+            return;
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
+                if (pkt->device_type == DEVICE_TYPE_ANCHOR && pkt->device_id == radio_get_device_id()) {
+                    // Implement Later: Found route
+                    LOG_INF("Found route to ANCHOR ID:%d", pkt->device_id);
+                    // Build route info packet and send to gateway
+                    route_info_t info_pkt = {
+                        .device_id = pkt->device_id,
+                        .device_type = pkt->device_type,
+                        .data_type = pkt->data_type,
+                        .data_id = pkt->data_id,
+                        .route_info[0].device_id = radio_get_device_id(),
+                        .route_info[0].hop_num = DEVICE_HOP_NUMBER,
+                    };
+                    for (int i = 1; i < MAX_DEPTH; i++) {
+                        info_pkt.route_info[i].device_id = 0XFFFF;
+                        info_pkt.route_info[i].hop_num = 0xFF;
+                    }
+                    send_route_info(&info_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
+                } else if (pkt->device_type == DEVICE_TYPE_SENSOR) {
+                    // Check in sensor storage
+                    for (int i = 0; i < sensor_count; i++) {
+                        if (sensor_devices[i].entry.device_id == pkt->device_id) {
+                            LOG_INF("Found route to SENSOR ID:%d", pkt->device_id);
+                            // Build route info packet and send to gateway
+                            route_info_t info_pkt = {
+                                .device_id = pkt->device_id,
+                                .device_type = pkt->device_type,
+                                .data_type = pkt->data_type,
+                                .data_id = pkt->data_id,
+                                .route_info[0].device_id = radio_get_device_id(),
+                                .route_info[0].hop_num = DEVICE_HOP_NUMBER,
+                            };
+                            for (int j = 1; j < MAX_DEPTH; j++) {
+                                info_pkt.route_info[j].device_id = 0XFFFF;
+                                info_pkt.route_info[j].hop_num = 0xFF;
+                            }
+                            send_route_info(&info_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
+                            break;
+                        }
+                    }
+                } else {
+                    // Forward the route discovery packet
+                    for (int i = 0; i < infra_count; i++) {
+                        if (infra_devices[i].entry.hop_num <= pkt->hop_num && infra_devices[i].entry.hop_num > DEVICE_HOP_NUMBER && infra_devices[i].entry.device_id != dst_id) {
+                            send_route_discovery(pkt, infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, pkt->hdr.status);
+                            LOG_INF("Forwarding ROUTE_DISCOVERY for device %s ID:%d to %s ID:%d", device_type_str(DEVICE_TYPE_ANCHOR), pkt->device_id, device_type_str(infra_devices[i].entry.device_type), infra_devices[i].entry.device_id);
+                        }
+                    }
+                }                
+            } else {
+                // Reject route discovery except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            // Sensor will never receive route discovery because only anchor can send route discovery to sensor, so just ignore if received
+            return;
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any route discovery if this device has invalid type
+            return;
+        }
+        break;
+    }
+    route_discovery_ack_t ack_pkt = {
+        .device_id = pkt->device_id,
+        .device_type = pkt->device_type,
+        .hop_num = pkt->hop_num,
+    };
+
+    send_route_discovery_ack(&ack_pkt, dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, pkt->hdr.status);
+    return;
+}
+
+/* Handle route discovery acknowledgment packet */
+void handle_route_discovery_ack(const route_discovery_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received ROUTE_DISCOVERY_ACK from %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in ROUTE_DISCOVERY_ACK from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    /* Remove the tracker. */
+    tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+    return;
+}
+
+/* Handle route info packet */
+void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received ROUTE_INFO from %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in ROUTE_INFO from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    // Process only packets with status_success
+    if (pkt->hdr.status != STATUS_SUCCESS) {
+        return;
+    }
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Start sending the Data (Configs for that device)
+                LOG_INF("Received route info for device %s ID:%d", device_type_str(pkt->device_type), pkt->device_id);
+                // Build config packet and send
+                config_t config_pkt = build_config_pkt(pkt);
+                if (config_pkt.config_len == 0) {
+                    LOG_WRN("No config data for device %s ID:%d, cannot send config", device_type_str(pkt->device_type), pkt->device_id);
+                    return;
+                }
+
+                send_config(&config_pkt, dst_id, DEVICE_TYPE_ANCHOR, STATUS_SUCCESS);
+            } else {
+                // Reject route info except from anchor
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_id == DEVICE_TYPE_GATEWAY) {
+                route_info_t info_pkt = build_route_info(pkt);
+                send_route_info(&info_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
+            } else {
+                // Reject route info except from anchor and gateway
+                return;
+            }
+        }
+        break;
+
+        case DEVICE_TYPE_SENSOR:
+        {
+            // Sensor will never receive route info because only anchor can send route info to sensor, so just ignore if received
+            return;
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any route info if this device has invalid type
+            return;
+        }
+        break;
+    }
+
+    route_info_ack_t ack_pkt = {
+        .device_id = pkt->device_id,
+        .device_type = pkt->device_type,
+        .data_type = pkt->data_type,
+        .data_id = pkt->data_id,
+    };
+
+    send_route_info_ack(&ack_pkt, dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, pkt->hdr.status);
+    return;
+}
+
+/* Handle route info acknowledgment packet */
+void handle_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+    // Only Process if it's for this device
+    if (pkt->hdr.device_id != radio_get_device_id()) {
+        return;
+    }
+
+    LOG_INF_MAG("   Received ROUTE_INFO_ACK from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, (rssi_2 / 2), pkt->hdr.status);
+
+    // Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+    if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+        LOG_WRN("Unknown device type 0x%02x in ROUTE_INFO_ACK from %d, ignoring", pkt->hdr.device_type, dst_id);
+        return;
+    }
+
+    /* Remove the tracker. */
+    tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+    switch (DEVICE_TYPE) {
+        case DEVICE_TYPE_GATEWAY:
+        {
+            // Gateway will never receive route info ack because only anchor can send route info ack to gateway, so just ignore if received
+            return;
+        }
+        break;
+
+        case DEVICE_TYPE_ANCHOR:
+        {
+            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+                // Nothing to do for now,
+                return;
+            } else {
+                // Reject route info ack except from anchor
+                return;
+            }
+        }
+        break;
+        
+        case DEVICE_TYPE_SENSOR:
+        {
+            // Sensor will never receive route info ack because only anchor can send route info ack to sensor, so just ignore if received
+            return;
+        }
+        break;
+
+        default:
+        {
+            // There are only 3 valid device types, reject any route info ack if this device has invalid type
+            return;
+        }
+        break;
+    }
+    return;
+}
+
+void mesh_tick(void)
+{
+    if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
+        // Gateway does not need to collect candidates and select anchors, just return here
+        return;
+    }
+    
+    if (process_next_request && resp_candidate_idx > 0) {
+        process_next_request = false;
+        select_and_confirm(resp_candidate_count - resp_candidate_idx);
+        resp_candidate_idx--;
+    }
+
+    if (!collecting) {
+        return;
+    }
+
+    if (nbtimeout_expired(&collect_timer)) {
+        LOG_INF("Collection window expired - %d candidates", resp_candidate_count);
+        collecting = false;
+        nbtimeout_stop(&collect_timer);
+        sort_candidates();
+
+        int available = MAX_ANCHORS - storage_infra_count();
+        LOG_INF("Available slots for anchors: %d", available);
+        if (available <= 0) {
+            LOG_WRN("No available slots for anchors, cannot process any more candidates");
+            resp_candidate_count = 0;
+        } else {
+            resp_candidate_count = (resp_candidate_count < available) ? resp_candidate_count : available;
+            process_next_request = true;
+        }
+        resp_candidate_idx = resp_candidate_count;
+    }
+
+}
+
+/* Compute hash. */
+uint32_t compute_pair_hash(uint16_t dev_id, uint32_t random_num)
+{
+    uint32_t hash = (uint32_t)dev_id ^ random_num;
+    hash = ((hash << 13) | (hash >> 19)) ^ (hash * 0x02152001);
+    return hash;
+}

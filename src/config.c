@@ -568,7 +568,7 @@ void config_tick(void)
 						config_slot_free(i);
 						continue;
 					} else if (hop_num == 0) {
-						LOG_INF("Destination device %s ID:%d is directly connected to this gateway, sending config without route discovery", device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
+						LOG_INF("Destination device %s ID:%d is directly connected to gateway, sending config directly", device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
 						// Build config packet and send directly without route discovery
 						config_t config_pkt = {
 							.dst_device_id = config_slots[i].dst_device_id,
