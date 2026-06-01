@@ -113,7 +113,7 @@ static void select_and_confirm(int idx)
 int send_pair_request(void)
 {
     uint32_t random_num = generate_random_number();
-    uint32_t hash = compute_pair_hash(radio_get_device_id(), random_num);
+    uint32_t hash = compute_pair_hash(get_device_id(), random_num);
 
     pair_request_t packet = {
         .hdr = {
@@ -129,7 +129,7 @@ int send_pair_request(void)
     };
 
     // Add tracker entry for retries
-    tracker_add(radio_get_device_id(), 0, packet.hdr.tracking_id, PACKET_PAIR_REQUEST, 5 * PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    tracker_add(get_device_id(), 0, packet.hdr.tracking_id, PACKET_PAIR_REQUEST, 5 * PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
     LOG_INF_GRN("Sending PAIR_REQUEST");
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
@@ -172,7 +172,7 @@ int send_pair_confirm(uint16_t dst_id, uint8_t dst_type, uint8_t status)
     };
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_PAIR_CONFIRM, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    tracker_add(dst_id, get_device_id(), packet.hdr.tracking_id, PACKET_PAIR_CONFIRM, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
     LOG_INF_GRN("Sending PAIR_CONFIRM to device %s ID:%d with hop_num %d (status: 0x%02x)", device_type_str(dst_type), dst_id, get_hop_number(), status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
@@ -201,7 +201,7 @@ int send_pair_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_
 int send_repair_request(uint16_t dst_id, uint8_t dst_type)
 {
     uint32_t random_num = generate_random_number();
-    uint32_t hash = compute_pair_hash(radio_get_device_id(), random_num);
+    uint32_t hash = compute_pair_hash(get_device_id(), random_num);
 
     repair_request_t packet = {
         .hdr = {
@@ -219,7 +219,7 @@ int send_repair_request(uint16_t dst_id, uint8_t dst_type)
     };
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_REPAIR_REQUEST, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    tracker_add(dst_id, get_device_id(), packet.hdr.tracking_id, PACKET_REPAIR_REQUEST, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
     LOG_INF_GRN("Sending REPAIR_REQUEST to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, STATUS_SUCCESS);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
@@ -273,10 +273,10 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
         return;
     }
 
-    // For Testing Purpose: Sensor will not pair with gateway
-    if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR && get_device_type() == DEVICE_TYPE_GATEWAY) {
-        return;
-    }
+    // // For Testing Purpose: Sensor will not pair with gateway
+    // if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR && get_device_type() == DEVICE_TYPE_GATEWAY) {
+    //     return;
+    // }
 
     uint8_t status;
 
@@ -327,7 +327,7 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
 void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -436,7 +436,7 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
 void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -528,7 +528,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
 void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -610,7 +610,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
         // Send Joined Network packet to the newly paired device
         joined_network_t jn_pkt = {
             .device_type = get_device_type(),
-            .device_id = radio_get_device_id(),
+            .device_id = get_device_id(),
             .serial_num = get_serial_number(),
             .version = get_firmware_version(),
         };
@@ -644,7 +644,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 void handle_repair_request(const repair_request_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -710,7 +710,7 @@ void handle_repair_request(const repair_request_t *pkt, uint16_t dst_id, int16_t
 void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 

@@ -31,7 +31,7 @@ static int main_sub_init(void)
 
     // Update device info
     device_info_update();
-	LOG_INF_BLU("%s Initialized with ID: %d SN: 0x%016llx, Hop: %d", device_type_str(get_device_type()), radio_get_device_id(), get_serial_number(), get_hop_number());
+	LOG_INF_BLU("%s Initialized with ID: %d SN: 0x%016llx, Hop: %d", device_type_str(get_device_type()), get_device_id(), get_serial_number(), get_hop_number());
 
     // Initialize subsystems
     tracker_init();
@@ -190,7 +190,7 @@ static void process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 			break;
 
         case PACKET_CONFIG_RECEIVED_ACK:
-            // handle_config_received_ack((const config_received_ack_t *)data, sender_id, rssi_2);
+            handle_config_received_ack((const config_received_ack_t *)data, sender_id, rssi_2);
             break;
 
 		case PACKET_LARGE_DATA_INIT:

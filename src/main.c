@@ -106,7 +106,7 @@ int main(void)
 
 	/* Testing Purpose Only*/
 	buttons_init();
-	set_serial_number(((uint64_t)radio_get_device_id() << 40) | 0x00DEADBEEFULL);
+	set_serial_number(((uint64_t)get_device_id() << 40) | 0x00DEADBEEFULL);
 
 	while (1) {
 		// Main Sub State Machine

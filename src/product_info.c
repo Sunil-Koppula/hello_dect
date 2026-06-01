@@ -71,18 +71,20 @@ int product_info_init(void)
 	/* Decode device type from pin combination. */
 	uint8_t code = (bit0 << 1) | bit1;
 
+	LOG_INF("Device type code: 0x%02X", code);
+
 	switch (code) {
 	case 0x00:
-		set_device_id(DEVICE_TYPE_GATEWAY);
+		set_device_type(DEVICE_TYPE_GATEWAY);
 		break;
 
 	case 0x01:
-		set_device_id(DEVICE_TYPE_ANCHOR);
+		set_device_type(DEVICE_TYPE_ANCHOR);
 		break;
 
 	case 0x02:
 	case 0x03:
-		set_device_id(DEVICE_TYPE_SENSOR);
+		set_device_type(DEVICE_TYPE_SENSOR);
 		break;
 
 	default:
@@ -357,6 +359,12 @@ uint8_t get_hop_num(uint16_t device_id, uint8_t device_type)
 	if (device_type == DEVICE_TYPE_SENSOR) {
 		for (int i = 0; i < mesh_count; i++) {
 			if (mesh_devices[i].device_id == device_id && mesh_devices[i].device_type == device_type) {
+				if (mesh_devices[i].connected_device_id == 0xFFFF || mesh_devices[i].connected_device_id == 0) {
+					LOG_WRN("Connected device ID is invalid for device ID %d in mesh devices", device_id);
+					return 0xFF;
+				} else if (mesh_devices[i].connected_device_id == get_device_id()) {
+					return 0; // Sensor is directly connected to this device (gateway), so hop num is 0
+				}
 				for (int j = 0; j < mesh_count; j++) {
 					if (mesh_devices[i].connected_device_id == mesh_devices[j].device_id) {
 						return mesh_devices[j].hop_num;

@@ -244,7 +244,7 @@ int send_large_data_init(large_data_init_t *pkt, uint16_t dst_id, uint8_t dst_ty
     pkt->hdr.device_id = dst_id;
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_LARGE_DATA_INIT, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
+    tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_LARGE_DATA_INIT, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
     LOG_INF("----> Sending LARGE_DATA_INIT to device %s ID:%d for DATA ID:%d", device_type_str(dst_type), dst_id, pkt->data_id);
     return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -271,7 +271,7 @@ int send_large_data_chunk(large_data_chunk_t *pkt, uint16_t dst_id, uint8_t dst_
     pkt->hdr.device_id = dst_id;
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_LARGE_DATA_CHUNK, PACKET_LARGE_DATA_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
+    tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_LARGE_DATA_CHUNK, PACKET_LARGE_DATA_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
     LOG_INF("----> Sending LARGE_DATA_CHUNK to device %s ID:%d for DATA ID:%d (Page: %d Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->data_id, pkt->page_index, pkt->chunk_index, sizeof(pkt->data));
     return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -319,7 +319,7 @@ int send_large_data_received_ack(large_data_received_ack_t *pkt, uint16_t dst_id
 void handle_large_data_init(const large_data_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -379,7 +379,7 @@ void handle_large_data_init(const large_data_init_t *pkt, uint16_t dst_id, int16
 void handle_large_data_init_ack(const large_data_init_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -426,7 +426,7 @@ void handle_large_data_init_ack(const large_data_init_ack_t *pkt, uint16_t dst_i
                     // Find dst_id from route table using gen_device_id and send large data received packet to sensor
                     // dst_id = get_next_hop_device_id(pkt->gen_device_id);
                     dst_id = 0xFFFF; // Implement later
-                    if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
+                    if (dst_id == 0 || dst_id == 0xFFFF || dst_id == get_device_id()) {
                         LOG_ERR("No route to gen_device_id %d, cannot forward LARGE_DATA_RECEIVED", pkt->gen_device_id);
                         return;
                     }
@@ -453,7 +453,7 @@ void handle_large_data_init_ack(const large_data_init_ack_t *pkt, uint16_t dst_i
 void handle_large_data_chunk(const large_data_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -515,7 +515,7 @@ void handle_large_data_chunk(const large_data_chunk_t *pkt, uint16_t dst_id, int
         // Find dst_id from route table using gen_device_id and send large data received packet to sensor
         // dst_id = get_next_hop_device_id(pkt->gen_device_id);
         dst_id = 0xFFFF; // Implement later
-        if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
+        if (dst_id == 0 || dst_id == 0xFFFF || dst_id == get_device_id()) {
             LOG_ERR("No route to gen_device_id %d, cannot forward LARGE_DATA_RECEIVED", pkt->gen_device_id);
             return;
         }
@@ -528,7 +528,7 @@ void handle_large_data_chunk(const large_data_chunk_t *pkt, uint16_t dst_id, int
 void handle_large_data_chunk_ack(const large_data_chunk_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -623,7 +623,7 @@ void handle_large_data_chunk_ack(const large_data_chunk_ack_t *pkt, uint16_t dst
 void handle_large_data_received(const large_data_received_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -653,7 +653,7 @@ void handle_large_data_received(const large_data_received_t *pkt, uint16_t dst_i
                 // Find dst_id from route table using gen_device_id and send large data received packet to sensor
                 // dst_id = get_next_hop_device_id(pkt->gen_device_id);
                 dst_id = 0xFFFF; // Implement later
-                if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
+                if (dst_id == 0 || dst_id == 0xFFFF || dst_id == get_device_id()) {
                     LOG_ERR("No route to gen_device_id %d, cannot forward LARGE_DATA_RECEIVED", pkt->gen_device_id);
                     return;
                 }

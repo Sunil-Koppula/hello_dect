@@ -231,7 +231,7 @@ int send_report_init(report_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint
 	pkt->hdr.device_id = dst_id;
 
 	// Add tracker entry for retries
-	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_INIT, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
+	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_INIT, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
 	LOG_INF("----> Sending REPORT_INIT to device %s ID:%d for SENSOR ID:%d", device_type_str(dst_type), dst_id, pkt->gen_device_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -258,7 +258,7 @@ int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, ui
 	pkt->hdr.device_id = dst_id;
 
 	// Add tracker entry for retries
-	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_CHUNK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
+	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_CHUNK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
 	LOG_INF("----> Sending REPORT_CHUNK to device %s ID:%d for SENSOR ID:%d (Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index));
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -294,7 +294,7 @@ int send_report_received(report_received_t *pkt, uint16_t dst_id, uint8_t dst_ty
 void handle_report_init(const report_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -358,7 +358,7 @@ void handle_report_init(const report_init_t *pkt, uint16_t dst_id, int16_t rssi_
 void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -414,7 +414,7 @@ void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16
 void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -477,7 +477,7 @@ void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rss
 		// Find dst_id from route table using gen_device_id
 		// dst_id = get_next_hop_device_id(pkt->gen_device_id);
 		uint16_t dst_id = 0xFFFF; // Implement later
-		if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
+		if (dst_id == 0 || dst_id == 0xFFFF || dst_id == get_device_id()) {
 			LOG_ERR("No route to gen_device_id %d, cannot send REPORT_RECEIVED", pkt->gen_device_id);
 			return;
 		}
@@ -516,7 +516,7 @@ void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rss
 void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -612,7 +612,7 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -642,7 +642,7 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 				// Find dst_id from route table using gen_device_id
 				// dst_id = get_next_hop_device_id(pkt->gen_device_id);
 				dst_id = 0xFFFF; // Implement later
-				if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
+				if (dst_id == 0 || dst_id == 0xFFFF || dst_id == get_device_id()) {
 					LOG_ERR("No route to gen_device_id %d, cannot forward REPORT_RECEIVED", pkt->gen_device_id);
 					return;
 				}

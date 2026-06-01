@@ -13,8 +13,14 @@ src/slm_at_main.c). Wire format:
 Success is implicit for data commands (AT#CONFIG): the device replies with
 a '#TAG: …' line and no OK. Only 'ERROR' indicates failure.
 
+When things go quiet (a device line gets no OK/ERROR reply), add --debug to
+see the raw RX bytes, the parsed AT#CONFIG fields, the exact reply bytes
+written, and a traceback if a handler raises (which would otherwise silently
+kill the reader thread and leave every later line unanswered).
+
 Examples:
     python at_console.py --port COM7                       # interactive REPL
+    python at_console.py --port COM7 --debug               # REPL + diagnostics
     python at_console.py --port COM7 AT#DEVTYPE?           # one-shot
     python at_console.py --port /dev/ttyACM0 AT#VERSION? AT#HOP?
 
@@ -34,9 +40,27 @@ import argparse
 import sys
 import threading
 import time
+import traceback
 import zlib
 from pathlib import Path
 from typing import Iterable
+
+# Global debug switch, set from --debug in main(). When on, the reader loop and
+# the auto-reply path emit verbose diagnostics (raw RX bytes, parsed fields,
+# the exact OK/ERROR bytes written, and full tracebacks on any handler error).
+DEBUG = False
+
+
+def _dbg(msg: str) -> None:
+    """Print a debug line, prefixed and flushed, only when DEBUG is on.
+
+    Kept separate from the normal '<<<'/'>>>' output so debug noise is easy to
+    grep out and so it never interferes with the protocol bytes on the wire.
+    """
+    if DEBUG:
+        ts = time.strftime("%H:%M:%S")
+        sys.stdout.write(f"\r[{ts}] [dbg] {msg}\n")
+        sys.stdout.flush()
 
 try:
     import serial
@@ -357,18 +381,25 @@ def _auto_reply_to_at_config(client: "ATClient", line: str) -> str:
     and the REPL reader so the two modes share behaviour.
     """
     ok, summary, parsed = _handle_at_config_line(line)
+    _dbg(f"_auto_reply parsed ok={ok}: {summary}")
+    ok_reply = b"\r\nOK\r\n"
+    error_reply = b"\r\nERROR\r\n"
     if ok:
         ack = (
             f'\r\n#CONFIG: "{parsed["sn"]:016X}",'
             f'"{parsed["data_id"]:04X}"\r\n'
         ).encode("ascii")
-        client.ser.write(ack)
-        client.ser.write(b"\r\nOK\r\n")
+        _dbg(f"writing ACK {ack!r} then {ok_reply!r}")
+        n1 = client.ser.write(ack)
+        n2 = client.ser.write(ok_reply)
         client.ser.flush()
+        _dbg(f"wrote {n1} + {n2} bytes (OK reply)")
         return f"OK — {summary}"
     else:
-        client.ser.write(b"\r\nERROR\r\n")
+        _dbg(f"writing {error_reply!r}")
+        n = client.ser.write(error_reply)
         client.ser.flush()
+        _dbg(f"wrote {n} bytes (ERROR reply)")
         return f"ERROR — {summary}"
 
 
@@ -468,10 +499,12 @@ def _reader_loop(client: ATClient, stop_evt: threading.Event,
     while not stop_evt.is_set():
         try:
             chunk = client.ser.read(256)  # blocks up to ser.timeout (0.1s)
-        except Exception:
+        except Exception as e:
+            _dbg(f"reader: ser.read() raised {e!r}, stopping reader thread")
             break
         if not chunk:
             continue
+        _dbg(f"reader: rx {len(chunk)} bytes: {bytes(chunk)!r}")
         buf.extend(chunk)
         text = buf.decode("ascii", errors="replace")
         parts = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -484,13 +517,19 @@ def _reader_loop(client: ATClient, stop_evt: threading.Event,
             # Discriminate between the two AT#CONFIG variants:
             #   AT#CONFIG=...      command from a peer → auto-reply OK/ERROR
             #   AT#CONFIGRES=...   URC from gateway saying "config landed" → log only
+            # Wrap handling so a parse/serial error can't silently kill the
+            # reader thread — that would leave every later line unanswered.
             extra = None
-            if line.startswith("AT#CONFIGRES="):
-                ok, summary = _handle_at_configres_line(line)
-                extra = (f">>> #CONFIGRES delivered ({summary})" if ok
-                         else f">>> #CONFIGRES malformed: {summary}")
-            elif line.startswith("AT#CONFIG="):
-                extra = f">>> {_auto_reply_to_at_config(client, line)}"
+            try:
+                if line.startswith("AT#CONFIGRES="):
+                    ok, summary = _handle_at_configres_line(line)
+                    extra = (f">>> #CONFIGRES delivered ({summary})" if ok
+                             else f">>> #CONFIGRES malformed: {summary}")
+                elif line.startswith("AT#CONFIG="):
+                    extra = f">>> {_auto_reply_to_at_config(client, line)}"
+            except Exception as e:
+                extra = f">>> handler error: {e!r}"
+                _dbg(f"reader: handler raised on line {line!r}:\n{traceback.format_exc()}")
             with lock:
                 # '\r' clears the typed prompt position; then we print the
                 # line + a fresh prompt so the user's cursor still sees 'AT> '.
@@ -544,6 +583,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S, help="per-command timeout in seconds")
     parser.add_argument("--no-rtscts", action="store_true", help="disable RTS/CTS flow control (firmware default has it ON)")
     parser.add_argument("--list", action="store_true", help="list available serial ports and exit")
+    parser.add_argument("--debug", action="store_true",
+                        help="verbose diagnostics: log raw RX bytes, parsed AT#CONFIG fields, "
+                             "the exact OK/ERROR bytes written, and handler tracebacks")
 
     # Single-line config push via AT#CONFIG. The SN identifies the destination
     # device on the mesh. data_id is an application-level id (default 1).
@@ -562,6 +604,9 @@ def main(argv: list[str]) -> int:
 
     parser.add_argument("commands", nargs="*", help="AT commands to run (REPL if none given)")
     args = parser.parse_args(argv)
+
+    global DEBUG
+    DEBUG = args.debug
 
     if args.list:
         for p in list_ports.comports():

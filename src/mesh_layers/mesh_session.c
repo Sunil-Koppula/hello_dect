@@ -42,7 +42,7 @@ int send_joined_network(const joined_network_t *pkt, uint16_t dst_id, uint8_t ds
     };
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_JOINED_NETWORK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    tracker_add(dst_id, get_device_id(), packet.hdr.tracking_id, PACKET_JOINED_NETWORK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
     LOG_INF_GRN("Sending JOINED_NETWORK to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
@@ -88,7 +88,7 @@ int send_ping_device(uint16_t dst_id, uint8_t dst_type, uint16_t gen_id, uint8_t
     };
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_PING_DEVICE, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    tracker_add(dst_id, get_device_id(), packet.hdr.tracking_id, PACKET_PING_DEVICE, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
     LOG_INF_GRN("Sending PING_DEVICE to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
@@ -138,7 +138,7 @@ int send_device_updated(const device_updated_t *pkt, uint16_t dst_id, uint8_t ds
     };
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_DEVICE_UPDATED, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    tracker_add(dst_id, get_device_id(), packet.hdr.tracking_id, PACKET_DEVICE_UPDATED, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
     LOG_INF_GRN("Sending DEVICE_UPDATED to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
@@ -171,7 +171,7 @@ int send_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id, ui
 void handle_joined_network(const joined_network_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -273,7 +273,7 @@ void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id,
 {
 
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -338,7 +338,7 @@ void handle_joined_network_ack(const joined_network_ack_t *pkt, uint16_t dst_id,
 void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -371,7 +371,7 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
         }
     }
 
-    if (pkt->dst_device_id == radio_get_device_id()) {
+    if (pkt->dst_device_id == get_device_id()) {
         if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
             mesh_pairing_set_pending_request();
         } else {
@@ -400,7 +400,7 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
                         LOG_INF("Sensor Count: %d", storage_sensor_count());
                         device_updated_t du_pkt = {
                             .device_type = get_device_type(),
-                            .device_id = radio_get_device_id(),
+                            .device_id = get_device_id(),
                             .serial_num = get_serial_number(),
                             .version = FIRMWARE_VERSION,
                             .connected_device_id = 0xFFFF,
@@ -418,7 +418,7 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
                     LOG_INF("Updated hop number for GATEWAY ID:%d to hop:%d based on PING_DEVICE", dst_id, get_hop_number());
                     device_updated_t du_pkt = {
                         .device_type = get_device_type(),
-                        .device_id = radio_get_device_id(),
+                        .device_id = get_device_id(),
                         .serial_num = get_serial_number(),
                         .version = FIRMWARE_VERSION,
                         .connected_device_id = 0xFFFF,
@@ -433,7 +433,7 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
                     LOG_INF("Updated hop number for ANCHOR ID:%d to hop:%d based on PING_DEVICE", dst_id, get_hop_number());
                     device_updated_t du_pkt = {
                         .device_type = get_device_type(),
-                        .device_id = radio_get_device_id(),
+                        .device_id = get_device_id(),
                         .serial_num = get_serial_number(),
                         .version = FIRMWARE_VERSION,
                         .connected_device_id = 0xFFFF,
@@ -484,7 +484,7 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
 void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -528,7 +528,7 @@ void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
                     LOG_INF("Updated hop number for ANCHOR ID:%d to hop:%d based on PING_ACK", dst_id, get_hop_number());
                     device_updated_t du_pkt = {
                         .device_type = get_device_type(),
-                        .device_id = radio_get_device_id(),
+                        .device_id = get_device_id(),
                         .serial_num = get_serial_number(),
                         .version = FIRMWARE_VERSION,
                         .connected_device_id = 0xFFFF,
@@ -570,7 +570,7 @@ void handle_ping_ack(const ping_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -653,7 +653,7 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
 void handle_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 

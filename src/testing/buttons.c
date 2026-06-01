@@ -192,7 +192,7 @@ static void default_button1_handler(void)
 
 		sender.active = true;
 		sender.dst_id = entry.device_id;
-		sender.gen_device_id = radio_get_device_id();
+		sender.gen_device_id = get_device_id();
 		sender.data_id = 0x01; // For testing purpose, data_id is hardcoded to 0x01,
 		sender.priority = PACKET_PRIORITY_LOW;
 		sender.total_size = size;
@@ -342,7 +342,7 @@ static void default_button2_handler(void)
 
 		ld_sender.active = true;
 		ld_sender.dst_id = entry.device_id;
-		ld_sender.gen_device_id = radio_get_device_id();
+		ld_sender.gen_device_id = get_device_id();
 		ld_sender.data_id = 0x02; // For testing purpose, data_id
 		ld_sender.priority = PACKET_PRIORITY_MEDIUM;
 		ld_sender.base_addr = LARGE_DATA_PSRAM_BASE;

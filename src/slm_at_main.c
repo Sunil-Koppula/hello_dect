@@ -206,9 +206,9 @@ static void cmd_get_devtype(void)
 static void cmd_get_devid(void)
 {
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
-    snprintf(resp, sizeof(resp), "#DEVID: %u", radio_get_device_id());
+    snprintf(resp, sizeof(resp), "#DEVID: %u", get_device_id());
     at_send_line(resp);
-    if (radio_get_device_id() == 0xFFFF || radio_get_device_id() == 0) {
+    if (get_device_id() == 0xFFFF || get_device_id() == 0) {
         at_error();
     } else {
         at_ok();
@@ -379,7 +379,7 @@ static void cmd_config(const char *args)
 
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp),
-        "#CONFIG: sn=0x%016llx id=%u len=%u crc=0x%08lx",
+        "#CONFIG:\"0x%016llx\",\"%u\",\"%u\",\"0x%08lx\"",
         (unsigned long long)sn, config.data_id, config.data_len,
         (unsigned long)config.data_crc32);
     at_send_line(resp);

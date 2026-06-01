@@ -29,7 +29,7 @@ static route_info_t build_route_info(const route_info_t *pkt)
 
     for (int i = 0; i < MAX_DEPTH; i++) {
         if (info_pkt.route_info[i].device_id == 0xFFFF && info_pkt.route_info[i].hop_num == 0xFF) {
-            info_pkt.route_info[i].device_id = radio_get_device_id();
+            info_pkt.route_info[i].device_id = get_device_id();
             info_pkt.route_info[i].hop_num = get_hop_number();
             break;
         }
@@ -114,7 +114,7 @@ int send_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, uint8_t 
     };
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_ROUTE_DISCOVERY, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    tracker_add(dst_id, get_device_id(), packet.hdr.tracking_id, PACKET_ROUTE_DISCOVERY, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
     LOG_INF_GRN("Sending ROUTE_DISCOVERY to device %s ID:%d for device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
@@ -161,7 +161,7 @@ int send_route_info(const route_info_t *pkt, uint16_t dst_id, uint8_t dst_type, 
     memcpy(packet.route_info, pkt->route_info, sizeof(packet.route_info));
 
     // Add tracker entry for retries
-    tracker_add(dst_id, radio_get_device_id(), packet.hdr.tracking_id, PACKET_ROUTE_INFO, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    tracker_add(dst_id, get_device_id(), packet.hdr.tracking_id, PACKET_ROUTE_INFO, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
     LOG_INF_GRN("Sending ROUTE_INFO to device %s ID:%d (status: 0x%02x)", device_type_str(dst_type), dst_id, status);
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
@@ -196,7 +196,7 @@ int send_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, uint8_t ds
 void handle_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -224,7 +224,7 @@ void handle_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, int16
         case DEVICE_TYPE_ANCHOR:
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
-                if (pkt->device_type == DEVICE_TYPE_ANCHOR && pkt->device_id == radio_get_device_id()) {
+                if (pkt->device_type == DEVICE_TYPE_ANCHOR && pkt->device_id == get_device_id()) {
                     // Implement Later: Found route
                     LOG_INF("Found route to ANCHOR ID:%d", pkt->device_id);
                     // Build route info packet and send to gateway
@@ -233,7 +233,7 @@ void handle_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, int16
                         .device_type = pkt->device_type,
                         .data_type = pkt->data_type,
                         .data_id = pkt->data_id,
-                        .route_info[0].device_id = radio_get_device_id(),
+                        .route_info[0].device_id = get_device_id(),
                         .route_info[0].hop_num = get_hop_number(),
                     };
                     for (int i = 1; i < MAX_DEPTH; i++) {
@@ -252,7 +252,7 @@ void handle_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, int16
                                 .device_type = pkt->device_type,
                                 .data_type = pkt->data_type,
                                 .data_id = pkt->data_id,
-                                .route_info[0].device_id = radio_get_device_id(),
+                                .route_info[0].device_id = get_device_id(),
                                 .route_info[0].hop_num = get_hop_number(),
                             };
                             for (int j = 1; j < MAX_DEPTH; j++) {
@@ -307,7 +307,7 @@ void handle_route_discovery(const route_discovery_t *pkt, uint16_t dst_id, int16
 void handle_route_discovery_ack(const route_discovery_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -329,7 +329,7 @@ void handle_route_discovery_ack(const route_discovery_ack_t *pkt, uint16_t dst_i
 void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
@@ -409,7 +409,7 @@ void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
 void handle_route_info_ack(const route_info_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
     // Only Process if it's for this device
-    if (pkt->hdr.device_id != radio_get_device_id()) {
+    if (pkt->hdr.device_id != get_device_id()) {
         return;
     }
 
