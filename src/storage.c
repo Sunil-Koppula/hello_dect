@@ -161,7 +161,7 @@ int storage_init(void)
 		infra_devices[i].is_ping_packet_sent = false;
 	}
 
-	if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY || DEVICE_TYPE == DEVICE_TYPE_ANCHOR) {
+	if (get_device_type() == DEVICE_TYPE_GATEWAY || get_device_type() == DEVICE_TYPE_ANCHOR) {
 		// Update Known Sensors devices from storage. Use the EEPROM helper directly
 		// since storage_sensor_get() will read from RAM after this loop initializes it.
 		LOG_INF_CYAN("Loading %d sensor entries from storage", sensor_count);
@@ -186,9 +186,9 @@ int storage_init(void)
 		}
 	}
 
-	if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
-
-		MESH_DEVICES_COUNT = mesh_count;
+	if (get_device_type() == DEVICE_TYPE_GATEWAY) {
+		// Update Mesh devices from storage.
+		set_mesh_devices_count(mesh_count);
 
 		// Print Mesh entries from storage
 		LOG_INF_CYAN("Loading %d mesh entries from storage", mesh_count);

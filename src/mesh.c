@@ -15,38 +15,66 @@
 #include "product_info.h"
 #include "data.h"
 #include "config.h"
+#include "mesh_layers/mesh_pairing.h"
 #include "log_color.h"
 
 LOG_MODULE_REGISTER(mesh, CONFIG_MESH_LOG_LEVEL);
 
-#include "timeout.h"
+static bool mesh_initialized = false;
+static uint16_t temp_id;
 
-#define COLLECT_WINDOW_MS     3000
-#define MAX_RESPONSE_CANDIDATES 16
+static int64_t mesh_time_offset;
 
-/* Candidate from a PAIR_RESPONSE during collection. */
-struct response_candidate {
-    uint16_t sender_id;
-    uint8_t  device_type;
-    uint8_t  hop_num;
-    int16_t  rssi_2;
-};
+void mesh_init(void)
+{
+    if (mesh_initialized) {
+        return;
+    }
 
-static struct response_candidate resp_candidates[MAX_RESPONSE_CANDIDATES];
-static int resp_candidate_count;
-static int resp_candidate_idx = 0;
-static struct nbtimeout collect_timer;
-static bool collecting;
-static bool process_next_request = false;
+    temp_id = 0xFFFF;
 
-// Set temp ID to 0xFFFF
-uint16_t temp_id = 0xFFFF;
+    /* Gateway-only: anchor mesh_time at 0 for the moment of startup. */
+    if (get_device_type() == DEVICE_TYPE_GATEWAY) {
+        mesh_time_offset = -k_uptime_get();
+    }
+
+    mesh_initialized = true;
+}
+
+void mesh_tick(void)
+{
+    if (!mesh_initialized) {
+        return;
+    }
+
+    mesh_pairing_tick();
+}
+
+uint64_t mesh_time_get(void)
+{
+    return (uint64_t)(mesh_time_offset + k_uptime_get());
+}
+
+void mesh_time_set(uint64_t remote_mesh_time)
+{
+    mesh_time_offset = (int64_t)remote_mesh_time - k_uptime_get();
+}
+
+void set_temp_id(uint16_t id)
+{
+    temp_id = id;
+}
+
+uint16_t get_temp_id(void)
+{
+    return temp_id;
+}
 
 /* Check Infra Storage */
-static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool all_slots)
+uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool is_it_sensor)
 {
     // Check Only first slot as sensor can only pair with one gateway/anchor, but anchor can pair with multiple sensors
-    if (all_slots == false) {
+    if (is_it_sensor) {
         if (infra_count >= 1 && infra_devices[0].entry.device_id == device_id) {
             return STATUS_ALREADY_EXISTS;
         }
@@ -72,9 +100,9 @@ static uint8_t check_infra_storage(uint16_t device_id, uint8_t device_type, bool
 }
 
 /* Update Infra Storage */
-static bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rssi_2)
+bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rssi_2)
 {
-    uint8_t current_hop_num = DEVICE_HOP_NUMBER;
+    uint8_t current_hop_num = get_hop_number();
     infra_entry_t entry;
     for (int i = 0; i < infra_count; i++) {
         if (infra_devices[i].entry.device_id == device_id) {
@@ -99,14 +127,14 @@ static bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rs
             break;
         }
     }
-    if (current_hop_num != DEVICE_HOP_NUMBER) {
+    if (current_hop_num != get_hop_number()) {
         return true;
     }
     return false;
 }
 
 /* Check Sensor Storage */
-static uint8_t check_sensor_storage(uint16_t device_id)
+uint8_t check_sensor_storage(uint16_t device_id)
 {
     for (int i = 0; i < sensor_count; i++) {
         if (sensor_devices[i].entry.device_id == device_id) {
@@ -122,7 +150,7 @@ static uint8_t check_sensor_storage(uint16_t device_id)
 }
 
 /* Update Sensor Storage */
-static void update_sensor_storage(uint16_t device_id, uint16_t version)
+void update_sensor_storage(uint16_t device_id, uint16_t version)
 {
     sensor_entry_t entry;
     for (int i = 0; i < sensor_count; i++) {
@@ -146,7 +174,7 @@ static void update_sensor_storage(uint16_t device_id, uint16_t version)
 }
 
 /* Check Mesh Storage */
-static uint8_t check_mesh_storage(uint16_t device_id)
+uint8_t check_mesh_storage(uint16_t device_id)
 {
     mesh_entry_t entry;
 
@@ -164,7 +192,7 @@ static uint8_t check_mesh_storage(uint16_t device_id)
 }
 
 /* Update Mesh Storage */
-static void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, uint16_t connected_device_id, uint8_t sensor_cnt)
+void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, uint16_t connected_device_id, uint8_t sensor_cnt)
 {
     mesh_entry_t entry;
     for (int i = 0; i < storage_mesh_count(); i++) {

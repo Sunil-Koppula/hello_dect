@@ -7,29 +7,128 @@
 #define PRODUCT_NAME "DECT NR+ PHY MESH"
 #define FIRMWARE_VERSION 100
 
-#define PING_TIMEOUT_MS      2 * 60 * 1000 /* 2 minutes timeout for known devices */
-#define MAX_COMM_FAILURES    3
-
-/* Runtime device type (set by product_info_init from GPIO pins). */
-extern device_type_t DEVICE_TYPE;
-
-/* 64-bit serial number: 0x00{device_id_16}00DEADBEEF */
-extern uint64_t SERIAL_NUMBER;
-
-/* Device hop number from gateway.
- * Gateway = 0, Anchor = min(infra hop) + 1, Sensor = 0xFF (no hop). */
-extern uint8_t DEVICE_HOP_NUMBER;
+typedef struct {
+    device_type_t device_type;
+    uint16_t device_id;
+    uint64_t serial_number;
+    uint16_t connected_device_id;
+    uint8_t hop_num;
+    uint16_t firmware_version;
+    uint16_t mesh_devices_count;
+} device_info_t;
 
 /* Connected (upstream parent) device ID.
  * Gateway = 0, Anchor = best infra device ID, Sensor = paired device ID. */
 extern uint16_t CONNECTED_DEVICE_ID;
 
-/* Number of devices in the mesh network. */
-extern uint16_t MESH_DEVICES_COUNT;
-
 /* Read GPIO pins P0.21/P0.23 to set device type.
  * Must be called before any mesh operations. */
-int product_info_init(void);
+int product_info_init(void);  // Change it device_init
+
+/**
+ * @brief Sets device type based on GPIO pin readings.
+ * 
+ * @param type The device type to set (gateway, anchor, sensor).
+ * @return None
+ */
+void set_device_type(device_type_t type);
+
+/**
+ * @brief Gets the current device type.
+ * 
+ * @return The current device type (gateway, anchor, sensor).
+ */
+device_type_t get_device_type(void);
+
+/**
+ * @brief Sets the device ID.
+ * 
+ * @param device_id The device ID to set.
+ * @return None
+ */
+void set_device_id(uint16_t device_id);
+
+/**
+ * @brief Gets the current device ID.
+ * 
+ * @return The current device ID.
+ */
+uint16_t get_device_id(void);
+
+/**
+ * @brief Sets the serial number.
+ * 
+ * @param serial_num The serial number to set.
+ * @return None
+ */
+void set_serial_number(uint64_t serial_num);
+
+/**
+ * @brief Gets the current serial number.
+ * 
+ * @return The current serial number.
+ */
+uint64_t get_serial_number(void);
+
+/**
+ * @brief Sets the connected device ID (upstream parent).
+ * 
+ * @param connected_device_id The connected device ID to set.
+ * @return None
+ */
+void set_connected_device_id(uint16_t connected_device_id);
+
+/**
+ * @brief Gets the connected device ID (upstream parent).
+ * 
+ * @return The connected device ID.
+ */
+uint16_t get_connected_device_id(void);
+
+/**
+ * @brief Sets the hop number from gateway.
+ * 
+ * @param hop_num The hop number to set.
+ * @return None
+ */
+void set_hop_number(uint8_t hop_num);
+
+/**
+ * @brief Gets the hop number from gateway.
+ * 
+ * @return The hop number from gateway.
+ */
+uint8_t get_hop_number(void);
+
+/**
+ * @brief Sets the firmware version.
+ * 
+ * @param firmware_version The firmware version to set.
+ * @return None
+ */
+void set_firmware_version(uint16_t firmware_version);
+
+/**
+ * @brief Gets the firmware version.
+ * 
+ * @return The firmware version.
+ */
+uint16_t get_firmware_version(void);
+
+/**
+ * @brief Sets the mesh devices count.
+ * 
+ * @param mesh_devices_count The mesh devices count to set.
+ * @return None
+ */
+void set_mesh_devices_count(uint16_t mesh_devices_count);
+
+/**
+ * @brief Gets the mesh devices count.
+ * 
+ * @return The mesh devices count.
+ */
+uint16_t get_mesh_devices_count(void);
 
 /* Update hop number (called after pairing for anchors). */
 void device_info_update(void);

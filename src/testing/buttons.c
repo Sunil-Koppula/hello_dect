@@ -24,6 +24,7 @@
 #include "../protocol.h"
 #include "../storage.h"
 #include "../mesh.h"
+#include "../mesh_layers/mesh_routing.h"
 
 LOG_MODULE_REGISTER(buttons, CONFIG_MAIN_LOG_LEVEL);
 
@@ -179,7 +180,7 @@ static void default_button0_handler(void)
 static void default_button1_handler(void)
 {
 	LOG_WRN("Data Button pressed and Sender initialized: %d", sender.active);
-	if (DEVICE_TYPE == DEVICE_TYPE_SENSOR && !sender.active) {
+	if (get_device_type() == DEVICE_TYPE_SENSOR && !sender.active) {
 		uint16_t size = 256;
 
 		infra_entry_t entry;
@@ -191,7 +192,7 @@ static void default_button1_handler(void)
 
 		sender.active = true;
 		sender.dst_id = entry.device_id;
-		sender.gen_device_id = radio_get_device_id();
+		sender.gen_device_id = get_device_id();
 		sender.data_id = 0x01; // For testing purpose, data_id is hardcoded to 0x01,
 		sender.priority = PACKET_PRIORITY_LOW;
 		sender.total_size = size;
@@ -236,7 +237,7 @@ static void default_button1_handler(void)
 static void default_button2_handler(void)
 {
 	LOG_WRN("Config Button pressed");
-	if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY) {
+	if (get_device_type() == DEVICE_TYPE_GATEWAY) {
 		int idx = 0; // For testing, always use config slot 0
 		if (idx < 0) {
 			LOG_WRN("No free data slot available");
@@ -327,7 +328,7 @@ static void default_button2_handler(void)
 			send_route_discovery(&rd_pkt, infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
 		}
 
-	} else if (DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+	} else if (get_device_type() == DEVICE_TYPE_SENSOR) {
 		LOG_WRN("Large Data Button pressed");
 		// For testing, always use slot 0 and send large data to gateway
 		uint32_t size = 100 * 1024; // 100KB large data
@@ -341,7 +342,7 @@ static void default_button2_handler(void)
 
 		ld_sender.active = true;
 		ld_sender.dst_id = entry.device_id;
-		ld_sender.gen_device_id = radio_get_device_id();
+		ld_sender.gen_device_id = get_device_id();
 		ld_sender.data_id = 0x02; // For testing purpose, data_id
 		ld_sender.priority = PACKET_PRIORITY_MEDIUM;
 		ld_sender.base_addr = LARGE_DATA_PSRAM_BASE;

@@ -225,13 +225,13 @@ static uint8_t validate_report_chunk(const report_chunk_t *pkt)
 int send_report_init(report_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
 {
 	pkt->hdr.packet_type = PACKET_REPORT_INIT;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
 
 	// Add tracker entry for retries
-	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_INIT, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
+	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_INIT, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
 	LOG_INF("----> Sending REPORT_INIT to device %s ID:%d for SENSOR ID:%d", device_type_str(dst_type), dst_id, pkt->gen_device_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -240,7 +240,7 @@ int send_report_init(report_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint
 int send_report_init_ack(report_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
 	pkt->hdr.packet_type = PACKET_REPORT_INIT_ACK;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
@@ -252,13 +252,13 @@ int send_report_init_ack(report_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_ty
 int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
 {
 	pkt->hdr.packet_type = PACKET_REPORT_CHUNK;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
 
 	// Add tracker entry for retries
-	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_CHUNK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
+	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_CHUNK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
 	LOG_INF("----> Sending REPORT_CHUNK to device %s ID:%d for SENSOR ID:%d (Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index));
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -267,7 +267,7 @@ int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, ui
 int send_report_chunk_ack(report_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
 	pkt->hdr.packet_type = PACKET_REPORT_CHUNK_ACK;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
@@ -279,7 +279,7 @@ int send_report_chunk_ack(report_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_
 int send_report_received(report_received_t *pkt, uint16_t dst_id, uint8_t dst_type)
 {
 	pkt->hdr.packet_type = PACKET_REPORT_RECEIVED;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = PACKET_PRIORITY_HIGH;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
@@ -294,7 +294,7 @@ int send_report_received(report_received_t *pkt, uint16_t dst_id, uint8_t dst_ty
 void handle_report_init(const report_init_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -319,7 +319,7 @@ void handle_report_init(const report_init_t *pkt, uint16_t dst_id, int16_t rssi_
 		return;
 	}
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		case DEVICE_TYPE_ANCHOR:
 		{
@@ -358,7 +358,7 @@ void handle_report_init(const report_init_t *pkt, uint16_t dst_id, int16_t rssi_
 void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -373,7 +373,7 @@ void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16
 	// Remove tracker
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			// Gateway will never receive report init ack because only anchor and sensor can receive report init ack, so just ignore if received
@@ -414,7 +414,7 @@ void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16
 void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -432,7 +432,7 @@ void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rss
 		.chunk_index = pkt->chunk_index,
 	};
 
-	switch (DEVICE_TYPE)
+	switch (get_device_type())
 	{
 		case DEVICE_TYPE_GATEWAY:
 		case DEVICE_TYPE_ANCHOR:
@@ -467,7 +467,7 @@ void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rss
 	// Send Data Recieved Packet to Sensor
 	int idx;
 	int ret = find_slot(pkt->gen_device_id, pkt->data_id, &idx);
-	if (DEVICE_TYPE == DEVICE_TYPE_GATEWAY && ret == -2) {
+	if (get_device_type() == DEVICE_TYPE_GATEWAY && ret == -2) {
 		// Implement Report Received Packet.
 		LOG_ERR("Need to Send Report Received Packet to Sensor for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
 		report_received_t recv_pkt = {
@@ -477,12 +477,12 @@ void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rss
 		// Find dst_id from route table using gen_device_id
 		// dst_id = get_next_hop_device_id(pkt->gen_device_id);
 		uint16_t dst_id = 0xFFFF; // Implement later
-		if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
+		if (dst_id == 0 || dst_id == 0xFFFF || dst_id == get_device_id()) {
 			LOG_ERR("No route to gen_device_id %d, cannot send REPORT_RECEIVED", pkt->gen_device_id);
 			return;
 		}
 		send_report_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
-	} else if (DEVICE_TYPE == DEVICE_TYPE_ANCHOR && ret == -2) {
+	} else if (get_device_type() == DEVICE_TYPE_ANCHOR && ret == -2) {
 		infra_entry_t entry;
 		int err = storage_infra_get(0, &entry);
 		if (err) {
@@ -516,7 +516,7 @@ void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rss
 void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -543,7 +543,7 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 		return;
 	}
 
-	switch (DEVICE_TYPE)
+	switch (get_device_type())
 	{
 		case DEVICE_TYPE_GATEWAY:
 		{
@@ -612,7 +612,7 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -624,7 +624,7 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 
 	LOG_INF("Received REPORT_RECEIVED from %s ID:%d gen %d data_id %d", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id);
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			// Gateway will never receive report received packet because only anchor can receive report received packet, so just ignore if received
@@ -642,7 +642,7 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 				// Find dst_id from route table using gen_device_id
 				// dst_id = get_next_hop_device_id(pkt->gen_device_id);
 				dst_id = 0xFFFF; // Implement later
-				if (dst_id == 0 || dst_id == 0xFFFF || dst_id == radio_get_device_id()) {
+				if (dst_id == 0 || dst_id == 0xFFFF || dst_id == get_device_id()) {
 					LOG_ERR("No route to gen_device_id %d, cannot forward REPORT_RECEIVED", pkt->gen_device_id);
 					return;
 				}

@@ -93,7 +93,7 @@ static void at_error(void)
 
 static const char *device_type_name(void)
 {
-    switch (DEVICE_TYPE) {
+    switch (get_device_type()) {
     case DEVICE_TYPE_GATEWAY: return "GATEWAY";
     case DEVICE_TYPE_ANCHOR:  return "ANCHOR";
     case DEVICE_TYPE_SENSOR:  return "SENSOR";
@@ -196,7 +196,7 @@ static void cmd_get_devtype(void)
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp), "#DEVTYPE: %s", device_type_name());
     at_send_line(resp);
-    if (DEVICE_TYPE > 3 || DEVICE_TYPE == 0) {
+    if (get_device_type() > 3 || get_device_type() == 0) {
         at_error();
     } else {
         at_ok();
@@ -206,9 +206,9 @@ static void cmd_get_devtype(void)
 static void cmd_get_devid(void)
 {
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
-    snprintf(resp, sizeof(resp), "#DEVID: %u", radio_get_device_id());
+    snprintf(resp, sizeof(resp), "#DEVID: %u", get_device_id());
     at_send_line(resp);
-    if (radio_get_device_id() == 0xFFFF || radio_get_device_id() == 0) {
+    if (get_device_id() == 0xFFFF || get_device_id() == 0) {
         at_error();
     } else {
         at_ok();
@@ -218,11 +218,11 @@ static void cmd_get_devid(void)
 static void cmd_get_sn(void)
 {
     char     resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
-    uint64_t sn = SERIAL_NUMBER;
+    uint64_t sn = get_serial_number();
     snprintf(resp, sizeof(resp), "#SN: 0x%08x%08x",
              (unsigned)(sn >> 32), (unsigned)(sn & 0xFFFFFFFF));
     at_send_line(resp);
-    if (SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) {
+    if (get_serial_number() == 0xFFFFFFFFFFFFFFFF || get_serial_number() == 0) {
         at_error();
     } else {
         at_ok();
@@ -232,9 +232,9 @@ static void cmd_get_sn(void)
 static void cmd_get_hop(void)
 {
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
-    snprintf(resp, sizeof(resp), "#HOP: %u", DEVICE_HOP_NUMBER);
+    snprintf(resp, sizeof(resp), "#HOP: %u", get_hop_number());
     at_send_line(resp);
-    if (DEVICE_HOP_NUMBER == 0xFF) {
+    if (get_hop_number() == 0xFF) {
         at_error();
     } else {
         at_ok();
@@ -257,7 +257,7 @@ static void cmd_set_sn(const char *sn_str)
         return;
     }
 
-    SERIAL_NUMBER = sn;
+    set_serial_number(sn);
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp), "#SN: 0x%08x%08x",
              (unsigned)(sn >> 32), (unsigned)(sn & 0xFFFFFFFF));
@@ -290,7 +290,7 @@ static void cmd_reboot(void)
  */
 static void cmd_config(const char *args)
 {
-    if (DEVICE_TYPE != DEVICE_TYPE_GATEWAY) {
+    if (get_device_type() != DEVICE_TYPE_GATEWAY) {
         at_error();
         return;
     }
@@ -379,7 +379,7 @@ static void cmd_config(const char *args)
 
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp),
-        "#CONFIG: sn=0x%016llx id=%u len=%u crc=0x%08lx",
+        "#CONFIG:\"0x%016llx\",\"%u\",\"%u\",\"0x%08lx\"",
         (unsigned long long)sn, config.data_id, config.data_len,
         (unsigned long)config.data_crc32);
     at_send_line(resp);
@@ -407,8 +407,8 @@ static void cmd_config_ack(const char *args)
      * that's the SN we put in the outgoing AT#CONFIG. Mismatched acks
      * mean the downstream is misbehaving or a stale message slipped in;
      * drop without touching pending_ack so we don't free the wrong slot. */
-    if (v_sn != SERIAL_NUMBER) {
-        LOG_WRN("AT#CONFIG_ACK SN mismatch: got 0x%016llx, expected 0x%016llx", (unsigned long long)v_sn, (unsigned long long)SERIAL_NUMBER);
+    if (v_sn != get_serial_number()) {
+        LOG_WRN("AT#CONFIG_ACK SN mismatch: got 0x%016llx, expected 0x%016llx", (unsigned long long)v_sn, (unsigned long long)get_serial_number());
         return;
     }
 
@@ -455,7 +455,7 @@ static void dispatch(char *line)
         return;
     }
 
-    switch (DEVICE_TYPE) {
+    switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         {
             if (strstr(line, "AT#CONFIG") != NULL) {

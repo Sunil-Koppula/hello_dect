@@ -15,29 +15,32 @@
 #include "config.h"
 #include "log_color.h"
 #include "slm_at_main.h"
+#include "mesh_layers/mesh_pairing.h"
+#include "mesh_layers/mesh_session.h"
+#include "mesh_layers/mesh_routing.h"
 
 LOG_MODULE_REGISTER(main_sub, CONFIG_MAIN_SUB_LOG_LEVEL);
 
-static bool is_main_sub_initialized = false;
+static bool main_sub_initialized = false;
 
 static int main_sub_init(void)
 {
-    if (is_main_sub_initialized) {
+    if (main_sub_initialized) {
         return 0;
     }
 
     // Update device info
     device_info_update();
-	LOG_INF_BLU("%s Initialized with ID: %d SN: 0x%016llx, Hop: %d", device_type_str(DEVICE_TYPE), radio_get_device_id(), SERIAL_NUMBER, DEVICE_HOP_NUMBER);
+	LOG_INF_BLU("%s Initialized with ID: %d SN: 0x%016llx, Hop: %d", device_type_str(get_device_type()), get_device_id(), get_serial_number(), get_hop_number());
 
     // Initialize subsystems
     tracker_init();
-    mesh_time_init();
+    mesh_init();
     data_init();
     config_init();
     large_data_init();
 
-    switch (DEVICE_TYPE) {
+    switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         {
             // Ping known devices
@@ -73,13 +76,13 @@ static int main_sub_init(void)
 
         default:
         {
-            LOG_ERR("Invalid device type %d", DEVICE_TYPE);
+            LOG_ERR("Invalid device type %d", get_device_type());
             return -EINVAL;
         }
         break;
     }
 
-    is_main_sub_initialized = true;
+    main_sub_initialized = true;
     return 0;
 }
 
@@ -187,7 +190,7 @@ static void process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 			break;
 
         case PACKET_CONFIG_RECEIVED_ACK:
-            // handle_config_received_ack((const config_received_ack_t *)data, sender_id, rssi_2);
+            handle_config_received_ack((const config_received_ack_t *)data, sender_id, rssi_2);
             break;
 
 		case PACKET_LARGE_DATA_INIT:
@@ -257,7 +260,7 @@ void main_sub_run(void)
     switch (main_sub_state) {
         case MAIN_SUB_INIT:
         {
-            if (SERIAL_NUMBER == 0xFFFFFFFFFFFFFFFF || SERIAL_NUMBER == 0) {
+            if (get_serial_number() == 0xFFFFFFFFFFFFFFFF || get_serial_number() == 0) {
                 main_sub_state = MAIN_SUB_INIT;
                 break;
             }
@@ -322,7 +325,7 @@ void main_sub_run(void)
         {
             LOG_ERR("Main Sub in error state, waiting 10s before retry");
             k_msleep(10000);
-            is_main_sub_initialized = false;
+            main_sub_initialized = false;
             main_sub_state = MAIN_SUB_INIT;
         }
         break;

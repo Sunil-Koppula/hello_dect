@@ -306,9 +306,9 @@ void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exha
 	if (exhausted) {
 		LOG_WRN("Tracker 0x%02x (pkt: 0x%02x) for device %d exhausted", entry->tracking_id, entry->packet_type, entry->dst_id);
 
-		if (entry->packet_type == PACKET_PING_DEVICE && entry->dst_id == temp_id) {
-			LOG_WRN("Ping tracker for temp_id: %d exhausted, clearing temp_id", temp_id);
-			temp_id = 0xFFFF;
+		if (entry->packet_type == PACKET_PING_DEVICE && entry->dst_id == get_temp_id()) {
+			LOG_WRN("Ping tracker for temp_id: %d exhausted, clearing temp_id", get_temp_id());
+			set_temp_id(0xFFFF);
 		}
 
 		if (entry->packet_type == PACKET_JOINED_NETWORK) {

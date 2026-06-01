@@ -14,6 +14,7 @@
 #include "slm_at_main.h"
 #include "slm_at_uart.h"
 #include "slm_at_common.h"
+#include "mesh_layers/mesh_routing.h"
 #include "log_color.h"
 
 LOG_MODULE_REGISTER(config, CONFIG_CONFIG_LOG_LEVEL);
@@ -58,7 +59,7 @@ static void config_slot_free(int idx)
 
 static uint8_t validate_config(const config_t *pkt)
 {
-	if (pkt->dst_device_id != radio_get_device_id() && DEVICE_TYPE == DEVICE_TYPE_SENSOR) {
+	if (pkt->dst_device_id != get_device_id() && get_device_type() == DEVICE_TYPE_SENSOR) {
 		return STATUS_FAILURE;
 	}
 
@@ -112,13 +113,13 @@ static uint8_t validate_config(const config_t *pkt)
 int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
 
     // Add tracker entry for retries
-	tracker_add(dst_id, radio_get_device_id(), pkt->hdr.tracking_id, PACKET_CONFIG, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
+	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_CONFIG, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
 	LOG_INF_GRN("----> Sending CONFIG to device %s ID:%d", device_type_str(dst_type), dst_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -127,7 +128,7 @@ int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priori
 int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG_ACK;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
@@ -139,10 +140,13 @@ int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_
 int send_config_received(config_received_t *pkt, uint16_t dst_id, uint8_t dst_type)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG_RECEIVED;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = PACKET_PRIORITY_HIGH;
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
+
+	// Add tracker entry for retries
+	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_CONFIG_RECEIVED, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
 	LOG_INF_GRN("----> Sending CONFIG_RECEIVED to device %s ID:%d", device_type_str(dst_type), dst_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
@@ -151,7 +155,7 @@ int send_config_received(config_received_t *pkt, uint16_t dst_id, uint8_t dst_ty
 int send_config_received_ack(config_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
 {
 	pkt->hdr.packet_type = PACKET_CONFIG_RECEIVED_ACK;
-	pkt->hdr.device_type = DEVICE_TYPE;
+	pkt->hdr.device_type = get_device_type();
 	pkt->hdr.priority = priority;
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
@@ -166,7 +170,7 @@ int send_config_received_ack(config_received_ack_t *pkt, uint16_t dst_id, uint8_
 void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -190,9 +194,7 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		return;
 	}
 
-	send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
-
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			// Gateway will not process any config, so reject any incoming config packet
@@ -219,6 +221,7 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 								}
 								config_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
 								config_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
+								send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 								send_config(&config_pkt, pkt->dst_device_id, pkt->dst_device_type, PACKET_PRIORITY_HIGH);
 							} 
 						}
@@ -237,14 +240,7 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 				// validate config packet and store it if valid, if not reject the packet
 				uint8_t status = validate_config(pkt);
 				ack.hdr.status = status;
-				// // Send config received packet to confirm the config is received and processed
-				// config_received_t recv_pkt = {
-				// 	.dst_device_id = pkt->dst_device_id,
-				// 	.dst_device_type = pkt->dst_device_type,
-				// 	.data_type = pkt->data_type,
-				// 	.data_id = pkt->data_id,
-				// };
-				// send_config_received(&recv_pkt, dst_id, pkt->hdr.device_type);
+				send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 			} else {
 				// Reject config packet except from gateway and anchor
 				return;
@@ -266,7 +262,7 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -281,7 +277,7 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 	// Remove tracker
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
@@ -366,7 +362,7 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 void handle_config_received(const config_received_t *pkt, uint16_t dst_id, int16_t rssi_2)
 {
 	// Only Process if it's for this device
-	if (pkt->hdr.device_id != radio_get_device_id()) {
+	if (pkt->hdr.device_id != get_device_id()) {
 		return;
 	}
 
@@ -378,7 +374,7 @@ void handle_config_received(const config_received_t *pkt, uint16_t dst_id, int16
 
 	LOG_INF_MAG("Received CONFIG_RECEIVED from %s ID:%d for %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
@@ -423,17 +419,11 @@ void handle_config_received(const config_received_t *pkt, uint16_t dst_id, int16
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
 				LOG_INF("Forwarding CONFIG_RECEIVED to Gateway for device %s ID:%d", device_type_str(pkt->dst_device_type), pkt->dst_device_id);
 				// Forward config received packet to gateway
-				infra_entry_t entry;
-				int err = storage_infra_get(0, &entry);
-				if (err) {
-					LOG_ERR("Failed to get infra entry from storage (%d), cannot forward CONFIG_RECEIVED", err);
-					return;
-				}
 				config_received_t fwd_pkt = {
 					.dst_device_id = pkt->dst_device_id,
 					.dst_device_type = pkt->dst_device_type,
 				};
-				send_config_received(&fwd_pkt, entry.device_id, entry.device_type);
+				send_config_received(&fwd_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type);
 			} else {
 				// Reject config received packet except from anchor and sensor
 				return;
@@ -451,6 +441,83 @@ void handle_config_received(const config_received_t *pkt, uint16_t dst_id, int16
 		default:
 		{
 			// There are only 3 valid device types, reject any config received if this device has invalid type
+			return;
+		}
+		break;
+	}
+
+	config_received_ack_t ack = {
+		.dst_device_id = pkt->dst_device_id,
+		.dst_device_type = pkt->dst_device_type,
+		.data_type = pkt->data_type,
+		.data_id = pkt->data_id,
+	};
+	ack.hdr.status = STATUS_SUCCESS;
+	send_config_received_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
+
+	return;
+}
+
+void handle_config_received_ack(const config_received_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+	// Only Process if it's for this device
+	if (pkt->hdr.device_id != get_device_id()) {
+		return;
+	}
+
+	// Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+	if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+		LOG_WRN("Unknown device type 0x%02x in CONFIG_RECEIVED_ACK from %d, rejecting", pkt->hdr.device_type, dst_id);
+		return;
+	}
+
+	LOG_INF_MAG("Received CONFIG_RECEIVED_ACK from %s ID:%d for %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
+
+	// Remove tracker
+	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+	switch (get_device_type()) {
+		case DEVICE_TYPE_GATEWAY:
+		{
+			// Gateway will not receive config received ack because only anchor can receive config received ack, so just ignore if received
+			return;
+		}
+		break;
+
+		case DEVICE_TYPE_ANCHOR:
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
+				LOG_INF("Forwarding CONFIG_RECEIVED_ACK to %s ID:%d for device %s ID:%d",device_type_str(infra_devices[0].entry.device_type), infra_devices[0].entry.device_id, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
+				// Forward config received ack packet to Upstream (Gateway)
+				config_received_ack_t fwd_pkt = {
+					.dst_device_id = pkt->dst_device_id,
+					.dst_device_type = pkt->dst_device_type,
+					.data_type = pkt->data_type,
+					.data_id = pkt->data_id,
+				};
+				send_config_received_ack(&fwd_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
+			} else {
+				// Reject config received ack packet except from gateway and anchor
+				return;
+			}
+		}
+		break;
+
+		case DEVICE_TYPE_SENSOR:
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
+				// No need to process
+				return;
+			} else {
+				// Reject config received ack packet except from gateway and anchor
+				return;
+			}
+		}
+		break;
+
+		default:
+		{
+			// There are only 3 valid device types, reject any config received ack if this device has invalid type
 			return;
 		}
 		break;
@@ -487,7 +554,7 @@ void config_tick(void)
 	// 	return;
 	// }
 
-	switch (DEVICE_TYPE) {
+	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
 			for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
@@ -565,11 +632,12 @@ void config_tick(void)
 				}
 
 				/* Build the AT line. Worst-case at 128 B payload:
-				 *   'AT#CONFIG=' (10) + framing 30 + 256 payload hex + CR (1)
-				 *   = 297 chars, within SLM_UART_AT_COMMAND_LEN. */
+				 *   leading CRLF (2) + header/framing (55) + 256 payload hex
+				 *   + closing quote & trailing CRLF (3) = 316 chars, well
+				 *   within SLM_UART_AT_COMMAND_LEN (1024). */
 				char cmd[SLM_UART_AT_COMMAND_LEN];
-				int n = snprintf(cmd, sizeof(cmd), "AT#CONFIG=\"%016llX\",\"%04X\",\"%04X\",\"%08lX\",\"",
-					(unsigned long long)SERIAL_NUMBER, config_slots[i].config_id, (unsigned)config_slots[i].config_len,
+				int n = snprintf(cmd, sizeof(cmd), "\r\nAT#CONFIG=\"%016llX\",\"%04X\",\"%04X\",\"%08lX\",\"",
+					(unsigned long long)get_serial_number(), config_slots[i].config_id, (unsigned)config_slots[i].config_len,
 					(unsigned long)config_slots[i].config_crc32);
 				
 				if (n < 0 || (size_t)n >= sizeof(cmd)) {
@@ -577,8 +645,11 @@ void config_tick(void)
 					continue;
 				}
 
-				/* Append payload as uppercase hex, then closing quote + CR. */
-				size_t need = (size_t)n + (size_t)config_slots[i].config_len * 2 + 2;
+				/* Append payload as uppercase hex, then closing quote + CRLF.
+				 * CRLF (not bare CR) matches the AT wire convention in
+				 * slm_at_main.c and keeps consecutive emissions on separate
+				 * lines in terminals / serial monitors / log captures. */
+				size_t need = (size_t)n + (size_t)config_slots[i].config_len * 2 + 3;
 				if (need >= sizeof(cmd)) {
 					LOG_ERR("AT#CONFIG line too long (%u bytes needed)", (unsigned)need);
 					continue;
@@ -589,6 +660,7 @@ void config_tick(void)
 				}
 				cmd[n++] = '"';
 				cmd[n++] = '\r';
+				cmd[n++] = '\n';
 
 				int tx_err = slm_at_tx_write((const uint8_t *)cmd, (size_t)n, false);
 				if (tx_err) {
@@ -604,7 +676,7 @@ void config_tick(void)
 		break;
 
 		default:
-			LOG_ERR("Unknown device type %d in config_tick", DEVICE_TYPE);
+			LOG_ERR("Unknown device type %d in config_tick", get_device_type());
 	}
 
 }

@@ -70,12 +70,24 @@ config MESH_LOG_LEVEL
 	help
 	   Choose the log level for the mesh module.
 
-config MESH_TX_LOG_LEVEL
-	int "Mesh TX log level"
+config MESH_PAIRING_LOG_LEVEL
+	int "Mesh pairing log level"
 	default 4
 	help
-	   Choose the log level for the mesh transmission module.
+	   Choose the log level for the mesh pairing module.
 
+config MESH_ROUTING_LOG_LEVEL
+	int "Mesh routing log level"
+	default 4
+	help
+	   Choose the log level for the mesh routing module.
+
+config MESH_SESSION_LOG_LEVEL
+	int "Mesh session log level"
+	default 4
+	help
+	   Choose the log level for the mesh session module.
+	
 config DATA_LOG_LEVEL
 	int "Data log level"
 	default 4
