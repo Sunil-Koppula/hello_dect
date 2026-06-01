@@ -193,7 +193,7 @@ static void default_button1_handler(void)
 		sender.active = true;
 		sender.dst_id = entry.device_id;
 		sender.gen_device_id = get_device_id();
-		sender.data_id = 0x01; // For testing purpose, data_id is hardcoded to 0x01,
+		sender.data_id = 0x10; // For testing purpose, data_id is hardcoded to 0x10,
 		sender.priority = PACKET_PRIORITY_LOW;
 		sender.total_size = size;
 		sender.chunk_count = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;

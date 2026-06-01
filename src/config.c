@@ -216,16 +216,27 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 							if (sensor_devices[i].entry.device_id == pkt->dst_device_id) {
 								config_t config_pkt;
 								memcpy(&config_pkt, pkt, sizeof(config_t));
-								for (int j = 0; j < MAX_DEPTH - 1; j++) {
-									config_pkt.route_info[j] = pkt->route_info[j+1];
-								}
-								config_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
-								config_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
-								send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
+								config_pkt.route_info[0].device_id = 0xFFFF;
+								config_pkt.route_info[0].hop_num = 0xFF;
 								send_config(&config_pkt, pkt->dst_device_id, pkt->dst_device_type, PACKET_PRIORITY_HIGH);
-							} 
+							}
+							if (i == sensor_count - 1) {
+								LOG_WRN("CONFIG from device %s ID:%d for SENSOR ID:%d but no matching sensor found in storage", device_type_str(pkt->hdr.device_type), dst_id, pkt->dst_device_id);
+								ack.hdr.status = STATUS_NOT_FOUND;
+							}
 						}
-					} 
+					} else {
+						// Forward config packet to next hop
+						config_t config_pkt;
+						memcpy(&config_pkt, pkt, sizeof(config_t));
+						for (int i = 0; i < MAX_DEPTH - 1; i++) {
+							config_pkt.route_info[i] = config_pkt.route_info[i + 1];
+						}
+						config_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
+						config_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
+						send_config(&config_pkt, dst_id, pkt->hdr.device_type, PACKET_PRIORITY_HIGH);
+					}
+					send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 				}
 			} else {
 				// Reject config packet except from gateway and anchor

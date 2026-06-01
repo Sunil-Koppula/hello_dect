@@ -14,6 +14,7 @@
 #include "product_info.h"
 #include "storage.h"
 #include "main_sub.h"
+#include "mesh_layers/mesh_routing.h"
 
 LOG_MODULE_REGISTER(data, CONFIG_DATA_LOG_LEVEL);
 
@@ -284,7 +285,22 @@ int send_report_received(report_received_t *pkt, uint16_t dst_id, uint8_t dst_ty
 	pkt->hdr.tracking_id = tracker_next_id();
 	pkt->hdr.device_id = dst_id;
 
+	// Add tracker entry for retries
+	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_RECEIVED, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
+
 	LOG_INF("----> Sending REPORT_RECEIVED to device %s ID:%d for SENSOR ID:%d data_id %d", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
+	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
+}
+
+int send_report_received_ack(report_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id)
+{
+	pkt->hdr.packet_type = PACKET_REPORT_RECEIVED_ACK;
+	pkt->hdr.device_type = get_device_type();
+	pkt->hdr.priority = priority;
+	pkt->hdr.tracking_id = tracking_id;
+	pkt->hdr.device_id = dst_id;
+
+	LOG_INF("----> Sending REPORT_RECEIVED_ACK to device %s ID:%d for SENSOR ID:%d data_id %d", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -470,18 +486,35 @@ void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rss
 	if (get_device_type() == DEVICE_TYPE_GATEWAY && ret == -2) {
 		// Implement Report Received Packet.
 		LOG_ERR("Need to Send Report Received Packet to Sensor for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
-		report_received_t recv_pkt = {
-			.gen_device_id = pkt->gen_device_id,
-			.data_id = pkt->data_id,
-		};
-		// Find dst_id from route table using gen_device_id
-		// dst_id = get_next_hop_device_id(pkt->gen_device_id);
-		uint16_t dst_id = 0xFFFF; // Implement later
-		if (dst_id == 0 || dst_id == 0xFFFF || dst_id == get_device_id()) {
-			LOG_ERR("No route to gen_device_id %d, cannot send REPORT_RECEIVED", pkt->gen_device_id);
-			return;
+
+		{
+			// First find route
+			uint16_t hop_num = get_hop_num(pkt->gen_device_id, DEVICE_TYPE_SENSOR);
+			if (hop_num == 0xFF) {
+				LOG_ERR("No route to gen_device_id %d, cannot send REPORT_RECEIVED", pkt->gen_device_id);
+				return;
+			} else if (hop_num == 0) {
+				LOG_INF("Sensor ID:%d is directly connected to this gateway, sending REPORT_RECEIVED without route discovery", pkt->gen_device_id);
+				// Build report received packet and send directly without route discovery
+				report_received_t recv_pkt = {
+					.gen_device_id = pkt->gen_device_id,
+					.data_id = pkt->data_id,
+					.hdr.status = STATUS_SUCCESS,
+				};
+				send_report_received(&recv_pkt, pkt->gen_device_id, DEVICE_TYPE_SENSOR);
+				return;
+			}
+			route_discovery_t rd_pkt = {
+				.device_id = pkt->gen_device_id,
+				.device_type = DEVICE_TYPE_SENSOR,
+				.hop_num = hop_num,
+				.data_id = pkt->data_id,
+				.data_type = DATA_TYPE_REPORT,
+			};
+			for (int i = 0; i < infra_count; i++) {
+				send_route_discovery(&rd_pkt, infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
+			}
 		}
-		send_report_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
 	} else if (get_device_type() == DEVICE_TYPE_ANCHOR && ret == -2) {
 		infra_entry_t entry;
 		int err = storage_infra_get(0, &entry);
@@ -624,6 +657,11 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 
 	LOG_INF("Received REPORT_RECEIVED from %s ID:%d gen %d data_id %d", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id);
 
+	report_received_ack_t ack = {
+		.gen_device_id = pkt->gen_device_id,
+		.data_id = pkt->data_id,
+	};
+
 	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 		{
@@ -635,18 +673,35 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 		case DEVICE_TYPE_ANCHOR:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-				report_received_t recv_pkt = {
-					.gen_device_id = pkt->gen_device_id,
-					.data_id = pkt->data_id,
-				};
-				// Find dst_id from route table using gen_device_id
-				// dst_id = get_next_hop_device_id(pkt->gen_device_id);
-				dst_id = 0xFFFF; // Implement later
-				if (dst_id == 0 || dst_id == 0xFFFF || dst_id == get_device_id()) {
-					LOG_ERR("No route to gen_device_id %d, cannot forward REPORT_RECEIVED", pkt->gen_device_id);
-					return;
+				if (pkt->route_info[1].device_id == 0xFFFF) {
+					// Check in sensor storage
+					for (int i = 0; i < sensor_count; i++) {
+						if (sensor_devices[i].entry.device_id == pkt->gen_device_id) {
+							report_received_t recv_pkt;
+							memcpy(&recv_pkt, pkt, sizeof(report_received_t));
+							recv_pkt.route_info[0].device_id = 0xFFFF;
+							recv_pkt.route_info[0].hop_num = 0xFF;
+							send_report_received(&recv_pkt, pkt->gen_device_id, DEVICE_TYPE_SENSOR);
+							ack.hdr.status = STATUS_SUCCESS;
+							break;
+						}
+						if (i == sensor_count - 1) {
+							ack.hdr.status = STATUS_NOT_FOUND;
+						}
+					}
+				} else {
+					// Forward report received packet to next hop
+					report_received_t recv_pkt;
+					memcpy(&recv_pkt, pkt, sizeof(report_received_t));
+					for (int i = 0; i < MAX_DEPTH - 1; i++) {
+						recv_pkt.route_info[i] = recv_pkt.route_info[i + 1];
+					}
+					recv_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
+					recv_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
+					ack.hdr.status = STATUS_SUCCESS;
+					send_report_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
 				}
-				send_report_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
+				send_report_received_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 			} else {
 				// Reject report received packet except from gateway and anchor
 				return;
@@ -658,6 +713,8 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
 				LOG_INF("Gateway Received the Report");
+				ack.hdr.status = STATUS_SUCCESS;
+				send_report_received_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 				return;
 			} else {
 				// Reject data received packet except from gateway and anchor
@@ -669,6 +726,56 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 		default:
 		{
 			// There are only 3 valid device types, reject any data received if this device has invalid type
+			return;
+		}
+		break;
+	}
+
+	return;
+}
+
+void handle_report_received_ack(const report_received_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
+{
+	// Only Process if it's for this device
+	if (pkt->hdr.device_id != get_device_id()) {
+		return;
+	}
+
+	// Validate responder type: only accept if it's from a valid device type (gateway, anchor, sensor)
+	if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
+		LOG_WRN("Unknown device type 0x%02x in REPORT_RECEIVED_ACK from %d, rejecting", pkt->hdr.device_type, dst_id);
+		return;
+	}
+
+	LOG_INF("Received REPORT_RECEIVED_ACK from %s ID:%d gen %d data_id %d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->hdr.status);
+
+	// Remove tracker
+	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
+
+	switch (get_device_type()) {
+		case DEVICE_TYPE_GATEWAY:
+		case DEVICE_TYPE_ANCHOR:
+		{
+			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+				// No need to process
+				return;
+			} else {
+				// Reject report received ack except from anchor and sensor
+				return;
+			}
+		}
+		break;
+
+		case DEVICE_TYPE_SENSOR:
+		{
+			// Sensor will not send report received ack, so just ignore if received
+			return;
+		}
+		break;
+
+		default:
+		{
+			// There are only 3 valid device types, reject any data received ack if this device has invalid type
 			return;
 		}
 		break;

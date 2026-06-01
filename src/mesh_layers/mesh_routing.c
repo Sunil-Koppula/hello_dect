@@ -15,6 +15,7 @@
 #include "../radio.h"
 #include "../storage.h"
 #include "../config.h"
+#include "../data.h"
 
 LOG_MODULE_REGISTER(mesh_routing, CONFIG_MESH_ROUTING_LOG_LEVEL);
 
@@ -89,6 +90,48 @@ static config_t build_config_pkt(const route_info_t *pkt)
         device_type_str(config_pkt.dst_device_type), config_pkt.dst_device_id, config_pkt.data_type, config_pkt.data_id, config_pkt.config_len, config_pkt.config_crc32);
 
     return config_pkt;
+}
+
+static report_received_t build_report_received_pkt(const route_info_t *pkt)
+{
+    LOG_INF("Before sorting");
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        if (pkt->route_info[i].device_id != 0xFFFF) {
+            LOG_INF("   %d: Device ID:%d, Hop Num:%d", i, pkt->route_info[i].device_id, pkt->route_info[i].hop_num);
+        }
+    }
+
+    report_received_t recv_pkt = {
+        .gen_device_id = pkt->device_id,
+        .data_id = pkt->data_id,
+        .hdr.status = STATUS_SUCCESS,
+    };
+
+    int idx = 0;
+    for (idx = 0; idx < MAX_DEPTH; idx++) {
+        if (pkt->route_info[idx].device_id == 0xFFFF) {
+            break;
+        }
+    }
+    for (int i = 0; i <= idx - 1; i++) {
+        recv_pkt.route_info[i] = pkt->route_info[idx - 1 - i];
+    }
+    for (int i = idx; i < MAX_DEPTH; i++) {
+        recv_pkt.route_info[i].device_id = 0xFFFF;
+        recv_pkt.route_info[i].hop_num = 0xFF;
+    }
+    LOG_INF("After sorting");
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        if (recv_pkt.route_info[i].device_id != 0xFFFF) {
+            LOG_INF("   %d: Device ID:%d, Hop Num:%d", i, recv_pkt.route_info[i].device_id, recv_pkt.route_info[i].hop_num);
+        }
+    }
+
+     // Print report received pkt for debugging
+    LOG_INF("Built report received packet for device %s ID:%d with data type 0x%02x, data ID %d",
+        device_type_str(DEVICE_TYPE_SENSOR), recv_pkt.gen_device_id, DATA_TYPE_REPORT, recv_pkt.data_id);
+
+    return recv_pkt;
 }
 
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
@@ -333,7 +376,7 @@ void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
         return;
     }
 
-    LOG_INF_MAG("   Received ROUTE_INFO from %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
+    LOG_INF_MAG("   Received ROUTE_INFO from %s ID:%d with RSSI:%d (Data type: %d, status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->data_type, pkt->hdr.status);
 
     // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
     if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
@@ -351,15 +394,20 @@ void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 // Start sending the Data (Configs for that device)
-                LOG_INF("Received route info for device %s ID:%d", device_type_str(pkt->device_type), pkt->device_id);
-                // Build config packet and send
-                config_t config_pkt = build_config_pkt(pkt);
-                if (config_pkt.config_len == 0) {
-                    LOG_WRN("No config data for device %s ID:%d, cannot send config", device_type_str(pkt->device_type), pkt->device_id);
-                    return;
+                LOG_INF("Received route info for device %s ID:%d (Data type: %d)", device_type_str(pkt->device_type), pkt->device_id, pkt->data_type);
+                if (pkt->data_type == DATA_TYPE_CONFIG) { 
+                    // Build config packet and send
+                    config_t config_pkt = build_config_pkt(pkt);
+                    if (config_pkt.config_len == 0) {
+                        LOG_WRN("No config data for device %s ID:%d, cannot send config", device_type_str(pkt->device_type), pkt->device_id);
+                        return;
+                    }
+                    send_config(&config_pkt, dst_id, DEVICE_TYPE_ANCHOR, STATUS_SUCCESS);
+                } else if (pkt->data_type == DATA_TYPE_REPORT) {
+                    // Build report received packet and send
+                    report_received_t recv_pkt = build_report_received_pkt(pkt);
+                    send_report_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
                 }
-
-                send_config(&config_pkt, dst_id, DEVICE_TYPE_ANCHOR, STATUS_SUCCESS);
             } else {
                 // Reject route info except from anchor
                 return;
