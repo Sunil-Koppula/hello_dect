@@ -500,6 +500,26 @@ void config_tick(void)
 						LOG_ERR("No route found to device %s ID:%d, cannot send config", device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
 						config_slot_free(i);
 						continue;
+					} else if (hop_num == 0) {
+						LOG_INF("Destination device %s ID:%d is directly connected to gateway, sending config directly", device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
+						// Build config packet and send directly without route discovery
+						config_t config_pkt = {
+							.dst_device_id = config_slots[i].dst_device_id,
+							.dst_device_type = config_slots[i].dst_device_type,
+							.data_type = DATA_TYPE_CONFIG,
+							.data_id = config_slots[i].config_id,
+							.config_len = config_slots[i].config_len,
+							.config_crc32 = config_slots[i].config_crc32,
+						};
+						uint32_t addr = PSRAM_CONFIG_BASE + ((uint32_t)i * MAX_CONFIG_SIZE);
+						int err = psram_read(addr, config_pkt.config, config_slots[i].config_len);
+						if (err) {
+							LOG_ERR("psram_read @0x%06x failed (%d), cannot send config", addr, err);
+							continue;
+						}
+						send_config(&config_pkt, config_slots[i].dst_device_id, config_slots[i].dst_device_type, PACKET_PRIORITY_HIGH);
+						config_slots[i].is_sent = true;
+						continue;
 					}
 					// Send route discovery to the destination device and send config when route is found.
 					route_discovery_t rd_pkt = {
