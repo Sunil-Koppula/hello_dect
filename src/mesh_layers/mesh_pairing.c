@@ -621,7 +621,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
             jn_pkt.hop_num = get_hop_number();
             jn_pkt.sensor_count = storage_sensor_count();
         } else if (get_device_type() == DEVICE_TYPE_SENSOR) {
-            CONNECTED_DEVICE_ID = dst_id;
+            set_connected_device_id(dst_id);
             jn_pkt.connected_device_id = dst_id;
             jn_pkt.hop_num = 0xFF;
             jn_pkt.sensor_count = 0xFF;

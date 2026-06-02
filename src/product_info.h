@@ -17,10 +17,6 @@ typedef struct {
     uint16_t mesh_devices_count;
 } device_info_t;
 
-/* Connected (upstream parent) device ID.
- * Gateway = 0, Anchor = best infra device ID, Sensor = paired device ID. */
-extern uint16_t CONNECTED_DEVICE_ID;
-
 /* Read GPIO pins P0.21/P0.23 to set device type.
  * Must be called before any mesh operations. */
 int product_info_init(void);  // Change it device_init

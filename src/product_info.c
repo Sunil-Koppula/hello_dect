@@ -32,8 +32,6 @@ LOG_MODULE_REGISTER(product_info, CONFIG_PRODUCT_INFO_LOG_LEVEL);
 static const struct gpio_dt_spec pin0 = GPIO_DT_SPEC_GET(DEVTYPE_PIN0_NODE, gpios);
 static const struct gpio_dt_spec pin1 = GPIO_DT_SPEC_GET(DEVTYPE_PIN1_NODE, gpios);
 
-uint16_t CONNECTED_DEVICE_ID;
-
 static device_info_t device_info;
 
 int product_info_init(void)
@@ -101,7 +99,6 @@ int product_info_init(void)
 	set_serial_number(0xFFFFFFFFFFFFFFFF);
 
 	/* Set initial hop and connected device based on device type. */
-	CONNECTED_DEVICE_ID = 0xFFFF;  /* invalid ID by default */
 	set_connected_device_id(0xFFFF);  /* invalid ID by default */
 
 	/* Set initial mesh devices count. */
