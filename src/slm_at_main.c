@@ -429,6 +429,12 @@ static void cmd_report(const char *args)
         return;
     }
 
+    if (get_connected_device_id() == 0xFFFF) {
+        LOG_WRN("AT#REPORT received but no paired device");
+        at_error();
+        return;
+    }
+
     /* Fields 0..4: sn, id, len, prio, crc32 (all quoted hex). */
     uint64_t v_sn, v_id, v_len, v_prio, v_crc;
     if (field_hex_u64(args, 0, &v_sn)  != 0) { at_error(); return; }
