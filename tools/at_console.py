@@ -322,6 +322,54 @@ def _handle_at_config_line(line: str) -> tuple[bool, str, dict | None]:
     return True, summary, parsed
 
 
+def _handle_at_report_line(line: str) -> tuple[bool, str, dict | None]:
+    """Parse one AT#REPORT line and verify it.
+
+    Wire format (emitted by the gateway, see data.c config/data tick) — same
+    field structure as AT#CONFIG, 5 quoted fields and NO priority field:
+        AT#REPORT="<SN>","<ID>","<LEN>","<CRC32>","<DATA hex>"
+
+    Returns (ok, summary, parsed) just like _handle_at_config_line.
+    """
+    fields = _extract_quoted_fields(line)
+    if fields is None or len(fields) < 5:
+        return False, f"malformed: expected 5 quoted fields, got {fields!r}", None
+
+    sn_hex, id_hex, len_hex, crc_hex, data_hex = fields[:5]
+    try:
+        sn        = int(sn_hex, 16)
+        data_id   = int(id_hex, 16)
+        data_len  = int(len_hex, 16)
+        crc32     = int(crc_hex, 16)
+    except ValueError as e:
+        return False, f"bad hex in header: {e}", None
+
+    if len(data_hex) != data_len * 2:
+        return (False,
+                f"len mismatch: header says {data_len} B "
+                f"({data_len * 2} hex chars), got {len(data_hex)} hex chars",
+                None)
+
+    try:
+        payload = bytes.fromhex(data_hex)
+    except ValueError as e:
+        return False, f"bad hex in payload: {e}", None
+
+    calc = zlib.crc32(payload) & 0xFFFFFFFF
+    if calc != crc32:
+        return (False,
+                f"CRC32 mismatch: header 0x{crc32:08X}, calc 0x{calc:08X}",
+                None)
+
+    summary = (f"sn=0x{sn:016X} id={data_id} len={data_len} "
+               f"crc=0x{crc32:08X}\n  payload: {payload.hex().upper()}")
+    parsed = {
+        "sn": sn, "data_id": data_id, "data_len": data_len,
+        "crc32": crc32, "payload": payload,
+    }
+    return True, summary, parsed
+
+
 # Status codes mirrored from src/protocol.h. Used to render AT#CONFIGRES.
 _STATUS_NAMES = {
     0x00: "SUCCESS",
@@ -403,13 +451,48 @@ def _auto_reply_to_at_config(client: "ATClient", line: str) -> str:
         return f"ERROR — {summary}"
 
 
+def _auto_reply_to_at_report(client: "ATClient", line: str) -> str:
+    """If 'line' is an AT#REPORT=... command, parse it, verify CRC32, and write
+    the appropriate reply back to the serial port.
+
+    The gateway routes any line containing '#REPORT' to cmd_report_ack (which
+    parses sn + id and arms pending_ack), then consumes a bare OK to release the
+    report slot — so on success we send '#REPORT: "<sn>","<id>"' followed by OK,
+    mirroring the AT#CONFIG path. On any failure we send ERROR.
+
+    Returns a short human-readable status string describing what was done.
+    """
+    ok, summary, parsed = _handle_at_report_line(line)
+    _dbg(f"_auto_reply (report) parsed ok={ok}: {summary}")
+    ok_reply = b"\r\nOK\r\n"
+    error_reply = b"\r\nERROR\r\n"
+    if ok:
+        ack = (
+            f'\r\n#REPORT: "{parsed["sn"]:016X}",'
+            f'"{parsed["data_id"]:04X}"\r\n'
+        ).encode("ascii")
+        _dbg(f"writing REPORT ACK {ack!r} then {ok_reply!r}")
+        n1 = client.ser.write(ack)
+        n2 = client.ser.write(ok_reply)
+        client.ser.flush()
+        _dbg(f"wrote {n1} + {n2} bytes (OK reply)")
+        return f"OK — {summary}"
+    else:
+        _dbg(f"writing {error_reply!r}")
+        n = client.ser.write(error_reply)
+        client.ser.flush()
+        _dbg(f"wrote {n} bytes (ERROR reply)")
+        return f"ERROR — {summary}"
+
+
 def run_downstream(client: "ATClient") -> int:
     """Continuously read lines from the device and respond to AT#CONFIG.
 
     Acts as the application MCU on the sensor's downstream UART:
       - Wait for incoming complete lines (CR/LF terminated).
-      - For each AT#CONFIG line: parse + CRC-verify, then reply OK or ERROR.
-      - Other AT#... lines: reply ERROR (we only implement #CONFIG here).
+      - For each AT#CONFIG / AT#REPORT line: parse + CRC-verify, then reply
+        OK or ERROR.
+      - Other AT#... lines: reply ERROR (only #CONFIG / #REPORT implemented).
       - Non-AT lines: log them and ignore (don't reply).
 
     Ctrl-C exits cleanly.
@@ -444,6 +527,9 @@ def run_downstream(client: "ATClient") -> int:
                           else f"           #CONFIGRES malformed: {summary}")
                 elif line.startswith("AT#CONFIG="):
                     status = _auto_reply_to_at_config(client, line)
+                    print(f"           {status}")
+                elif line.startswith("AT#REPORT="):
+                    status = _auto_reply_to_at_report(client, line)
                     print(f"           {status}")
                 elif line.startswith("AT"):
                     print("           (unknown AT command, replying ERROR)")
@@ -527,6 +613,8 @@ def _reader_loop(client: ATClient, stop_evt: threading.Event,
                              else f">>> #CONFIGRES malformed: {summary}")
                 elif line.startswith("AT#CONFIG="):
                     extra = f">>> {_auto_reply_to_at_config(client, line)}"
+                elif line.startswith("AT#REPORT="):
+                    extra = f">>> {_auto_reply_to_at_report(client, line)}"
             except Exception as e:
                 extra = f">>> handler error: {e!r}"
                 _dbg(f"reader: handler raised on line {line!r}:\n{traceback.format_exc()}")

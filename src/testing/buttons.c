@@ -148,7 +148,7 @@ static void buttons_thread(void *p1, void *p2, void *p3)
 
 static uint32_t slot_psram_addr(int idx)
 {
-	return DATA_PSRAM_BASE + ((uint32_t)idx * DATA_MAX_TRANSFER_SIZE);
+	return DATA_PSRAM_BASE + ((uint32_t)idx * MAX_REPORT_SIZE);
 }
 
 static uint32_t config_slot_psram_addr(int idx)

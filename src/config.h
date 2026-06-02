@@ -15,7 +15,6 @@
 struct config_slot {
 	bool active;
 	bool is_sent;
-	bool is_applied;
 	uint16_t dst_device_id;
 	uint8_t dst_device_type;
 	uint16_t config_id;

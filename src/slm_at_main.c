@@ -309,11 +309,11 @@ static void cmd_config(const char *args)
 
     slm_at_config_t config = {
         .data_id = (uint16_t)v_id,
-        .data_len = (uint8_t)v_len,
+        .data_len = (uint16_t)v_len,
         .data_crc32 = (uint32_t)v_crc,
     };
 
-    uint64_t sn      = v_sn;
+    uint64_t sn = v_sn;
 
     /* Field 4: the payload hex. */
     size_t      hex_len;
@@ -422,6 +422,134 @@ static void cmd_config_ack(const char *args)
             (unsigned long long)v_sn, (unsigned)v_id);
 }
 
+static void cmd_report(const char *args)
+{
+    if (get_device_type() != DEVICE_TYPE_SENSOR) {
+        at_error();
+        return;
+    }
+
+    /* Fields 0..4: sn, id, len, prio, crc32 (all quoted hex). */
+    uint64_t v_sn, v_id, v_len, v_prio, v_crc;
+    if (field_hex_u64(args, 0, &v_sn)  != 0) { at_error(); return; }
+    if (field_hex_u64(args, 1, &v_id)  != 0) { at_error(); return; }
+    if (field_hex_u64(args, 2, &v_len) != 0) { at_error(); return; }
+    if (field_hex_u64(args, 3, &v_prio) != 0) { at_error(); return; }
+    if (field_hex_u64(args, 4, &v_crc) != 0) { at_error(); return; }
+
+    if (v_id > 0xFFFF || v_len == 0 || v_len > MAX_REPORT_SIZE || v_crc > 0xFFFFFFFF) {
+        at_error();
+        return;
+    }
+
+    slm_at_config_t config = {
+        .data_id = (uint16_t)v_id,
+        .data_len = (uint16_t)v_len,
+        .data_crc32 = (uint32_t)v_crc,
+    };
+
+    uint64_t sn = v_sn;
+
+    /* Field 5: the payload hex. */
+    size_t      hex_len;
+    const char *payload_hex = field_get(args, 5, &hex_len);
+    if (payload_hex == NULL || hex_len != (size_t)config.data_len * 2) {
+        at_error();
+        return;
+    }
+
+    uint8_t payload[MAX_REPORT_SIZE];
+    int     decoded = hex_decode(payload_hex, hex_len, payload, sizeof(payload));
+    if (decoded < 0 || decoded != config.data_len) {
+        at_error();
+        return;
+    }
+
+    /* CRC32 over the payload must match. */
+    uint32_t calc_crc32 = crc32_ieee(payload, (size_t)decoded);
+    if (calc_crc32 != config.data_crc32) {
+        LOG_WRN("AT#REPORT sn=0x%016llx id=%u CRC mismatch: got 0x%08x, calc 0x%08x",
+                (unsigned long long)sn, config.data_id, config.data_crc32, calc_crc32);
+        at_error();
+        return;
+    }
+
+    /* SN should match this sensor's SN. */
+    if (sn != get_serial_number()) {
+        LOG_WRN("AT#REPORT SN mismatch: got 0x%016llx, expected 0x%016llx", (unsigned long long)sn, (unsigned long long)get_serial_number());
+        at_error();
+        return;
+    }
+
+    int err = validate_at_report(&config, (uint8_t)v_prio, payload);
+    if (err < 0) {
+        at_error();
+        return;
+    }
+
+    LOG_INF("AT#REPORT accepted: sn=0x%016llx %s ID:%d len=%u",
+            (unsigned long long)sn,
+            device_type_str(get_device_type()),
+            config.data_id, config.data_len);
+         
+    char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
+    snprintf(resp, sizeof(resp),
+        "#REPORT:\"0x%016llx\",\"%u\",\"%u\",\"0x%08lx\"",
+        (unsigned long long)sn, config.data_id, config.data_len,
+        (unsigned long)config.data_crc32);
+    at_send_line(resp);
+    at_ok();
+}
+
+static void cmd_report_ack(const char *args)
+{
+    uint64_t v_sn, v_id;
+    if (field_hex_u64(args, 0, &v_sn) != 0) {
+        LOG_WRN("AT#REPORT_ACK missing or invalid SN field");
+        return;
+    }
+    if (field_hex_u64(args, 1, &v_id) != 0) {
+        LOG_WRN("AT#REPORT_ACK missing or invalid ID field");
+        return;
+    }
+
+    if (v_id > 0xFFFF) {
+        LOG_WRN("AT#REPORT_ACK invalid ID value %lu", (unsigned long)v_id);
+        return;
+    }
+
+    /* SN must be a known mesh device. */
+    uint16_t mesh_idx;
+    uint8_t hop_num;
+    bool     found = false;
+    for (mesh_idx = 0; mesh_idx < mesh_count; mesh_idx++) {
+        if (mesh_devices[mesh_idx].serial_num == v_sn) {
+            found = true;
+            break;
+        }
+    }
+    if (found) {
+        hop_num = get_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
+        if (hop_num == 0xFF) {
+            found = false;
+            LOG_WRN("AT#REPORT: SN 0x%016llx in mesh but no route found", (unsigned long long)v_sn);
+        }
+    }
+    if (!found) {
+        LOG_WRN("AT#REPORT: SN 0x%016llx not in mesh", (unsigned long long)v_sn);
+        return;
+    }
+
+    pending_ack.data_type = DATA_TYPE_REPORT;
+    pending_ack.sn = v_sn;
+    pending_ack.id = (uint16_t)v_id;
+    pending_ack.page = 0;
+    pending_ack.chunk = 0;
+
+    LOG_INF("Received AT#REPORT_ACK for SN 0x%016llx ID %u",
+            (unsigned long long)v_sn, (unsigned)v_id);
+}
+
 /* ---- Dispatch ------------------------------------------------------- */
 
 /* Flat strstr() chain — no dispatch table, matching the h745 codebase. */
@@ -431,6 +559,10 @@ static void dispatch(char *line)
         switch (pending_ack.data_type) {
             case DATA_TYPE_CONFIG:
                 (void)config_slot_release_by_id(pending_ack.id, true);
+                break;
+
+            case DATA_TYPE_REPORT:
+                (void)report_slot_release_by_id(pending_ack.id, true);
                 break;
 
             default:
@@ -445,6 +577,10 @@ static void dispatch(char *line)
         switch (pending_ack.data_type) {
             case DATA_TYPE_CONFIG:
                 (void)config_slot_release_by_id(pending_ack.id, false);
+                break;
+
+            case DATA_TYPE_REPORT:
+                (void)report_slot_release_by_id(pending_ack.id, false);
                 break;
 
             default:
@@ -466,6 +602,10 @@ static void dispatch(char *line)
                 // Implement later
                 at_ok();
                 return;
+            } else if (strstr(line, "#REPORT") != NULL) {
+                char *p = strstr(line, "#REPORT");
+                cmd_report_ack(p);
+                return;
             }
         }
         break;
@@ -479,8 +619,8 @@ static void dispatch(char *line)
         case DEVICE_TYPE_SENSOR:
         {
             if (strstr(line, "AT#REPORT") != NULL) {
-                // Implement later
-                at_ok();
+                char *p = strstr(line, "AT#REPORT") + strlen("AT#REPORT");
+                cmd_report(p);
                 return;
             } else if (strstr(line, "AT#LD") != NULL) {
                 // Implement later

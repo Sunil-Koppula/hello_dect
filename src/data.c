@@ -14,11 +14,13 @@
 #include "product_info.h"
 #include "storage.h"
 #include "main_sub.h"
+#include "slm_at_main.h"
+#include "slm_at_uart.h"
 #include "mesh_layers/mesh_routing.h"
 
 LOG_MODULE_REGISTER(data, CONFIG_DATA_LOG_LEVEL);
 
-#define DATA_MAX_CHUNKS        	((DATA_MAX_TRANSFER_SIZE + SEND_DATA_MAX - 1) / SEND_DATA_MAX)
+#define DATA_MAX_CHUNKS        	((MAX_REPORT_SIZE + SEND_DATA_MAX - 1) / SEND_DATA_MAX)
 #define CRC_VERIFY_STAGE_SIZE 	256
 
 static report_chunk_t chunk_pkt;
@@ -31,6 +33,7 @@ struct data_sender sender;
 struct data_slot {
 	bool     active;
 	bool	 upstream_ready;
+	bool     is_sent;
 	uint16_t gen_device_id;
 	uint8_t data_id;
 	uint8_t  priority;
@@ -47,7 +50,7 @@ static struct data_slot slots[DATA_SLOT_COUNT];
 
 static uint32_t slot_psram_addr(int idx)
 {
-	return DATA_PSRAM_BASE + ((uint32_t)idx * DATA_MAX_TRANSFER_SIZE);
+	return DATA_PSRAM_BASE + ((uint32_t)idx * MAX_REPORT_SIZE);
 }
 
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
@@ -82,6 +85,7 @@ static int alloc_slot(void)
 static void slot_free(int idx)
 {
 	slots[idx].active = false;
+	slots[idx].is_sent = false;
 	nbtimeout_stop(&slots[idx].idle_timeout);
 }
 
@@ -133,6 +137,7 @@ static uint8_t validate_slot(const report_init_t *pkt)
 
 		slots[idx].active = true;
 		slots[idx].upstream_ready = false;
+		slots[idx].is_sent = false;
 		slots[idx].gen_device_id = pkt->gen_device_id;
 		slots[idx].data_id = pkt->data_id;
 		slots[idx].priority = pkt->hdr.priority;
@@ -328,7 +333,7 @@ void handle_report_init(const report_init_t *pkt, uint16_t dst_id, int16_t rssi_
 		.data_id = pkt->data_id,
 	};
 	
-	if (pkt->total_size == 0 || pkt->total_size > DATA_MAX_TRANSFER_SIZE || pkt->chunk_count == 0 || pkt->chunk_count > DATA_MAX_CHUNKS || pkt->last_chunk_size == 0 || pkt->last_chunk_size > SEND_DATA_MAX) {
+	if (pkt->total_size == 0 || pkt->total_size > MAX_REPORT_SIZE || pkt->chunk_count == 0 || pkt->chunk_count > DATA_MAX_CHUNKS || pkt->last_chunk_size == 0 || pkt->last_chunk_size > SEND_DATA_MAX) {
 		LOG_WRN("REPORT_INIT rejected: invalid size/chunk params");
 		ack.hdr.status = STATUS_INVALID_PARAMETER;
 		send_report_init_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
@@ -483,39 +488,7 @@ void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rss
 	// Send Data Recieved Packet to Sensor
 	int idx;
 	int ret = find_slot(pkt->gen_device_id, pkt->data_id, &idx);
-	if (get_device_type() == DEVICE_TYPE_GATEWAY && ret == -2) {
-		// Implement Report Received Packet.
-		LOG_ERR("Need to Send Report Received Packet to Sensor for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
-
-		{
-			// First find route
-			uint16_t hop_num = get_hop_num(pkt->gen_device_id, DEVICE_TYPE_SENSOR);
-			if (hop_num == 0xFF) {
-				LOG_ERR("No route to gen_device_id %d, cannot send REPORT_RECEIVED", pkt->gen_device_id);
-				return;
-			} else if (hop_num == 0) {
-				LOG_INF("Sensor ID:%d is directly connected to this gateway, sending REPORT_RECEIVED without route discovery", pkt->gen_device_id);
-				// Build report received packet and send directly without route discovery
-				report_received_t recv_pkt = {
-					.gen_device_id = pkt->gen_device_id,
-					.data_id = pkt->data_id,
-					.hdr.status = STATUS_SUCCESS,
-				};
-				send_report_received(&recv_pkt, pkt->gen_device_id, DEVICE_TYPE_SENSOR);
-				return;
-			}
-			route_discovery_t rd_pkt = {
-				.device_id = pkt->gen_device_id,
-				.device_type = DEVICE_TYPE_SENSOR,
-				.hop_num = hop_num,
-				.data_id = pkt->data_id,
-				.data_type = DATA_TYPE_REPORT,
-			};
-			for (int i = 0; i < infra_count; i++) {
-				send_route_discovery(&rd_pkt, infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
-			}
-		}
-	} else if (get_device_type() == DEVICE_TYPE_ANCHOR && ret == -2) {
+	if (get_device_type() == DEVICE_TYPE_ANCHOR && ret == -2) {
 		infra_entry_t entry;
 		int err = storage_infra_get(0, &entry);
 		if (err) {
@@ -795,7 +768,7 @@ int data_init(void)
 	sender.active = false;
 
 	LOG_INF("Data module Initialized with %d slots (slot size=%d) at PSRAM 0x%06x-0x%06x", DATA_SLOT_COUNT,
-		DATA_MAX_TRANSFER_SIZE, DATA_PSRAM_BASE, DATA_PSRAM_BASE + DATA_PSRAM_SIZE - 1);
+		MAX_REPORT_SIZE, DATA_PSRAM_BASE, DATA_PSRAM_BASE + DATA_PSRAM_SIZE - 1);
 
 	return 0;
 }
@@ -810,4 +783,192 @@ void data_tick(void)
 			slot_free(i);
 		}
 	}
+
+	switch (get_device_type()) {
+		case DEVICE_TYPE_GATEWAY:
+		{
+			static const char HEX_LUT[] = "0123456789ABCDEF";
+
+			for (int i = 0; i < DATA_SLOT_COUNT; i++) {
+				if (slots[i].active && slots[i].upstream_ready && !slots[i].is_sent) {
+
+					// Find SN
+					int idx = -1;
+					for (idx = 0; idx < mesh_count; idx++) {
+						if (mesh_devices[idx].device_id == slots[i].gen_device_id) {
+							break;
+						}
+						if (idx >= mesh_count) {
+							LOG_ERR("Failed to find mesh device for gen_device_id %d, cannot process slot", slots[i].gen_device_id);
+							continue;
+						}
+					}
+
+					uint8_t payload[MAX_REPORT_SIZE];
+					uint32_t addr = slot_psram_addr(i);
+					int err = psram_read(addr, payload, slots[i].total_size);
+					if (err) {
+						LOG_ERR("psram_read @0x%06x failed (%d), cannot process slot", addr, err);
+						continue;
+					}
+
+					char cmd_buf[SLM_UART_AT_COMMAND_LEN];
+					int n = snprintf(cmd_buf, sizeof(cmd_buf), "\r\nAT#REPORT=\"%016llX\",\"%04X\",\"%04X\",\"%08lX\",\"",
+					(unsigned long long)mesh_devices[idx].serial_num, slots[i].data_id, (unsigned)slots[i].total_size,
+					(unsigned long)slots[i].crc32);
+
+					if (n < 0 || (size_t)n >= sizeof(cmd_buf)) {
+					LOG_ERR("snprintf overflow building AT#REPORT header");
+					continue;
+					}
+
+					size_t need = (size_t)n + (size_t)slots[i].total_size * 2 + 3;
+					if (need >= sizeof(cmd_buf)) {
+						LOG_ERR("AT#REPORT line too long (%u bytes needed)", (unsigned)need);
+						continue;
+					}
+					for (uint16_t b = 0; b < slots[i].total_size; b++) {
+						cmd_buf[n++] = HEX_LUT[(payload[b] >> 4) & 0x0F];
+						cmd_buf[n++] = HEX_LUT[payload[b] & 0x0F];
+					}
+					cmd_buf[n++] = '"';
+					cmd_buf[n++] = '\r';
+					cmd_buf[n++] = '\n';
+
+					int tx_err = slm_at_tx_write((const uint8_t *)cmd_buf, (size_t)n, false);
+					if (tx_err) {
+						LOG_ERR("slm_at_tx_write failed (%d) for slot %d", tx_err, i);
+						continue;
+					}
+
+					LOG_INF("AT#REPORT emitted for slot %d, marking as sent", i);
+					slots[i].is_sent = true;
+				}
+			}
+		}
+		break;
+
+		case DEVICE_TYPE_SENSOR:
+		{
+			for (int i = 0; i < DATA_SLOT_COUNT; i++) {
+				if (slots[i].active && slots[i].upstream_ready) {
+					sender.active = true;
+					sender.dst_id = infra_devices[0].entry.device_id;
+					sender.gen_device_id = slots[i].gen_device_id;
+					sender.data_id = slots[i].data_id;
+					sender.priority = slots[i].priority;
+					sender.total_size = slots[i].total_size;
+					sender.chunk_count = slots[i].chunk_count;
+					sender.last_chunk_size = slots[i].last_chunk_size;
+					sender.crc32 = slots[i].crc32;
+					sender.next_chunk = 0;
+
+					report_init_t init_pkt = {
+						.gen_device_id = sender.gen_device_id,
+						.data_id = sender.data_id,
+						.total_size = sender.total_size,
+						.chunk_count = sender.chunk_count,
+						.last_chunk_size = sender.last_chunk_size,
+						.crc32 = sender.crc32,
+					};
+
+					send_report_init(&init_pkt, sender.dst_id, infra_devices[0].entry.device_type, sender.priority);
+
+					// Testing Purpose Only:
+					slots[i].active = false;
+				}
+			}
+		}
+		break;
+
+		default:
+			break;
+
+	}
+}
+
+int validate_at_report(const slm_at_config_t *report, uint8_t priority, const uint8_t *data)
+{
+	if (report == NULL || data == NULL) {
+		return -EINVAL;
+	}
+	if (report->data_len == 0 || report->data_len > MAX_REPORT_SIZE) {
+		return -EINVAL;
+	}
+
+	/* Find an existing slot for this device, otherwise allocate a fresh one. */
+	int idx = -1;
+	int ret = find_slot(get_device_id(), report->data_id, &idx);
+	if (ret < 0) {
+		idx = alloc_slot();
+		if (idx < 0) {
+			return -ENOMEM;
+		}
+	}
+
+	slots[idx].active = true;
+	slots[idx].upstream_ready = true;
+	slots[idx].gen_device_id = get_device_id();
+	slots[idx].data_id = report->data_id;
+	slots[idx].priority  = priority;
+	slots[idx].total_size = report->data_len;
+	slots[idx].chunk_count = (report->data_len + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
+	slots[idx].last_chunk_size = (report->data_len % SEND_DATA_MAX) ? (report->data_len % SEND_DATA_MAX) : SEND_DATA_MAX;
+	slots[idx].crc32 = report->data_crc32;
+	slots[idx].received_count = slots[idx].chunk_count;
+	slots[idx].received[0] = true;
+	slots[idx].received[1] = true;
+
+	int err = psram_write(slot_psram_addr(idx), data, report->data_len);
+	if (err) {
+		LOG_ERR("psram_write @0x%06x failed (%d), freeing slot", slot_psram_addr(idx), err);
+		slot_free(idx);
+		return err;
+	}
+
+	return 0;
+}
+
+int report_slot_release_by_id(uint16_t report_id, bool is_success)
+{
+	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
+		if (slots[i].active && slots[i].is_sent && slots[i].data_id == report_id) {
+			if (is_success) {
+				uint16_t hop_num = get_hop_num(slots[i].gen_device_id, DEVICE_TYPE_SENSOR);
+				if (hop_num == 0xFF) {
+				LOG_ERR("No route to gen_device_id %d, cannot send REPORT_RECEIVED", slots[i].gen_device_id);
+				return -ENOENT;
+			} else if (hop_num == 0) {
+				LOG_INF("Sensor ID:%d is directly connected to this gateway, sending REPORT_RECEIVED without route discovery", slots[i].gen_device_id);
+				// Build report received packet and send directly without route discovery
+				report_received_t recv_pkt = {
+					.gen_device_id = slots[i].gen_device_id,
+					.data_id = slots[i].data_id,
+					.hdr.status = STATUS_SUCCESS,
+				};
+				send_report_received(&recv_pkt, slots[i].gen_device_id, DEVICE_TYPE_SENSOR);
+				slot_free(i);
+				return 0;
+			}
+			route_discovery_t rd_pkt = {
+				.device_id = slots[i].gen_device_id,
+				.device_type = DEVICE_TYPE_SENSOR,
+				.hop_num = hop_num,
+				.data_id = slots[i].data_id,
+				.data_type = DATA_TYPE_REPORT,
+			};
+			for (int i = 0; i < infra_count; i++) {
+				send_route_discovery(&rd_pkt, infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
+			}
+			slot_free(i);
+			return 0;
+			} else {
+				LOG_WRN("Releasing slot %d for report ID:%d after failed processing", i, report_id);
+				slots[i].is_sent = false;
+				return 0;
+			}
+		}
+	}
+	LOG_WRN("No active slot found for report ID:%d to release", report_id);
+	return -ENOENT;
 }

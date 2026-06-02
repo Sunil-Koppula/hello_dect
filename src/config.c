@@ -625,6 +625,17 @@ void config_tick(void)
 
 		case DEVICE_TYPE_SENSOR:
 		{
+			for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
+				if (config_slots[i].active && config_slots[i].is_sent) {
+					// Check if timeout is expired
+					if (nbtimeout_expired(&config_slots[i].timeout)) {
+						LOG_WRN("Config slot %d for device %s ID:%d timed out waiting for CONFIG_RECEIVED, marking as not sent to trigger resend",
+							i, device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
+						config_slots[i].is_sent = false; // Mark slot as not sent to trigger resend on next tick
+					}
+				}
+			}
+
 			static const char HEX_LUT[] = "0123456789ABCDEF";
 
 			for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
@@ -681,6 +692,11 @@ void config_tick(void)
 
 				LOG_INF("AT#CONFIG emitted for slot %d, marking as sent", i);
 				config_slots[i].is_sent = true;
+
+				// start timer
+				nbtimeout_init(&config_slots[i].timeout, 30 * 1000, 0);
+				nbtimeout_start(&config_slots[i].timeout);
+
 				break; // Send one config at a time, wait for next tick to send next config if exists
 			}
 		}

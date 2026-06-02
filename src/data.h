@@ -6,11 +6,12 @@
 #include <stdbool.h>
 #include "protocol.h"
 #include "psram.h"
+#include "slm_at_main.h"
 
 #define DATA_PSRAM_BASE          PSRAM_DATA_BASE
 #define DATA_SLOT_COUNT          512
-#define DATA_MAX_TRANSFER_SIZE   256
-#define DATA_PSRAM_SIZE          (DATA_SLOT_COUNT * DATA_MAX_TRANSFER_SIZE)
+#define MAX_REPORT_SIZE   		 256
+#define DATA_PSRAM_SIZE          (DATA_SLOT_COUNT * MAX_REPORT_SIZE)
 #define DATA_SLOT_TIMEOUT_MS     30000  /* free slot if idle this long */
 
 struct data_sender {
@@ -33,6 +34,12 @@ int data_init(void);
 
 /* Call from main loop to expire stale slots. */
 void data_tick(void);
+
+/* Validate an AT report before processing. */
+int validate_at_report(const slm_at_config_t *report, uint8_t priority, const uint8_t *data);
+
+/* Release a report slot by its ID. */
+int report_slot_release_by_id(uint16_t report_id, bool is_success);
 
 /* TX helpers */
 int send_report_init(report_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
