@@ -25,7 +25,7 @@ typedef struct {
     uint16_t device_id;
     uint8_t device_type;
     uint16_t data_id;
-    uint8_t data_len;
+    uint16_t data_len;
     uint32_t data_crc32;
 } slm_at_config_t;
 

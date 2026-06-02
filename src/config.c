@@ -216,16 +216,27 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 							if (sensor_devices[i].entry.device_id == pkt->dst_device_id) {
 								config_t config_pkt;
 								memcpy(&config_pkt, pkt, sizeof(config_t));
-								for (int j = 0; j < MAX_DEPTH - 1; j++) {
-									config_pkt.route_info[j] = pkt->route_info[j+1];
-								}
-								config_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
-								config_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
-								send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
+								config_pkt.route_info[0].device_id = 0xFFFF;
+								config_pkt.route_info[0].hop_num = 0xFF;
 								send_config(&config_pkt, pkt->dst_device_id, pkt->dst_device_type, PACKET_PRIORITY_HIGH);
-							} 
+							}
+							if (i == sensor_count - 1) {
+								LOG_WRN("CONFIG from device %s ID:%d for SENSOR ID:%d but no matching sensor found in storage", device_type_str(pkt->hdr.device_type), dst_id, pkt->dst_device_id);
+								ack.hdr.status = STATUS_NOT_FOUND;
+							}
 						}
-					} 
+					} else {
+						// Forward config packet to next hop
+						config_t config_pkt;
+						memcpy(&config_pkt, pkt, sizeof(config_t));
+						for (int i = 0; i < MAX_DEPTH - 1; i++) {
+							config_pkt.route_info[i] = config_pkt.route_info[i + 1];
+						}
+						config_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
+						config_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
+						send_config(&config_pkt, dst_id, pkt->hdr.device_type, PACKET_PRIORITY_HIGH);
+					}
+					send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 				}
 			} else {
 				// Reject config packet except from gateway and anchor
@@ -614,6 +625,17 @@ void config_tick(void)
 
 		case DEVICE_TYPE_SENSOR:
 		{
+			for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
+				if (config_slots[i].active && config_slots[i].is_sent) {
+					// Check if timeout is expired
+					if (nbtimeout_expired(&config_slots[i].timeout)) {
+						LOG_WRN("Config slot %d for device %s ID:%d timed out waiting for CONFIG_RECEIVED, marking as not sent to trigger resend",
+							i, device_type_str(config_slots[i].dst_device_type), config_slots[i].dst_device_id);
+						config_slots[i].is_sent = false; // Mark slot as not sent to trigger resend on next tick
+					}
+				}
+			}
+
 			static const char HEX_LUT[] = "0123456789ABCDEF";
 
 			for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
@@ -670,6 +692,11 @@ void config_tick(void)
 
 				LOG_INF("AT#CONFIG emitted for slot %d, marking as sent", i);
 				config_slots[i].is_sent = true;
+
+				// start timer
+				nbtimeout_init(&config_slots[i].timeout, 30 * 1000, 0);
+				nbtimeout_start(&config_slots[i].timeout);
+
 				break; // Send one config at a time, wait for next tick to send next config if exists
 			}
 		}

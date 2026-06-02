@@ -174,7 +174,7 @@ static void process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 			break;
 
         case PACKET_REPORT_RECEIVED_ACK:
-            // handle_report_received_ack((const report_received_ack_t *)data, sender_id, rssi_2);
+            handle_report_received_ack((const report_received_ack_t *)data, sender_id, rssi_2);
             break;
 		
 		case PACKET_CONFIG:

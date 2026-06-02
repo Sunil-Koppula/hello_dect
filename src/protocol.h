@@ -337,6 +337,7 @@ typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
 	uint8_t data_id;				/* ID of the data being received */
+	route_info_entry_t route_info[MAX_DEPTH];
 } __attribute__((packed)) report_received_t;
 
 #define REPORT_RECEIVED_PACKET_SIZE sizeof(report_received_t)

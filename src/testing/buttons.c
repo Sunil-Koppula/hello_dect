@@ -148,7 +148,7 @@ static void buttons_thread(void *p1, void *p2, void *p3)
 
 static uint32_t slot_psram_addr(int idx)
 {
-	return DATA_PSRAM_BASE + ((uint32_t)idx * DATA_MAX_TRANSFER_SIZE);
+	return DATA_PSRAM_BASE + ((uint32_t)idx * MAX_REPORT_SIZE);
 }
 
 static uint32_t config_slot_psram_addr(int idx)
@@ -193,7 +193,7 @@ static void default_button1_handler(void)
 		sender.active = true;
 		sender.dst_id = entry.device_id;
 		sender.gen_device_id = get_device_id();
-		sender.data_id = 0x01; // For testing purpose, data_id is hardcoded to 0x01,
+		sender.data_id = 0x10; // For testing purpose, data_id is hardcoded to 0x10,
 		sender.priority = PACKET_PRIORITY_LOW;
 		sender.total_size = size;
 		sender.chunk_count = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
