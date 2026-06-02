@@ -812,9 +812,11 @@ void data_tick(void)
 						continue;
 					}
 
+					uint64_t report_timestamp = k_uptime_get();
+
 					char cmd_buf[SLM_UART_AT_COMMAND_LEN];
-					int n = snprintf(cmd_buf, sizeof(cmd_buf), "\r\nAT#REPORT=\"%016llX\",\"%04X\",\"%04X\",\"%08lX\",\"",
-					(unsigned long long)mesh_devices[idx].serial_num, slots[i].data_id, (unsigned)slots[i].total_size,
+					int n = snprintf(cmd_buf, sizeof(cmd_buf), "\r\nAT#REPORT=\"%016llX\",\"%04X\",\"%016llx\",\"%04X\",\"%08lX\",\"",
+					(unsigned long long)mesh_devices[idx].serial_num, slots[i].data_id, (unsigned long long)report_timestamp , (unsigned)slots[i].total_size,
 					(unsigned long)slots[i].crc32);
 
 					if (n < 0 || (size_t)n >= sizeof(cmd_buf)) {

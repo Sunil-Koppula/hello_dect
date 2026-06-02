@@ -66,6 +66,7 @@ static int main_sub_init(void)
         {
             if (infra_count > 0) {
                 LOG_INF("Already paired with %s ID: %d", device_type_str(infra_devices[0].entry.device_type), infra_devices[0].entry.device_id);
+                set_connected_device_id(infra_devices[0].entry.device_id);
                 return 0;
             }
             /* Not paired — start pairing. */

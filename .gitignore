@@ -2,3 +2,6 @@
 /build/
 
 .program.ps1/
+
+# Python Cache
+tools/__pycache__/
