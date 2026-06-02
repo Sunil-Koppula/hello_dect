@@ -122,6 +122,7 @@ class GatewayWorker:
             "ts": time.strftime("%H:%M:%S"),
             "sn": f"{parsed['sn']:016X}",
             "priority": parsed["priority"],
+            "timestamp": parsed.get("timestamp"),
             "decoded": decoded,
         }))
 
@@ -221,12 +222,13 @@ class GatewayGUI(tk.Tk):
     def _build_report_table(self):
         f = ttk.LabelFrame(self, text="Incoming Reports (AT#REPORT)", padding=8)
         f.pack(fill="both", expand=True, pady=4)
-        cols = ("time", "sn", "type", "batt", "temp", "hum", "alarm", "prio", "fw")
+        cols = ("time", "uptime", "sn", "type", "batt", "temp", "hum", "alarm", "prio", "fw")
         self.tree = ttk.Treeview(f, columns=cols, show="headings", height=10)
-        widths = {"time": 70, "sn": 130, "type": 60, "batt": 50, "temp": 70,
-                  "hum": 70, "alarm": 150, "prio": 45, "fw": 40}
-        heads = {"time": "Time", "sn": "SN", "type": "Type", "batt": "Batt%",
-                 "temp": "Temp C", "hum": "Hum %", "alarm": "Alarm", "prio": "Prio", "fw": "FW"}
+        widths = {"time": 70, "uptime": 95, "sn": 130, "type": 60, "batt": 50,
+                  "temp": 70, "hum": 70, "alarm": 150, "prio": 45, "fw": 40}
+        heads = {"time": "Recv Time", "uptime": "Dev Uptime", "sn": "SN", "type": "Type",
+                 "batt": "Batt%", "temp": "Temp C", "hum": "Hum %", "alarm": "Alarm",
+                 "prio": "Prio", "fw": "FW"}
         for c in cols:
             self.tree.heading(c, text=heads[c])
             self.tree.column(c, width=widths[c], anchor="w")
@@ -236,15 +238,26 @@ class GatewayGUI(tk.Tk):
         vsb.pack(side="right", fill="y")
         self.tree.tag_configure("alarm", foreground="red")
 
+    @staticmethod
+    def _fmt_uptime(ms) -> str:
+        """Format the device uptime (k_uptime_get ms) as HH:MM:SS.mmm."""
+        if ms is None:
+            return "—"
+        s, msec = divmod(int(ms), 1000)
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{sec:02d}.{msec:03d}"
+
     def _add_report_row(self, rep: dict):
         d = rep["decoded"] or {}
         prio = "—" if rep["priority"] is None else rep["priority"]
+        uptime = self._fmt_uptime(rep.get("timestamp"))
         if "raw" in d:
-            vals = (rep["ts"], rep["sn"], "?", "?", "?", "?",
+            vals = (rep["ts"], uptime, rep["sn"], "?", "?", "?", "?",
                     f"decode err ({d.get('note','')})", prio, "?")
             alarmed = False
         else:
-            vals = (rep["ts"], d["sn"] or rep["sn"], f"0x{d['report_type']:04X}",
+            vals = (rep["ts"], uptime, d["sn"] or rep["sn"], f"0x{d['report_type']:04X}",
                     d["battery_level"], d["temperature"], d["humidity"],
                     d["alarm_flags"], prio, d["firmware_version"])
             alarmed = d["alarm_flags_raw"] != 0

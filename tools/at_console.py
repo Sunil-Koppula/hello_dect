@@ -325,20 +325,21 @@ def _handle_at_config_line(line: str) -> tuple[bool, str, dict | None]:
 def _handle_at_report_line(line: str) -> tuple[bool, str, dict | None]:
     """Parse one AT#REPORT line and verify it.
 
-    Wire format (emitted by the gateway, see data.c config/data tick) — same
-    field structure as AT#CONFIG, 5 quoted fields and NO priority field:
-        AT#REPORT="<SN>","<ID>","<LEN>","<CRC32>","<DATA hex>"
+    Wire format (emitted by the gateway, see data.c data_tick) — 6 quoted
+    fields, with a report timestamp (uint64 ms, k_uptime_get) and NO priority:
+        AT#REPORT="<SN>","<ID>","<TIMESTAMP>","<LEN>","<CRC32>","<DATA hex>"
 
     Returns (ok, summary, parsed) just like _handle_at_config_line.
     """
     fields = _extract_quoted_fields(line)
-    if fields is None or len(fields) < 5:
-        return False, f"malformed: expected 5 quoted fields, got {fields!r}", None
+    if fields is None or len(fields) < 6:
+        return False, f"malformed: expected 6 quoted fields, got {fields!r}", None
 
-    sn_hex, id_hex, len_hex, crc_hex, data_hex = fields[:5]
+    sn_hex, id_hex, ts_hex, len_hex, crc_hex, data_hex = fields[:6]
     try:
         sn        = int(sn_hex, 16)
         data_id   = int(id_hex, 16)
+        timestamp = int(ts_hex, 16)
         data_len  = int(len_hex, 16)
         crc32     = int(crc_hex, 16)
     except ValueError as e:
@@ -361,11 +362,11 @@ def _handle_at_report_line(line: str) -> tuple[bool, str, dict | None]:
                 f"CRC32 mismatch: header 0x{crc32:08X}, calc 0x{calc:08X}",
                 None)
 
-    summary = (f"sn=0x{sn:016X} id={data_id} len={data_len} "
+    summary = (f"sn=0x{sn:016X} id={data_id} ts={timestamp}ms len={data_len} "
                f"crc=0x{crc32:08X}\n  payload: {payload.hex().upper()}")
     parsed = {
-        "sn": sn, "data_id": data_id, "data_len": data_len,
-        "crc32": crc32, "payload": payload,
+        "sn": sn, "data_id": data_id, "timestamp": timestamp,
+        "data_len": data_len, "crc32": crc32, "payload": payload,
     }
     return True, summary, parsed
 
