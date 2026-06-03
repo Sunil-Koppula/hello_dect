@@ -798,7 +798,7 @@ void data_tick(void)
 						if (mesh_devices[idx].device_id == slots[i].gen_device_id) {
 							break;
 						}
-						if (idx >= mesh_count) {
+						if (idx == mesh_count - 1) {
 							LOG_ERR("Failed to find mesh device for gen_device_id %d, cannot process slot", slots[i].gen_device_id);
 							continue;
 						}
@@ -814,6 +814,7 @@ void data_tick(void)
 
 					uint64_t report_timestamp = k_uptime_get();
 
+					// AT#REPORT="<sn>","<data_id>","<timestamp>","<total_size>","<crc32>","<hex_payload>"
 					char cmd_buf[SLM_UART_AT_COMMAND_LEN];
 					int n = snprintf(cmd_buf, sizeof(cmd_buf), "\r\nAT#REPORT=\"%016llX\",\"%04X\",\"%016llx\",\"%04X\",\"%08lX\",\"",
 					(unsigned long long)mesh_devices[idx].serial_num, slots[i].data_id, (unsigned long long)report_timestamp , (unsigned)slots[i].total_size,
@@ -889,7 +890,7 @@ void data_tick(void)
 	}
 }
 
-int validate_at_report(const slm_at_config_t *report, uint8_t priority, const uint8_t *data)
+int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const uint8_t *data)
 {
 	if (report == NULL || data == NULL) {
 		return -EINVAL;

@@ -434,6 +434,8 @@ typedef struct {
 	packet_header_t hdr;
 	uint16_t dst_device_id;				/* short device ID of the device being configured */
 	uint8_t dst_device_type;			/* device_type_t of the device being configured */
+	uint8_t data_type;					/* data_type_t of the config data */
+	uint16_t data_id;					/* ID of the config data being acknowledged */
 } __attribute__((packed)) config_ack_t;
 
 #define CONFIG_ACK_PACKET_SIZE sizeof(config_ack_t)

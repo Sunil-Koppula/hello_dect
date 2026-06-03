@@ -36,7 +36,7 @@ int data_init(void);
 void data_tick(void);
 
 /* Validate an AT report before processing. */
-int validate_at_report(const slm_at_config_t *report, uint8_t priority, const uint8_t *data);
+int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const uint8_t *data);
 
 /* Release a report slot by its ID. */
 int report_slot_release_by_id(uint16_t report_id, bool is_success);
