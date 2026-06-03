@@ -294,6 +294,7 @@ typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
 	uint8_t data_id;				/* ID of the data being sent (for the sender's reference, e.g. to match with ACKs) */
+	int64_t report_time_ms;			/* timestamp in ms when the report was generated at the sensor */
 	uint16_t total_size;			/* total size of the data being sent (can be larger than what fits in one packet) */
 	uint8_t chunk_count;			/* total number of chunks that will be sent */
 	uint8_t last_chunk_size;		/* size of the last chunk (since it may be smaller than the others) */
@@ -356,6 +357,7 @@ typedef struct {
 	packet_header_t hdr;
 	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
 	uint8_t data_id;				/* ID of the data being sent (for the sender's reference, e.g. to match with ACKs) */
+	int64_t report_time_ms;			/* timestamp in ms when the report was generated at the sensor */
 	uint32_t total_size;			/* total size of the data being sent (can be larger than what fits in one packet) */
 	uint8_t page_count;				/* total number of pages that will be sent */
 	uint16_t last_page_size;		/* size of the last page (since it may be smaller than the others) */

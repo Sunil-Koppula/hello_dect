@@ -14,6 +14,8 @@
 #define DATA_PSRAM_SIZE          (DATA_SLOT_COUNT * MAX_REPORT_SIZE)
 #define DATA_SLOT_TIMEOUT_MS     30000  /* free slot if idle this long */
 
+#define PROCESS_REPORT_SLOTS	4  /* limit how many report slots we process per tick to avoid long blocking */
+
 struct data_sender {
 	bool     active;
 	uint16_t dst_id;

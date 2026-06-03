@@ -20,7 +20,7 @@
 LOG_MODULE_REGISTER(config, CONFIG_CONFIG_LOG_LEVEL);
 
 struct config_slot config_slot[CONFIG_SLOT_COUNT];
-static uint16_t config_count = 0;
+static uint16_t active_config_count = 0;
 
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
 /* ------------------------------------------------------------------------------**** Config Slots ****------------------------------------------------------------------------------ */
@@ -48,7 +48,7 @@ static int alloc_config_slot(void)
 		if (!config_slot[i].active) {
 			config_slot[i].is_sent = false;
 			config_slot[i].is_applied = false;
-			config_count++;
+			active_config_count++;
 			return i;
 		}
 	}
@@ -60,7 +60,7 @@ static void config_slot_free(int idx)
 	config_slot[idx].active = false;
 	config_slot[idx].is_sent = false;
 	config_slot[idx].is_applied = false;
-	config_count--;
+	active_config_count--;
 }
 
 static uint8_t validate_config(const config_t *pkt, int *idx_out)
@@ -722,7 +722,7 @@ int config_init(void)
 
 void config_tick(void)
 {
-	if (config_count <= 0) {
+	if (active_config_count <= 0) {
 		return;
 	}
 
