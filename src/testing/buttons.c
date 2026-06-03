@@ -243,8 +243,8 @@ static void default_button2_handler(void)
 			LOG_WRN("No free data slot available");
 			return;
 		}
-		config_slots[idx].active = true;
-		config_slots[idx].is_sent = true;
+		config_slot[idx].active = true;
+		config_slot[idx].is_sent = true;
 
 		int err = 0;
 
@@ -279,8 +279,8 @@ static void default_button2_handler(void)
 			return;
 		}
 
-		config_slots[idx].dst_device_id = dst_id;
-		config_slots[idx].dst_device_type = dst_type;
+		config_slot[idx].dst_device_id = dst_id;
+		config_slot[idx].dst_device_type = dst_type;
 
 		// Generate config for testing
 		sensor_config_t config = {
@@ -305,21 +305,21 @@ static void default_button2_handler(void)
 		// CRC16-CCITT over everything before the trailing config_crc16 field.
 		config.config_crc16 = crc16_ccitt(0xFFFF, (const uint8_t *)&config, sizeof(config) - sizeof(config.config_crc16));
 		
-		config_slots[idx].config_len = sizeof(config);
-		config_slots[idx].config_crc32 = crc32_ieee((const uint8_t *)&config, sizeof(config));
+		config_slot[idx].config_len = sizeof(config);
+		config_slot[idx].config_crc32 = crc32_ieee((const uint8_t *)&config, sizeof(config));
 
 		uint32_t addr = config_slot_psram_addr(idx);
 		err = psram_write(addr, &config, sizeof(config));
 		if (err) {
 			LOG_ERR("psram_write @0x%06x failed (%d)", addr, err);
-			config_slots[idx].active = false;
+			config_slot[idx].active = false;
 			return;
 		}
 
 		// First we have find the route
 		route_discovery_t rd_pkt = {
-			.device_id = config_slots[idx].dst_device_id,
-			.device_type = config_slots[idx].dst_device_type,
+			.device_id = config_slot[idx].dst_device_id,
+			.device_type = config_slot[idx].dst_device_type,
 			.hop_num = hop_num,
 			.data_type = DATA_TYPE_CONFIG,
 			.data_id = idx,

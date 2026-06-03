@@ -28,7 +28,7 @@ struct config_slot {
 	struct nbtimeout timeout;
 };
 
-extern struct config_slot config_slots[CONFIG_SLOT_COUNT];
+extern struct config_slot config_slot[CONFIG_SLOT_COUNT];
 
 /* Initialize the config module. Must be called after psram_init(). */
 int config_init(void);

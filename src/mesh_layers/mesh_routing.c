@@ -54,12 +54,12 @@ static config_t build_config_pkt(const route_info_t *pkt)
         .dst_device_id = pkt->device_id,
         .dst_device_type = pkt->device_type,
         .data_type = pkt->data_type,
-        .data_id = config_slots[idx].config_id,
-        .config_len = config_slots[idx].config_len,
-        .config_crc32 = config_slots[idx].config_crc32,
+        .data_id = config_slot[idx].config_id,
+        .config_len = config_slot[idx].config_len,
+        .config_crc32 = config_slot[idx].config_crc32,
     };
 
-    int err = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
+    int err = psram_read(addr, config_pkt.config, config_slot[idx].config_len);
     if (err) {
         LOG_ERR("psram_read @0x%06x failed (%d)", addr, err);
         config_pkt.config_len = 0;
