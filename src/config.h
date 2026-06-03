@@ -40,7 +40,7 @@ void config_tick(void);
 int validate_at_config(const slm_at_structure_t *config, const uint8_t *data);
 
 /* Release a config slot by its ID. */
-int config_slot_release_by_id(uint16_t config_id, bool is_success);
+int config_slot_release_by_id(uint16_t config_id, uint8_t status);
 
 /* TX helpers */
 int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);

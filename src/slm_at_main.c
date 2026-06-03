@@ -564,7 +564,7 @@ static void dispatch(char *line)
     if (strcmp(line, "OK") == 0) {
         switch (pending_ack.data_type) {
             case DATA_TYPE_CONFIG:
-                (void)config_slot_release_by_id(pending_ack.id, true);
+                (void)config_slot_release_by_id(pending_ack.id, STATUS_SUCCESS);
                 break;
 
             case DATA_TYPE_REPORT:
@@ -586,7 +586,7 @@ static void dispatch(char *line)
                 break;
 
             case DATA_TYPE_REPORT:
-                (void)report_slot_release_by_id(pending_ack.id, false);
+                (void)report_slot_release_by_id(pending_ack.id, STATUS_FAILURE);
                 break;
 
             default:

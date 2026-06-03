@@ -46,7 +46,7 @@ static int alloc_config_slot(void)
 {
 	for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
 		if (!config_slots[i].active) {
-			config_slots[idx].is_sent = false;
+			config_slots[i].is_sent = false;
 			config_slots[i].is_applied = false;
 			config_count++;
 			return i;
@@ -86,6 +86,7 @@ static uint8_t validate_config(const config_t *pkt, int *idx_out)
 
 	config_slots[*idx_out].active = true;
 	config_slots[*idx_out].is_sent = false;
+	config_slots[*idx_out].is_applied = false;
 	config_slots[*idx_out].dst_device_id = pkt->dst_device_id;
 	config_slots[*idx_out].dst_device_type = pkt->dst_device_type;
 	config_slots[*idx_out].config_id = pkt->data_id;
@@ -228,6 +229,12 @@ static void sensor_config_tick(void)
 
 	for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
 		if (config_slots[i].active && config_slots[i].is_sent) {
+			if (config_slots[i].is_applied) {
+				// Stop the timer
+				nbtimeout_reset(&config_slots[i].timeout);
+				nbtimeout_stop(&config_slots[i].timeout);
+			}
+
 			if (nbtimeout_expired(&config_slots[i].timeout)) {
 				if (nbtimeout_retry(&config_slots[i].timeout)) {
 					LOG_WRN("Config slot %d for device ID 0x%04X exhausted %d retries, Freeing the slot", i, config_slots[i].dst_device_id, SENSOR_CONFIG_MAX_RETRIES);
@@ -245,7 +252,7 @@ static void sensor_config_tick(void)
 	uint8_t processed_count = 0;
 
 	for (int idx = 0; idx < CONFIG_SLOT_COUNT && processed_count < PROCESS_CONFIG_SLOTS; idx++) {
-		if (config_slots[idx].active && !config_slots[idx].is_sent) {
+		if (config_slots[idx].active && !config_slots[idx].is_sent && !config_slots[idx].is_applied) {
 			LOG_INF("Attempting to send pending config result to device ID 0x%04X", config_slots[idx].dst_device_id);
 			processed_count++;
 
@@ -511,26 +518,6 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 					} else {
 						LOG_WRN("CONFIG_ACK successful but no matching config slot found for device %s ID:%d", device_type_str(pkt->dst_device_type), pkt->dst_device_id);
 					}
-				} else {
-					// resend config: read bytes back from PSRAM and re-send.
-					if (ret >= 0) {
-						LOG_WRN("CONFIG_ACK failed with status 0x%02x, resending config for device %s ID:%d", pkt->hdr.status, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
-						config_t config_pkt = {
-							.dst_device_id = pkt->dst_device_id,
-							.dst_device_type = pkt->dst_device_type,
-							.config_len = config_slots[idx].config_len,
-							.config_crc32 = config_slots[idx].config_crc32,
-						};
-						uint32_t addr = PSRAM_CONFIG_BASE + ((uint32_t)idx * MAX_CONFIG_SIZE);
-						int err = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
-						if (err) {
-							LOG_ERR("psram_read @0x%06x failed (%d), cannot resend config", addr, err);
-							return;
-						}
-						send_config(&config_pkt, pkt->dst_device_id, pkt->dst_device_type, PACKET_PRIORITY_HIGH);
-					} else {
-						LOG_WRN("CONFIG_ACK failed with status 0x%02x and no matching config slot found for device %s ID:%d, cannot resend", pkt->hdr.status, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
-					}
 				}
 			} else {
 				// Reject config ack except from anchor and sensor
@@ -542,19 +529,8 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		case DEVICE_TYPE_ANCHOR:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
-				int idx;
-				int ret = find_config_slot(pkt->dst_device_id, &idx);
-				if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
-					// free slot
-					if (ret >= 0) {
-						LOG_INF("CONFIG_ACK successful, freeing config slot %d for device %s ID:%d", idx, device_type_str(pkt->dst_device_type), pkt->dst_device_id);
-						config_slot_free(idx);
-					} else {
-						LOG_WRN("CONFIG_ACK successful but no matching config slot found for device %s ID:%d", device_type_str(pkt->dst_device_type), pkt->dst_device_id);
-					}
-				} else {
-					config_slots[idx].is_sent = false; // Mark slot as not sent to trigger resend on next CONFIG_ACK
-				}
+				// No need to Process (or implement something in future)
+				return;
 			} else {
 				// Reject config ack except from anchor and sensor
 				return;
@@ -779,12 +755,13 @@ int config_slot_release_by_id(uint16_t config_id, uint8_t status)
 				.data_id = config_slots[i].config_id,
 			};
 			send_config_received(&recv_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type);
-			LOG_INF("Freeing config slot %d (config_id=%u) on downstream ack", i, config_id);
+			LOG_INF("Config Id %u applied with status 0x%02x, device ID 0x%04X", config_id, status, config_slots[i].dst_device_id);
 			if (status == STATUS_SUCCESS) {
 				config_slots[i].is_applied = true;
 				return 0;
 			}
 			LOG_WRN("Config application failed with status 0x%02x for config_id=%u, but still freeing the slot", status, config_id);
+			config_slots[i].is_applied = false;
 			config_slot_free(i);
 			return 0;		
 		}
