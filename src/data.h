@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include "protocol.h"
 #include "psram.h"
+#include "timeout.h"
 #include "slm_at_main.h"
 
 #define DATA_PSRAM_BASE			PSRAM_DATA_BASE
@@ -15,6 +16,7 @@
 #define DATA_SLOT_TIMEOUT_MS	(30 * 1000)  /* 30 seconds idle timeout for report slots */
 #define PROCESS_REPORT_SLOTS	8  /* limit how many report slots we process per tick to avoid long blocking */
 #define DATA_DUP_TIMEOUT_MS		(30 * 1000) /* 30 seconds timeout for duplicate report detection */
+#define SENDER_TIMEOUT_MS		(2 * 60 * 1000) /* 2 minutes timeout for sender to wait for Completion */
 
 struct report_sender {
 	bool     active;
@@ -27,6 +29,7 @@ struct report_sender {
 	uint8_t  last_chunk_size;
 	uint8_t  next_chunk;
 	uint32_t crc32;
+	struct nbtimeout timeout;
 };
 
 extern struct report_sender sender;

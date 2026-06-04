@@ -82,21 +82,56 @@ static int alloc_slot(void)
 	return -1;
 }
 
+static void update_report_count(uint8_t priority, bool is_increment)
+{
+	switch (priority) {
+		case PACKET_PRIORITY_HIGH:
+		{
+			if (high_prio_report_count < UINT16_MAX && is_increment) {
+				high_prio_report_count++;
+			} else if (!is_increment && high_prio_report_count > 0) {
+				high_prio_report_count--;
+			} else {
+				LOG_WRN("High priority report count %s", is_increment ? "overflow" : "underflow");
+			}
+			break;
+		}
+
+		case PACKET_PRIORITY_MEDIUM:
+		{
+			if (med_prio_report_count < UINT16_MAX && is_increment) {
+				med_prio_report_count++;
+			} else if (!is_increment && med_prio_report_count > 0) {
+				med_prio_report_count--;
+			} else {
+				LOG_WRN("Medium priority report count %s", is_increment ? "overflow" : "underflow");
+			}
+			break;
+		}
+
+		case PACKET_PRIORITY_LOW:
+		{
+			if (low_prio_report_count < UINT16_MAX && is_increment) {
+				low_prio_report_count++;
+			} else if (!is_increment && low_prio_report_count > 0) {
+				low_prio_report_count--;
+			} else {
+				LOG_WRN("Low priority report count %s", is_increment ? "overflow" : "underflow");
+			}
+			break;
+		}
+
+		default:
+			LOG_WRN("Invalid priority %d for %s report count", priority, is_increment ? "incrementing" : "decrementing");
+	}
+
+	LOG_INF_YEL("Report Counts (%s) - High: %d, Medium: %d, Low: %d", is_increment ? "Incrementing" : "Decrementing", high_prio_report_count, med_prio_report_count, low_prio_report_count);
+	return;
+}
+
 static void report_slot_free(int idx)
 {
-	LOG_INF("R_Prio %d S_Prio %d High prio count: %d, med prio count: %d, low prio count: %d", report_slot[idx].priority, sender.priority, high_prio_report_count, med_prio_report_count, low_prio_report_count);
-	switch (sender.priority) {
-		case PACKET_PRIORITY_HIGH:
-			high_prio_report_count--;
-			break;
-		case PACKET_PRIORITY_MEDIUM:
-			med_prio_report_count--;
-			break;
-		case PACKET_PRIORITY_LOW:
-			low_prio_report_count--;
-			break;
-	}
-	LOG_INF("After freeing slot: High prio count: %d, med prio count: %d, low prio count: %d", high_prio_report_count, med_prio_report_count, low_prio_report_count);
+	update_report_count(report_slot[idx].priority, false);
 	sender.active = false;
 	report_slot[idx].active = false;
 	report_slot[idx].is_sent = false;
@@ -164,8 +199,9 @@ static uint8_t validate_slot(const report_init_t *pkt)
 	report_slot[idx].crc32 = pkt->crc32;
 	memset(report_slot[idx].received, 0, sizeof(report_slot[idx].received));
 	report_slot[idx].received_count = 0;
-	nbtimeout_init(&report_slot[idx].idle_timeout, DATA_SLOT_TIMEOUT_MS, 0);
 
+	update_report_count(report_slot[idx].priority, true);
+	nbtimeout_init(&report_slot[idx].idle_timeout, DATA_SLOT_TIMEOUT_MS, 0);
 	nbtimeout_start(&report_slot[idx].idle_timeout);
 
 	return STATUS_SUCCESS;
@@ -230,18 +266,12 @@ static uint8_t validate_report_chunk(const report_chunk_t *pkt)
 		if (crc == report_slot[idx].crc32) {
 			LOG_INF("CRC match for gen %d data_id %d, transfer complete", pkt->gen_device_id, pkt->data_id);
 			report_slot[idx].upstream_ready = true;
-			switch (report_slot[idx].priority) {
-				case PACKET_PRIORITY_HIGH:
-					high_prio_report_count++;
-					break;
-				case PACKET_PRIORITY_MEDIUM:
-					med_prio_report_count++;
-					break;
-				case PACKET_PRIORITY_LOW:
-					low_prio_report_count++;
-					break;
-			}
 			nbtimeout_stop(&report_slot[idx].idle_timeout);
+			if (get_device_type() == DEVICE_TYPE_GATEWAY) {
+				// Start duplicate report detection timeout for gateway
+				nbtimeout_init(&report_slot[idx].idle_timeout, DATA_DUP_TIMEOUT_MS, 0);
+				nbtimeout_start(&report_slot[idx].idle_timeout);
+			}
 		} else {
 			LOG_ERR("CRC mismatch for gen %d data_id %d: expected 0x%08x computed 0x%08x, freeing slot", pkt->gen_device_id, pkt->data_id, report_slot[idx].crc32, crc);
 			report_slot_free(idx);
@@ -257,13 +287,18 @@ static void gateway_report_tick(void)
 		return;
 	}
 
-	static const char HEX_LUT[] = "0123456789ABCDEF";
-	uint8_t processed_count = 0;
+	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
+		if (report_slot[i].active && report_slot[i].upstream_ready && report_slot[i].is_sent && nbtimeout_expired(&report_slot[i].idle_timeout)) {
+			LOG_WRN("Report gen %d data_id %d idle timeout expired, freeing slot", report_slot[i].gen_device_id, report_slot[i].data_id);
+			report_slot_free(i);
+		}
+	}
 
-	for (int idx = 0; idx < DATA_SLOT_COUNT && processed_count < PROCESS_REPORT_SLOTS; idx++) {
+	static const char HEX_LUT[] = "0123456789ABCDEF";
+
+	for (int idx = 0; idx < DATA_SLOT_COUNT; idx++) {
 		if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent) {
 			LOG_INF("Attempting to upstream report for gen %d data_id %d", report_slot[idx].gen_device_id, report_slot[idx].data_id);
-			processed_count++;
 
 			// Find Serial Number first
 			int sn_idx = -1;
@@ -317,6 +352,7 @@ static void gateway_report_tick(void)
 
 			LOG_INF("AT#REPORT emitted for slot %d, marking as sent", idx);
 			report_slot[idx].is_sent = true;
+			return;
 		}
 	}
 }
@@ -327,11 +363,22 @@ static void anchor_report_tick(void)
 		return;
 	}
 
-	if (!sender.active) {
+	int idx = 0;
+
+	if (sender.active) {
+		if (nbtimeout_expired(&sender.timeout)) {
+			LOG_WRN("Sender timeout expired for gen %d data_id %d, marking sender as inactive to retry", sender.gen_device_id, sender.data_id);
+			idx = find_slot(sender.gen_device_id, sender.data_id);
+			if (idx >= 0) {
+				report_slot[idx].is_sent = false;
+			} else {
+				LOG_ERR("Sender timeout but failed to find matching report slot for gen %d data_id %d", sender.gen_device_id, sender.data_id);
+			}
+			nbtimeout_stop(&sender.timeout);
+			sender.active = false;
+		}
 		return;
 	}
-
-	int idx = 0;
 
 	if (high_prio_report_count > 0) {
 		for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
@@ -352,6 +399,13 @@ static void anchor_report_tick(void)
 			}
 		}
 	} else {
+		return;
+	}
+
+	// Validate report details before attempting
+	if (report_slot[idx].gen_device_id == 0 || report_slot[idx].data_id == 0 || report_slot[idx].total_size == 0 || report_slot[idx].chunk_count == 0) {
+		LOG_WRN("Invalid report details in slot %d, gen_device_id %d data_id %d prio %d", idx, report_slot[idx].gen_device_id, report_slot[idx].data_id, report_slot[idx].priority);
+		update_report_count(report_slot[idx].priority, false);
 		return;
 	}
 
@@ -377,8 +431,10 @@ static void anchor_report_tick(void)
 		.last_chunk_size = sender.last_chunk_size,
 		.crc32 = sender.crc32,
 	};
-
+	LOG_INF_CYAN("Sender is active and processing report for gen %d report_id %d", sender.gen_device_id, sender.data_id);
 	send_report_init(&init_pkt, sender.dst_id, infra_devices[0].entry.device_type, sender.priority);
+	nbtimeout_init(&sender.timeout, SENDER_TIMEOUT_MS, 0);
+	nbtimeout_start(&sender.timeout);
 	report_slot[idx].is_sent = true;
 	
 }
@@ -389,11 +445,22 @@ static void sensor_report_tick(void)
 		return;
 	}
 
+	int idx = 0;
+
 	if (sender.active) {
+		if (nbtimeout_expired(&sender.timeout)) {
+			LOG_WRN("Sender timeout expired for gen %d data_id %d, marking sender as inactive to retry", sender.gen_device_id, sender.data_id);
+			idx = find_slot(sender.gen_device_id, sender.data_id);
+			if (idx >= 0) {
+				report_slot[idx].is_sent = false;
+			} else {
+				LOG_ERR("Sender timeout but failed to find matching report slot for gen %d data_id %d", sender.gen_device_id, sender.data_id);
+			}
+			nbtimeout_stop(&sender.timeout);
+			sender.active = false;
+		}
 		return;
 	}
-
-	int idx = 0;
 
 	if (high_prio_report_count > 0) {
 		for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
@@ -414,6 +481,13 @@ static void sensor_report_tick(void)
 			}
 		}
 	} else {
+		return;
+	}
+
+	// Validate report details before attempting
+	if (report_slot[idx].gen_device_id == 0 || report_slot[idx].data_id == 0 || report_slot[idx].total_size == 0 || report_slot[idx].chunk_count == 0) {
+		LOG_WRN("Invalid report details in slot %d, gen_device_id %d data_id %d prio %d", idx, report_slot[idx].gen_device_id, report_slot[idx].data_id, report_slot[idx].priority);
+		update_report_count(report_slot[idx].priority, false);
 		return;
 	}
 
@@ -439,8 +513,10 @@ static void sensor_report_tick(void)
 		.last_chunk_size = sender.last_chunk_size,
 		.crc32 = sender.crc32,
 	};
-
+	LOG_INF_CYAN("Sender is active and processing report for gen %d report_id %d", sender.gen_device_id, sender.data_id);
 	send_report_init(&init_pkt, sender.dst_id, infra_devices[0].entry.device_type, sender.priority);
+	nbtimeout_init(&sender.timeout, SENDER_TIMEOUT_MS, 0);
+	nbtimeout_start(&sender.timeout);
 	report_slot[idx].is_sent = true;
 }
 
@@ -1016,6 +1092,8 @@ int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const
 	report_slot[idx].received[0] = true;
 	report_slot[idx].received[1] = true;
 
+	update_report_count(priority, true);
+
 	int err = psram_write(slot_psram_addr(idx), data, report->data_len);
 	if (err) {
 		LOG_ERR("psram_write @0x%06x failed (%d), freeing slot", slot_psram_addr(idx), err);
@@ -1023,57 +1101,55 @@ int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const
 		return err;
 	}
 
-	switch (priority) {
-		case PACKET_PRIORITY_HIGH:
-			high_prio_report_count++;
-			break;
-		case PACKET_PRIORITY_MEDIUM:
-			med_prio_report_count++;
-			break;
-		case PACKET_PRIORITY_LOW:
-			low_prio_report_count++;
-			break;
-	}
+	LOG_INF_YEL("Data ID: %d, Priority: %d and Allocated slot %d", report->data_id, priority, idx);
+	LOG_INF_YEL("High prio count: %d, med prio count: %d, low prio count: %d ", high_prio_report_count, med_prio_report_count, low_prio_report_count);
 
 	return 0;
 }
 
-int report_slot_release_by_id(uint16_t report_id, bool is_success)
+int report_slot_release_by_id(uint16_t device_id, uint16_t report_id, bool is_success)
 {
+	if (device_id == 0xFFFF) {
+		LOG_WRN("Invalid device_id 0xFFFF for releasing report slot");
+		return -EINVAL;
+	}
+
 	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
+		if (report_slot[i].gen_device_id != device_id) {
+			continue;
+		}
 		if (report_slot[i].active && report_slot[i].is_sent && report_slot[i].data_id == report_id) {
 			if (is_success) {
-				uint16_t hop_num = get_hop_num(report_slot[i].gen_device_id, DEVICE_TYPE_SENSOR);
+				uint16_t hop_num = find_hop_num(report_slot[i].gen_device_id, DEVICE_TYPE_SENSOR);
 				if (hop_num == 0xFF) {
-				LOG_ERR("No route to gen_device_id %d, cannot send REPORT_RECEIVED", report_slot[i].gen_device_id);
-				return -ENOENT;
-			} else if (hop_num == 0) {
-				LOG_INF("Sensor ID:%d is directly connected to this gateway, sending REPORT_RECEIVED without route discovery", report_slot[i].gen_device_id);
-				// Build report received packet and send directly without route discovery
-				report_received_t recv_pkt = {
-					.gen_device_id = report_slot[i].gen_device_id,
+					LOG_ERR("No route to gen_device_id %d, cannot send REPORT_RECEIVED", report_slot[i].gen_device_id);
+					return -ENOENT;
+				} else if (hop_num == 0) {
+					LOG_INF("Sensor ID:%d is directly connected to this gateway, sending REPORT_RECEIVED without route discovery", report_slot[i].gen_device_id);
+					// Build report received packet and send directly without route discovery
+					report_received_t recv_pkt = {
+						.gen_device_id = report_slot[i].gen_device_id,
+						.data_id = report_slot[i].data_id,
+						.hdr.status = STATUS_SUCCESS,
+					};
+					send_report_received(&recv_pkt, report_slot[i].gen_device_id, DEVICE_TYPE_SENSOR);
+					return 0;
+				}
+				route_discovery_t rd_pkt = {
+					.device_id = report_slot[i].gen_device_id,
+					.device_type = DEVICE_TYPE_SENSOR,
+					.hop_num = hop_num,
 					.data_id = report_slot[i].data_id,
-					.hdr.status = STATUS_SUCCESS,
+					.data_type = DATA_TYPE_REPORT,
 				};
-				send_report_received(&recv_pkt, report_slot[i].gen_device_id, DEVICE_TYPE_SENSOR);
-				report_slot_free(i);
+				for (int i = 0; i < infra_count; i++) {
+					send_route_discovery(&rd_pkt, infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
+				}
 				return 0;
-			}
-			route_discovery_t rd_pkt = {
-				.device_id = report_slot[i].gen_device_id,
-				.device_type = DEVICE_TYPE_SENSOR,
-				.hop_num = hop_num,
-				.data_id = report_slot[i].data_id,
-				.data_type = DATA_TYPE_REPORT,
-			};
-			for (int i = 0; i < infra_count; i++) {
-				send_route_discovery(&rd_pkt, infra_devices[i].entry.device_id, infra_devices[i].entry.device_type, STATUS_SUCCESS);
-			}
-			report_slot_free(i);
-			return 0;
 			} else {
 				LOG_WRN("Releasing slot %d for report ID:%d after failed processing", i, report_id);
 				report_slot[i].is_sent = false;
+				sender.active = false;
 				return 0;
 			}
 		}
