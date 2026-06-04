@@ -36,7 +36,7 @@ static int main_sub_init(void)
     // Initialize subsystems
     tracker_init();
     mesh_init();
-    data_init();
+    report_init();
     config_init();
     large_data_init();
 

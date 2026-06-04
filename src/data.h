@@ -8,15 +8,14 @@
 #include "psram.h"
 #include "slm_at_main.h"
 
-#define DATA_PSRAM_BASE          PSRAM_DATA_BASE
-#define DATA_SLOT_COUNT          512
-#define MAX_REPORT_SIZE   		 256
-#define DATA_PSRAM_SIZE          (DATA_SLOT_COUNT * MAX_REPORT_SIZE)
-#define DATA_SLOT_TIMEOUT_MS     30000  /* free slot if idle this long */
+#define DATA_PSRAM_BASE			PSRAM_DATA_BASE
+#define DATA_SLOT_COUNT			512
+#define MAX_REPORT_SIZE			256
+#define DATA_PSRAM_SIZE			(DATA_SLOT_COUNT * MAX_REPORT_SIZE)
+#define DATA_SLOT_TIMEOUT_MS	(30 * 1000)  /* 30 seconds idle timeout for report slots */
+#define PROCESS_REPORT_SLOTS	8  /* limit how many report slots we process per tick to avoid long blocking */
 
-#define PROCESS_REPORT_SLOTS	4  /* limit how many report slots we process per tick to avoid long blocking */
-
-struct data_sender {
+struct report_sender {
 	bool     active;
 	uint16_t dst_id;
 	uint16_t gen_device_id;  /* original origin — preserved across hops */
@@ -29,13 +28,13 @@ struct data_sender {
 	uint32_t crc32;
 };
 
-extern struct data_sender sender;
+extern struct report_sender sender;
 
-/* Initialize the data module. Must be called after psram_init(). */
-int data_init(void);
+/* Initialize the report module. Must be called after psram_init(). */
+int report_init(void);
 
 /* Call from main loop to expire stale slots. */
-void data_tick(void);
+void report_tick(void);
 
 /* Validate an AT report before processing. */
 int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const uint8_t *data);
