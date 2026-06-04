@@ -2,7 +2,6 @@
 
 #include <string.h>
 #include <zephyr/kernel.h>
-#include <zephyr/logging/log.h>
 #include <zephyr/sys/crc.h>
 #include "data.h"
 #include "mesh.h"
@@ -17,6 +16,7 @@
 #include "slm_at_main.h"
 #include "slm_at_uart.h"
 #include "mesh_layers/mesh_routing.h"
+#include "log_color.h"
 
 LOG_MODULE_REGISTER(data, CONFIG_DATA_LOG_LEVEL);
 
@@ -60,19 +60,13 @@ static uint32_t slot_psram_addr(int idx)
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
 /* -------------------------------------------------------------------------------**** Report Slots ****------------------------------------------------------------------------------- */
 
-static int find_slot(uint16_t gen_device_id, uint8_t data_id, int *idx_out)
+static int find_slot(uint16_t gen_device_id, uint8_t data_id)
 {
 	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
 		if (report_slot[i].active && report_slot[i].gen_device_id == gen_device_id && report_slot[i].data_id == data_id) {
-			if (report_slot[i].upstream_ready) {
-				*idx_out = i;
-				return -2; // Special code meaning "slot already active and ready for upstream
-			}
-			*idx_out = i;
 			return i;
 		}
 	}
-	*idx_out = -1;
 	return -1;
 }
 
@@ -80,6 +74,8 @@ static int alloc_slot(void)
 {
 	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
 		if (!report_slot[i].active) {
+			report_slot[i].is_sent = false;
+			report_slot[i].upstream_ready = false;
 			return i;
 		}
 	}
@@ -144,34 +140,31 @@ static int send_next_chunk(uint16_t dst_id, uint8_t dst_type)
 
 static uint8_t validate_slot(const report_init_t *pkt)
 {
-	int idx;
-	int ret = find_slot(pkt->gen_device_id, pkt->data_id, &idx);
-	if (ret < 0) {
-		if (ret == -2) {
-			LOG_WRN("REPORT_INIT rejected: slot already active and ready for upstream for gen %d prio %d", pkt->gen_device_id, pkt->hdr.priority);
-			return STATUS_ALREADY_EXISTS;
-		}
+	int idx = find_slot(pkt->gen_device_id, pkt->data_id);
+	if (idx < 0) {
 		idx = alloc_slot();
 		if (idx < 0) {
 			LOG_WRN("REPORT_INIT rejected: no free slot");
 			return STATUS_RESOURCE_UNAVAILABLE;
 		}
-
-		report_slot[idx].active = true;
-		report_slot[idx].upstream_ready = false;
-		report_slot[idx].is_sent = false;
-		report_slot[idx].gen_device_id = pkt->gen_device_id;
-		report_slot[idx].data_id = pkt->data_id;
-		report_slot[idx].report_time_ms = pkt->report_time_ms;
-		report_slot[idx].priority = pkt->hdr.priority;
-		report_slot[idx].total_size = pkt->total_size;
-		report_slot[idx].chunk_count = pkt->chunk_count;
-		report_slot[idx].last_chunk_size = pkt->last_chunk_size;
-		report_slot[idx].crc32 = pkt->crc32;
-		memset(report_slot[idx].received, 0, sizeof(report_slot[idx].received));
-		report_slot[idx].received_count = 0;
-		nbtimeout_init(&report_slot[idx].idle_timeout, DATA_SLOT_TIMEOUT_MS, 0);
 	}
+	if (report_slot[idx].upstream_ready) {
+		LOG_WRN("REPORT_INIT rejected: slot already active and ready for upstream for gen %d prio %d", pkt->gen_device_id, pkt->hdr.priority);
+		return STATUS_ALREADY_EXISTS;
+	}
+
+	report_slot[idx].active = true;
+	report_slot[idx].gen_device_id = pkt->gen_device_id;
+	report_slot[idx].data_id = pkt->data_id;
+	report_slot[idx].report_time_ms = pkt->report_time_ms;
+	report_slot[idx].priority = pkt->hdr.priority;
+	report_slot[idx].total_size = pkt->total_size;
+	report_slot[idx].chunk_count = pkt->chunk_count;
+	report_slot[idx].last_chunk_size = pkt->last_chunk_size;
+	report_slot[idx].crc32 = pkt->crc32;
+	memset(report_slot[idx].received, 0, sizeof(report_slot[idx].received));
+	report_slot[idx].received_count = 0;
+	nbtimeout_init(&report_slot[idx].idle_timeout, DATA_SLOT_TIMEOUT_MS, 0);
 
 	nbtimeout_start(&report_slot[idx].idle_timeout);
 
@@ -180,9 +173,8 @@ static uint8_t validate_slot(const report_init_t *pkt)
 
 static uint8_t validate_report_chunk(const report_chunk_t *pkt)
 {
-	int idx;
-	int ret = find_slot(pkt->gen_device_id, pkt->data_id, &idx);
-	if (ret < 0) {
+	int idx = find_slot(pkt->gen_device_id, pkt->data_id);
+	if (idx < 0) {
 		LOG_WRN("REPORT_CHUNK rejected: no active slot for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
 		return STATUS_NOT_FOUND;
 	}
@@ -425,7 +417,7 @@ static void sensor_report_tick(void)
 		return;
 	}
 
-	LOG_INF("Attempting to resend report for gen %d data_id %d", report_slot[idx].gen_device_id, report_slot[idx].data_id);
+	LOG_INF("Attempting to resend report for gen %d data_id %d (Slot %d)", report_slot[idx].gen_device_id, report_slot[idx].data_id, idx);
 
 	sender.active = true;
 	sender.dst_id = infra_devices[0].entry.device_id;
@@ -466,7 +458,7 @@ int send_report_init(report_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint
 	// Add tracker entry for retries
 	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_INIT, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
-	LOG_INF("----> Sending REPORT_INIT to device %s ID:%d for SENSOR ID:%d", device_type_str(dst_type), dst_id, pkt->gen_device_id);
+	LOG_INF_GRN("----> Sending REPORT_INIT to device %s ID:%d for SENSOR ID:%d (Report ID: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -478,7 +470,7 @@ int send_report_init_ack(report_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_ty
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
 
-	LOG_INF("----> Sending REPORT_INIT_ACK to device %s ID:%d for SENSOR ID:%d", device_type_str(dst_type), dst_id, pkt->gen_device_id);
+	LOG_INF_GRN("----> Sending REPORT_INIT_ACK to device %s ID:%d for SENSOR ID:%d (Report ID: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -493,7 +485,7 @@ int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, ui
 	// Add tracker entry for retries
 	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_CHUNK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
-	LOG_INF("----> Sending REPORT_CHUNK to device %s ID:%d for SENSOR ID:%d (Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index));
+	LOG_INF_GRN("----> Sending REPORT_CHUNK to device %s ID:%d for SENSOR ID:%d (Report ID: %d, Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index));
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -505,7 +497,7 @@ int send_report_chunk_ack(report_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
 
-	LOG_INF("----> Sending REPORT_CHUNK_ACK to device %s ID:%d for SENSOR ID:%d (Chunk: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->chunk_index);
+	LOG_INF_GRN("----> Sending REPORT_CHUNK_ACK to device %s ID:%d for SENSOR ID:%d (Report ID: %d, Chunk: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->chunk_index);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -520,7 +512,7 @@ int send_report_received(report_received_t *pkt, uint16_t dst_id, uint8_t dst_ty
 	// Add tracker entry for retries
 	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_RECEIVED, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
-	LOG_INF("----> Sending REPORT_RECEIVED to device %s ID:%d for SENSOR ID:%d data_id %d", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
+	LOG_INF_GRN("----> Sending REPORT_RECEIVED to device %s ID:%d for SENSOR ID:%d (Report ID: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -532,7 +524,7 @@ int send_report_received_ack(report_received_ack_t *pkt, uint16_t dst_id, uint8_
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
 
-	LOG_INF("----> Sending REPORT_RECEIVED_ACK to device %s ID:%d for SENSOR ID:%d data_id %d", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
+	LOG_INF_GRN("----> Sending REPORT_RECEIVED_ACK to device %s ID:%d for SENSOR ID:%d (Report ID: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -552,8 +544,7 @@ void handle_report_init(const report_init_t *pkt, uint16_t dst_id, int16_t rssi_
         return;
     }
 
-	LOG_INF("Received REPORT_INIT from %s ID:%d for SENSOR ID:%d gen %d prio %d size %u chunks %u crc 0x%08x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id,
-		pkt->gen_device_id, pkt->hdr.priority, pkt->total_size, pkt->chunk_count, pkt->crc32);
+	LOG_INF_MAG("Received REPORT_INIT from %s ID:%d for SENSOR ID:%d (Report ID: %d) prio %d size %u chunks %u crc 0x%08x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->hdr.priority, pkt->total_size, pkt->chunk_count, pkt->crc32);
 
 	report_init_ack_t ack = {
 		.gen_device_id = pkt->gen_device_id,
@@ -616,7 +607,7 @@ void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16
         return;
     }
 	
-	LOG_INF("Received REPORT_INIT_ACK from %s ID:%d gen %d prio %d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->hdr.priority, pkt->hdr.status);
+	LOG_INF_MAG("Received REPORT_INIT_ACK from %s ID:%d for SENSOR ID:%d (Report ID: %d) prio %d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->hdr.priority, pkt->hdr.status);
 
 	// Remove tracker
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
@@ -640,7 +631,17 @@ void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16
 						return;
 					}
 					send_next_chunk(dst_id, pkt->hdr.device_type);
-				}
+					return;
+				} else if (pkt->hdr.status == STATUS_ALREADY_EXISTS) {
+					LOG_WRN("Received REPORT_INIT_ACK with status ALREADY_EXISTS for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
+					int idx = find_slot(pkt->gen_device_id, pkt->data_id);
+					if (idx < 0) {
+						LOG_ERR("No active slot found for ALREADY_EXISTS ack for gen %d data_id %d, this should not happen", pkt->gen_device_id, pkt->data_id);
+					} else {
+						report_slot_free(idx);
+					}
+				} 
+				sender.active = false;
 			} else {
 				// Reject report init ack except from gateway and anchor
 				return;
@@ -672,7 +673,7 @@ void handle_report_chunk(const report_chunk_t *pkt, uint16_t dst_id, int16_t rss
         return;
     }
 
-	LOG_INF("Received REPORT_CHUNK from %s ID:%d gen %d prio %d chunk %d", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->hdr.priority, pkt->chunk_index);
+	LOG_INF_MAG("Received REPORT_CHUNK from %s ID:%d for SENSOR ID:%d (Report ID: %d) prio %d chunk %d", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->hdr.priority, pkt->chunk_index);
 
 	report_chunk_ack_t ack = {
 		.gen_device_id = pkt->gen_device_id,
@@ -728,7 +729,7 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
         return;
     }
 
-	LOG_INF("Received REPORT_CHUNK_ACK from %s ID:%d gen %d chunk %d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->chunk_index, pkt->hdr.status);
+	LOG_INF_MAG("Received REPORT_CHUNK_ACK from %s ID:%d for SENSOR ID:%d (Report ID: %d) prio %d chunk %d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->hdr.priority, pkt->chunk_index, pkt->hdr.status);
 
 	// Remove tracker
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
@@ -741,7 +742,12 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 
 	if (sender.next_chunk >= sender.chunk_count && pkt->hdr.status == STATUS_SUCCESS) {
 		LOG_INF("Transfer complete: %u bytes in %u chunks to ID:%d", sender.total_size, sender.chunk_count, sender.dst_id);
-		report_slot_free(pkt->data_id);
+		int idx = find_slot(sender.gen_device_id, sender.data_id);
+		if (idx < 0) {
+			LOG_ERR("No active slot found for completed transfer gen %d data_id %d, this should not happen", sender.gen_device_id, sender.data_id);
+		} else {
+			report_slot_free(idx);
+		}
 		sender.active = false;
 		return;
 	}
@@ -770,7 +776,10 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 					sender.next_chunk--;
 				}
 				// Send next chunk if status is success
-				send_next_chunk(dst_id, pkt->hdr.device_type);
+				if (send_next_chunk(dst_id, pkt->hdr.device_type) != 0) {
+					report_slot_free(find_slot(sender.gen_device_id, sender.data_id));
+					sender.active = false;
+				}
 			} else {
 				// Reject report chunk ack except from gateway and anchor
 				return;
@@ -802,7 +811,7 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 		return;
 	}
 
-	LOG_INF("Received REPORT_RECEIVED from %s ID:%d gen %d data_id %d", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id);
+	LOG_INF_MAG("Received REPORT_RECEIVED from %s ID:%d for SENSOR ID:%d (Report ID: %d) prio %d", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->hdr.priority);
 
 	report_received_ack_t ack = {
 		.gen_device_id = pkt->gen_device_id,
@@ -894,7 +903,7 @@ void handle_report_received_ack(const report_received_ack_t *pkt, uint16_t dst_i
 		return;
 	}
 
-	LOG_INF("Received REPORT_RECEIVED_ACK from %s ID:%d gen %d data_id %d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->hdr.status);
+	LOG_INF_MAG("Received REPORT_RECEIVED_ACK from %s ID:%d for SENSOR ID:%d (Report ID: %d) prio %d status 0x%02x", device_type_str(pkt->hdr.device_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->hdr.priority, pkt->hdr.status);
 
 	// Remove tracker
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
@@ -986,9 +995,8 @@ int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const
 	}
 
 	/* Find an existing slot for this device, otherwise allocate a fresh one. */
-	int idx = -1;
-	int ret = find_slot(get_device_id(), report->data_id, &idx);
-	if (ret < 0) {
+	int idx = find_slot(get_device_id(), report->data_id);
+	if (idx < 0) {
 		idx = alloc_slot();
 		if (idx < 0) {
 			return -ENOMEM;

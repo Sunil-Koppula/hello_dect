@@ -169,7 +169,7 @@ static void gateway_config_tick(void)
 			processed_count++;
 
 			// Get hop num to the destination device for routing info
-			uint8_t hop_num = get_hop_num(config_slot[idx].dst_device_id, config_slot[idx].dst_device_type);
+			uint8_t hop_num = find_hop_num(config_slot[idx].dst_device_id, config_slot[idx].dst_device_type);
 			if (hop_num == 0xFF) {
 				LOG_WRN("No route to device ID 0x%04X, will retry later", config_slot[idx].dst_device_id);
 				config_slot_free(idx);

@@ -88,6 +88,14 @@ FLAG_NOT_ENCRYPTED = 0x01
 PRIO_NORMAL = 2
 PRIO_ALARM = 0
 
+# data_id auto-increments 1..DATA_ID_MAX then wraps back to 1 (never 0).
+DATA_ID_MAX = 0xEFFF
+
+
+def next_data_id(data_id: int) -> int:
+    """Advance data_id, wrapping DATA_ID_MAX -> 1 (stays in 1..DATA_ID_MAX)."""
+    return data_id + 1 if data_id < DATA_ID_MAX else 1
+
 # Human-readable names for sensor_alarm_flags_t bits (for the dashboard).
 ALARM_NAMES = [
     (1 << 0, "BATTERY"), (1 << 1, "TEMP1"), (1 << 2, "TEMP2"),
@@ -819,7 +827,8 @@ def config_reader(io: SerialIO, state: SensorState, stop_evt: threading.Event) -
 # ---------------------------------------------------------------------------
 
 def run(io: SerialIO, state: SensorState, args, stop_evt: threading.Event) -> None:
-    data_id = args.data_id
+    # data_id auto-increments per report; first send uses args.data_id.
+    data_id = max(1, min(DATA_ID_MAX, args.data_id))
 
     now = time.monotonic()
     next_battery = now + args.battery_period
@@ -827,6 +836,7 @@ def run(io: SerialIO, state: SensorState, args, stop_evt: threading.Event) -> No
     next_report  = now                     # send one promptly on startup
 
     def send(reason: str, alarm_flags: int) -> None:
+        nonlocal data_id
         # Priority rule: low priority (2) when no alarm, high (0) on an alarm.
         priority = PRIO_ALARM if alarm_flags else PRIO_NORMAL
         payload = state.snapshot_payload(alarm_flags)
@@ -836,8 +846,9 @@ def run(io: SerialIO, state: SensorState, args, stop_evt: threading.Event) -> No
             state.last_alarm_flags = alarm_flags
             state.last_priority = priority
             state.last_at_command = f">> {line.strip()}"
-            state.last_response = f"sent ({reason}, prio={priority})"
+            state.last_response = f"sent ({reason}, id={data_id}, prio={priority})"
         render_dashboard(state)
+        data_id = next_data_id(data_id)        # advance for the next report
 
     while not stop_evt.is_set():
         now = time.monotonic()

@@ -14,6 +14,7 @@
 #define DATA_PSRAM_SIZE			(DATA_SLOT_COUNT * MAX_REPORT_SIZE)
 #define DATA_SLOT_TIMEOUT_MS	(30 * 1000)  /* 30 seconds idle timeout for report slots */
 #define PROCESS_REPORT_SLOTS	8  /* limit how many report slots we process per tick to avoid long blocking */
+#define DATA_DUP_TIMEOUT_MS		(30 * 1000) /* 30 seconds timeout for duplicate report detection */
 
 struct report_sender {
 	bool     active;
@@ -40,7 +41,7 @@ void report_tick(void);
 int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const uint8_t *data);
 
 /* Release a report slot by its ID. */
-int report_slot_release_by_id(uint16_t report_id, bool is_success);
+int report_slot_release_by_id(uint16_t device_id, uint16_t report_id, bool is_success);
 
 /* TX helpers */
 int send_report_init(report_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);

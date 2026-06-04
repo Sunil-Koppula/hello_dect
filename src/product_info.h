@@ -144,8 +144,11 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm);
 /* Ping all known devices at initialization. */
 void ping_known_devices(uint16_t gen_id, uint8_t status);
 
-/* Get the hop number for a device. */
-uint8_t get_hop_num(uint16_t device_id, uint8_t device_type);
+/* Find the hop number for a device. */
+uint8_t find_hop_num(uint16_t device_id, uint8_t device_type);
+
+/* Find device ID by serial number. */
+uint16_t find_device_id_by_sn(uint64_t serial_num);
 
 /* Factory Reset */
 void factory_reset(void);

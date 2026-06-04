@@ -347,7 +347,7 @@ void ping_known_devices(uint16_t gen_id, uint8_t status)
 	}
 }
 
-uint8_t get_hop_num(uint16_t device_id, uint8_t device_type)
+uint8_t find_hop_num(uint16_t device_id, uint8_t device_type)
 {
 	if (device_id == 0xFFFF) {
 		return 0xFF;
@@ -381,9 +381,19 @@ uint8_t get_hop_num(uint16_t device_id, uint8_t device_type)
 		}
 		return 0xFF;
 	} else {
-		LOG_WRN("Unknown device type %d in get_hop_num", device_type);
+		LOG_WRN("Unknown device type %d in find_hop_num", device_type);
 		return 0xFF;
 	}
+}
+
+uint16_t find_device_id_by_sn(uint64_t serial_num)
+{
+	for (int i = 0; i < mesh_count; i++) {
+		if (mesh_devices[i].serial_num == serial_num) {
+			return mesh_devices[i].device_id;
+		}
+	}
+	return 0xFFFF;
 }
 
 void factory_reset(void)

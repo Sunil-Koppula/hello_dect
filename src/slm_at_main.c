@@ -350,7 +350,7 @@ static void cmd_config(const char *args)
         }
     }
     if (found) {
-        hop_num = get_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
+        hop_num = find_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
         if (hop_num == 0xFF) {
             found = false;
             LOG_WRN("AT#CONFIG: SN 0x%016llx in mesh but no route found", (unsigned long long)sn);
@@ -535,7 +535,7 @@ static void cmd_report_ack(const char *args)
         }
     }
     if (found) {
-        hop_num = get_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
+        hop_num = find_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
         if (hop_num == 0xFF) {
             found = false;
             LOG_WRN("AT#REPORT: SN 0x%016llx in mesh but no route found", (unsigned long long)v_sn);
@@ -568,7 +568,8 @@ static void dispatch(char *line)
                 break;
 
             case DATA_TYPE_REPORT:
-                (void)report_slot_release_by_id(pending_ack.id, true);
+                uint16_t device_id = find_device_id_by_sn(pending_ack.sn);
+                (void)report_slot_release_by_id(device_id, pending_ack.id, true);
                 break;
 
             default:
@@ -586,7 +587,8 @@ static void dispatch(char *line)
                 break;
 
             case DATA_TYPE_REPORT:
-                (void)report_slot_release_by_id(pending_ack.id, STATUS_FAILURE);
+                uint16_t device_id = find_device_id_by_sn(pending_ack.sn);
+                (void)report_slot_release_by_id(device_id, pending_ack.id, false);
                 break;
 
             default:
