@@ -372,10 +372,10 @@ static void cmd_config(const char *args)
         return;
     }
 
-    LOG_INF("AT#CONFIG accepted: sn=0x%016llx %s ID:%d cfg_id=%u len=%u",
+    LOG_INF("AT#CONFIG accepted: sn=0x%016llx %s ID:%d cfg_id=%u len=%u (alloc slot %d)",
             (unsigned long long)sn,
             device_type_str(config.device_type),
-            config.device_id, config.data_id, config.data_len);
+            config.device_id, config.data_id, config.data_len, err);
 
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp),

@@ -20,34 +20,12 @@
 
 LOG_MODULE_REGISTER(data, CONFIG_DATA_LOG_LEVEL);
 
-#define DATA_MAX_CHUNKS        	((MAX_REPORT_SIZE + SEND_DATA_MAX - 1) / SEND_DATA_MAX)
-#define CRC_VERIFY_STAGE_SIZE 	256
-
 static report_chunk_t chunk_pkt;
 static uint8_t crc_stage[CRC_VERIFY_STAGE_SIZE];
 
 struct report_sender sender;
+struct report_slot report_slot[DATA_SLOT_COUNT];
 
-/* ===== Receiver state ===== */
-
-struct report_slot {
-	bool     active;
-	bool	 upstream_ready;
-	bool     is_sent;
-	uint16_t gen_device_id;
-	uint8_t data_id;
-	uint8_t  priority;
-	uint64_t report_time_ms;
-	uint16_t total_size;
-	uint8_t  chunk_count;
-	uint8_t  last_chunk_size;
-	uint32_t crc32;
-	bool     received[DATA_MAX_CHUNKS];
-	uint8_t  received_count;
-	struct nbtimeout idle_timeout;
-};
-
-static struct report_slot report_slot[DATA_SLOT_COUNT];
 static uint16_t high_prio_report_count = 0;
 static uint16_t med_prio_report_count = 0;
 static uint16_t low_prio_report_count = 0;
@@ -76,6 +54,7 @@ static int alloc_slot(void)
 		if (!report_slot[i].active) {
 			report_slot[i].is_sent = false;
 			report_slot[i].upstream_ready = false;
+			report_slot[i].is_transfered = false;
 			return i;
 		}
 	}
@@ -135,6 +114,8 @@ static void report_slot_free(int idx)
 	sender.active = false;
 	report_slot[idx].active = false;
 	report_slot[idx].is_sent = false;
+	report_slot[idx].upstream_ready = false;
+	report_slot[idx].is_transfered = false;
 	nbtimeout_stop(&report_slot[idx].idle_timeout);
 }
 
@@ -399,6 +380,10 @@ static void anchor_report_tick(void)
 			}
 		}
 	} else {
+		return;
+	}
+
+	if (idx >= DATA_SLOT_COUNT) {
 		return;
 	}
 
@@ -905,7 +890,7 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 		case DEVICE_TYPE_ANCHOR:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-				if (pkt->route_info[1].device_id == 0xFFFF && pkt->route_info[0].device_id == get_device_id()) {
+				if ((pkt->route_info[1].device_id == 0xFFFF || pkt->route_info[1].device_id == 0) && pkt->route_info[0].device_id == get_device_id()) {
 					// Check in sensor storage
 					for (int i = 0; i < sensor_count; i++) {
 						if (sensor_devices[i].entry.device_id == pkt->gen_device_id) {
@@ -921,7 +906,7 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 							ack.hdr.status = STATUS_NOT_FOUND;
 						}
 					}
-				} else {
+				} else if (pkt->route_info[1].device_id != 0xFFFF || pkt->route_info[1].device_id != 0) {
 					// Forward report received packet to next hop
 					report_received_t recv_pkt;
 					memcpy(&recv_pkt, pkt, sizeof(report_received_t));
@@ -931,7 +916,10 @@ void handle_report_received(const report_received_t *pkt, uint16_t dst_id, int16
 					recv_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
 					recv_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
 					ack.hdr.status = STATUS_SUCCESS;
-					send_report_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
+					send_report_received(&recv_pkt, recv_pkt.route_info[0].device_id, DEVICE_TYPE_ANCHOR);
+				} else {
+					LOG_WRN("Invalid route info in REPORT_RECEIVED, rejecting");
+					ack.hdr.status = STATUS_INVALID_PARAMETER;
 				}
 				send_report_received_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 			} else {
@@ -1139,7 +1127,7 @@ int report_slot_release_by_id(uint16_t device_id, uint16_t report_id, bool is_su
 					.device_id = report_slot[i].gen_device_id,
 					.device_type = DEVICE_TYPE_SENSOR,
 					.hop_num = hop_num,
-					.data_id = report_slot[i].data_id,
+					.data_id = i,
 					.data_type = DATA_TYPE_REPORT,
 				};
 				for (int i = 0; i < infra_count; i++) {

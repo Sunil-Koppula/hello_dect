@@ -30,15 +30,13 @@ static uint32_t config_slot_psram_addr(int idx)
 	return PSRAM_CONFIG_BASE + ((uint32_t)idx * MAX_CONFIG_SIZE);
 }
 
-static int find_config_slot(uint16_t dst_device_id, int *idx_out)
+static int find_config_slot(uint16_t dst_device_id)
 {
 	for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
 		if (config_slot[i].active && config_slot[i].dst_device_id == dst_device_id) {
-			*idx_out = i;
 			return i;
 		}
 	}
-	*idx_out = -1;
 	return -1;
 }
 
@@ -48,7 +46,12 @@ static int alloc_config_slot(void)
 		if (!config_slot[i].active) {
 			config_slot[i].is_sent = false;
 			config_slot[i].is_applied = false;
-			active_config_count++;
+			config_slot[i].is_transfered = false;
+			if (active_config_count < UINT16_MAX) {
+				active_config_count++;
+			} else {
+				LOG_WRN("Active config count overflow");
+			}
 			return i;
 		}
 	}
@@ -60,7 +63,12 @@ static void config_slot_free(int idx)
 	config_slot[idx].active = false;
 	config_slot[idx].is_sent = false;
 	config_slot[idx].is_applied = false;
-	active_config_count--;
+	config_slot[idx].is_transfered = false;
+	if (active_config_count > 0) {
+		active_config_count--;
+	} else {
+		LOG_WRN("Active config count underflow");
+	}
 }
 
 static uint8_t validate_config(const config_t *pkt, int *idx_out)
@@ -69,9 +77,9 @@ static uint8_t validate_config(const config_t *pkt, int *idx_out)
 		return STATUS_FAILURE;
 	}
 
-	int ret = find_config_slot(pkt->dst_device_id, idx_out);
+	*idx_out = find_config_slot(pkt->dst_device_id);
 
-	if (ret < 0) {
+	if (*idx_out < 0) {
 		*idx_out = alloc_config_slot();
 		if (*idx_out < 0) {
 			LOG_WRN("CONFIG rejected: no free config slot");
@@ -85,8 +93,6 @@ static uint8_t validate_config(const config_t *pkt, int *idx_out)
 	}
 
 	config_slot[*idx_out].active = true;
-	config_slot[*idx_out].is_sent = false;
-	config_slot[*idx_out].is_applied = false;
 	config_slot[*idx_out].dst_device_id = pkt->dst_device_id;
 	config_slot[*idx_out].dst_device_type = pkt->dst_device_type;
 	config_slot[*idx_out].config_id = pkt->data_id;
@@ -115,9 +121,8 @@ static uint8_t validate_config(const config_t *pkt, int *idx_out)
 
 static void send_cmd_configres(uint16_t device_id, uint8_t status)
 {
-	int idx;
-	int ret = find_config_slot(device_id, &idx);
-	if (ret < 0) {
+	int idx = find_config_slot(device_id);
+	if (idx < 0) {
 		LOG_WRN("Cannot send CONFIG_RES to device ID 0x%04X: no matching config slot", device_id);
 		return;
 	}
@@ -135,15 +140,15 @@ static void send_cmd_configres(uint16_t device_id, uint8_t status)
 			if (tx_err) {
 				LOG_ERR("Failed to write AT#CONFIGRES to UART (%d)", tx_err);
 			}
+			config_slot[idx].is_applied = true;
 			break;
 		}
 		if (i == mesh_count - 1) {
 			LOG_WRN("Device ID 0x%04X not found in mesh, cannot send CONFIG_RES", device_id);
+			config_slot_free(idx);
 		}
 	}
-
-	// Free the config slot
-	config_slot_free(idx);
+	return;
 }
 
 static void gateway_config_tick(void)
@@ -153,7 +158,7 @@ static void gateway_config_tick(void)
 	}
 
 	for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
-		if (config_slot[i].active && config_slot[i].is_sent) {
+		if (config_slot[i].active && config_slot[i].is_sent && !config_slot[i].is_applied) {
 			if (nbtimeout_expired(&config_slot[i].timeout)) {
 				LOG_WRN("Config slot %d for device ID 0x%04X timed out, freeing slot", i, config_slot[i].dst_device_id);
 				send_cmd_configres(config_slot[i].dst_device_id, STATUS_TIMEOUT);
@@ -172,6 +177,7 @@ static void gateway_config_tick(void)
 			uint8_t hop_num = find_hop_num(config_slot[idx].dst_device_id, config_slot[idx].dst_device_type);
 			if (hop_num == 0xFF) {
 				LOG_WRN("No route to device ID 0x%04X, will retry later", config_slot[idx].dst_device_id);
+				send_cmd_configres(config_slot[idx].dst_device_id, STATUS_NO_ROUTE);
 				config_slot_free(idx);
 				continue;
 			} else if (hop_num == 0) {
@@ -217,6 +223,22 @@ static void gateway_config_tick(void)
 			nbtimeout_init(&config_slot[idx].timeout, GATEWAY_CONFIG_TIMEOUT_MS, 0);
 			nbtimeout_start(&config_slot[idx].timeout);
 			config_slot[idx].is_sent = true;
+		}
+	}
+}
+
+static void anchor_config_tick(void)
+{
+	if (get_device_type() != DEVICE_TYPE_ANCHOR) {
+		return;
+	}
+
+	for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
+		if (config_slot[i].active && config_slot[i].is_transfered) {
+			if (nbtimeout_expired(&config_slot[i].timeout)) {
+				LOG_WRN("Config slot %d for device ID 0x%04X timed out, freeing slot", i, config_slot[i].dst_device_id);
+				config_slot_free(i);
+			}
 		}
 	}
 }
@@ -407,9 +429,17 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		case DEVICE_TYPE_ANCHOR:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+				// Store and validate config packet
+				int idx;
+				uint8_t status = validate_config(pkt, &idx);
+				if (status != STATUS_SUCCESS) {
+					ack.hdr.status = status;
+					send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
+					return;
+				}
 				// Forward the config
 				ack.hdr.status = STATUS_SUCCESS;
-				if (pkt->dst_device_type == DEVICE_TYPE_SENSOR && pkt->route_info[1].device_id == 0xFFFF) {
+				if (pkt->dst_device_type == DEVICE_TYPE_SENSOR && (pkt->route_info[1].device_id == 0xFFFF || pkt->route_info[1].device_id == 0)) {
 					// Check in sensor storage
 					for (int i = 0; i < sensor_count; i++) {
 						if (sensor_devices[i].entry.device_id == pkt->dst_device_id) {
@@ -418,13 +448,14 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 							config_pkt.route_info[0].device_id = 0xFFFF;
 							config_pkt.route_info[0].hop_num = 0xFF;
 							send_config(&config_pkt, pkt->dst_device_id, pkt->dst_device_type, PACKET_PRIORITY_HIGH);
+							break;
 						}
 						if (i == sensor_count - 1) {
 							LOG_WRN("CONFIG from device %s ID:%d for SENSOR ID:%d but no matching sensor found in storage", device_type_str(pkt->hdr.device_type), dst_id, pkt->dst_device_id);
 							ack.hdr.status = STATUS_NOT_FOUND;
 						}
 					}
-				} else {
+				} else if (pkt->route_info[1].device_id != 0xFFFF || pkt->route_info[1].device_id != 0) {
 					// Forward config packet to next hop
 					config_t config_pkt;
 					memcpy(&config_pkt, pkt, sizeof(config_t));
@@ -433,7 +464,10 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 					}
 					config_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
 					config_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
-					send_config(&config_pkt, dst_id, pkt->hdr.device_type, PACKET_PRIORITY_HIGH);
+					send_config(&config_pkt, config_pkt.route_info[0].device_id, DEVICE_TYPE_ANCHOR, PACKET_PRIORITY_HIGH);
+				} else {
+					LOG_WRN("CONFIG from device %s ID:%d has invalid route info, rejecting", device_type_str(pkt->hdr.device_type), dst_id);
+					ack.hdr.status = STATUS_INVALID_PARAMETER;
 				}
 				send_config_ack(&ack, dst_id, pkt->hdr.device_type, pkt->hdr.priority, pkt->hdr.tracking_id);
 			} else {
@@ -504,11 +538,10 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		case DEVICE_TYPE_GATEWAY:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
-				int idx;
-				int ret = find_config_slot(pkt->dst_device_id, &idx);
+				int idx = find_config_slot(pkt->dst_device_id);
 				if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
 					// Mark slot as sent; slot is freed later when CONFIG_RECEIVED arrives.
-					if (ret >= 0) {
+					if (idx >= 0) {
 						if (pkt->data_id != config_slot[idx].config_id) {
 							config_slot[idx].active = false;
 							return;
@@ -528,7 +561,15 @@ void handle_config_ack(const config_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 		case DEVICE_TYPE_ANCHOR:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
-				// No need to Process (or implement something in future)
+				int idx = find_config_slot(pkt->dst_device_id);
+				if (pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) {
+					config_slot[idx].is_transfered = true;
+					// Init and start timeout for gateway to resend config if no ACK received
+					nbtimeout_init(&config_slot[idx].timeout, 30 * 1000, 0);
+					nbtimeout_start(&config_slot[idx].timeout);
+				} else {
+					config_slot_free(idx);
+				}
 				return;
 			} else {
 				// Reject config ack except from anchor and sensor
@@ -707,6 +748,8 @@ int config_init(void)
     for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
         config_slot[i].active = false;
         config_slot[i].is_sent = false;
+		config_slot[i].is_applied = false;
+		config_slot[i].is_transfered = false;
         config_slot[i].dst_device_id = 0;
         config_slot[i].dst_device_type = 0;
         config_slot[i].config_len = 0;
@@ -729,6 +772,10 @@ void config_tick(void)
 	switch (get_device_type()) {
 		case DEVICE_TYPE_GATEWAY:
 			gateway_config_tick();
+			break;
+
+		case DEVICE_TYPE_ANCHOR:
+			anchor_config_tick();
 			break;
 
 		case DEVICE_TYPE_SENSOR:
@@ -780,25 +827,28 @@ int validate_at_config(const slm_at_structure_t *config, const uint8_t *data)
 
 	/* Find an existing slot for this device, otherwise allocate a fresh one. */
 	int idx = -1;
-	for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
-		if (config_slot[i].active &&
-		    config_slot[i].dst_device_id == config->device_id &&
-		    config_slot[i].dst_device_type == config->device_type) {
-			idx = i;
+	for (idx = 0; idx < CONFIG_SLOT_COUNT; idx++) {
+		if (config_slot[idx].active && config_slot[idx].dst_device_id == config->device_id && config_slot[idx].dst_device_type == config->device_type) {
 			break;
 		}
 	}
-	if (idx < 0) {
+	if (idx < 0 || idx >= CONFIG_SLOT_COUNT) {
 		idx = alloc_config_slot();
 		if (idx < 0) {
-			LOG_WRN("No free config slot for %s ID:%d",
-				device_type_str(config->device_type), config->device_id);
+			LOG_WRN("No free config slot for %s ID:%d", device_type_str(config->device_type), config->device_id);
 			return -ENOMEM;
 		}
 	}
 
 	config_slot[idx].active = true;
 	config_slot[idx].is_sent = false;
+	config_slot[idx].is_applied = false;
+	config_slot[idx].is_transfered = false;
+
+	if (config_slot[idx].config_crc32 == config->data_crc32 && config_slot[idx].config_len == config->data_len) {
+		LOG_WRN("Identical config already exists for device %s ID:%d, skipping writing the slot", device_type_str(config->device_type), config->device_id);
+		return idx;
+	}
 	config_slot[idx].dst_device_id = config->device_id;
 	config_slot[idx].dst_device_type = config->device_type;
 	config_slot[idx].config_id = config->data_id;

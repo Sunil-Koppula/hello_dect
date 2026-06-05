@@ -16,7 +16,10 @@
 #define DATA_SLOT_TIMEOUT_MS	(30 * 1000)  /* 30 seconds idle timeout for report slots */
 #define PROCESS_REPORT_SLOTS	8  /* limit how many report slots we process per tick to avoid long blocking */
 #define DATA_DUP_TIMEOUT_MS		(30 * 1000) /* 30 seconds timeout for duplicate report detection */
-#define SENDER_TIMEOUT_MS		(2 * 60 * 1000) /* 2 minutes timeout for sender to wait for Completion */
+#define SENDER_TIMEOUT_MS		(30 * 1000) /* 30 seconds timeout for sender to wait for Completion */
+
+#define DATA_MAX_CHUNKS        	((MAX_REPORT_SIZE + SEND_DATA_MAX - 1) / SEND_DATA_MAX)
+#define CRC_VERIFY_STAGE_SIZE 	256
 
 struct report_sender {
 	bool     active;
@@ -32,7 +35,26 @@ struct report_sender {
 	struct nbtimeout timeout;
 };
 
+struct report_slot {
+	bool     active;
+	bool	 upstream_ready;
+	bool     is_sent;
+	bool	 is_transfered;
+	uint16_t gen_device_id;
+	uint8_t data_id;
+	uint8_t  priority;
+	uint64_t report_time_ms;
+	uint16_t total_size;
+	uint8_t  chunk_count;
+	uint8_t  last_chunk_size;
+	uint32_t crc32;
+	bool     received[DATA_MAX_CHUNKS];
+	uint8_t  received_count;
+	struct nbtimeout idle_timeout;
+};
+
 extern struct report_sender sender;
+extern struct report_slot report_slot[DATA_SLOT_COUNT];
 
 /* Initialize the report module. Must be called after psram_init(). */
 int report_init(void);

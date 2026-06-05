@@ -8,7 +8,8 @@
 
 #define QUEUE_DATA_MAX 200 /* Max Data */
 #define QUEUE_DEPTH 50
-#define MAX_QUEUE_PROCESS_PER_CYCLE 6
+#define MAX_RX_QUEUE_PROCESS_PER_CYCLE 8
+#define MAX_TX_QUEUE_PROCESS_PER_CYCLE 4
 
 /* Priority levels (drained in order: HIGH → MEDIUM → LOW). */
 enum queue_priority {
