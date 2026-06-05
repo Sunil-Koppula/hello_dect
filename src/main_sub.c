@@ -293,8 +293,7 @@ void main_sub_run(void)
             struct rx_data_item rx_item;
             int rx_count = 0;
 
-            while (rx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-                rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
+            while (rx_count < MAX_RX_QUEUE_PROCESS_PER_CYCLE && rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
                 process_rx(rx_item.data, rx_item.sender_id, rx_item.rssi_2);
                 rx_count++;
             }
@@ -307,8 +306,7 @@ void main_sub_run(void)
             struct tx_data_item tx_item;
             int tx_count = 0;
 
-            while (tx_count < MAX_QUEUE_PROCESS_PER_CYCLE &&
-                tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
+            while (tx_count < MAX_TX_QUEUE_PROCESS_PER_CYCLE && tx_queue_get(&tx_item, K_NO_WAIT) == 0) {
                 rc = transmit(0, tx_item.data, tx_item.data_len, 0);
                 if (rc) {
                     LOG_ERR("TX failed, err %d", rc);

@@ -437,6 +437,12 @@ int storage_mesh_add(const mesh_entry_t *entry)
 		return err;
 	}
 
+	mesh_devices[mesh_count].device_type = entry->device_type;
+	mesh_devices[mesh_count].device_id = entry->device_id;
+	mesh_devices[mesh_count].serial_num = entry->serial_num;
+	mesh_devices[mesh_count].connected_device_id = entry->connected_device_id;
+	mesh_devices[mesh_count].hop_num = entry->hop_num;
+
 	mesh_count++;
 	return write_header(STORAGE_MESH_OFFSET, mesh_count);
 }
