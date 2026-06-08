@@ -40,6 +40,6 @@ bool update_infra_storage(uint16_t device_id, uint8_t hop_num, int16_t rssi_2);
 uint8_t check_sensor_storage(uint16_t device_id);
 void update_sensor_storage(uint16_t device_id, uint16_t version);
 uint8_t check_mesh_storage(uint16_t device_id);
-void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, uint16_t connected_device_id, uint8_t sensor_cnt);
+uint8_t update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, uint16_t connected_device_id, uint8_t sensor_cnt);
 
 #endif /* MESH_H */

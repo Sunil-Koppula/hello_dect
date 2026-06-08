@@ -146,11 +146,6 @@ static void buttons_thread(void *p1, void *p2, void *p3)
 	}
 }
 
-static uint32_t slot_psram_addr(int idx)
-{
-	return DATA_PSRAM_BASE + ((uint32_t)idx * MAX_REPORT_SIZE);
-}
-
 static uint32_t config_slot_psram_addr(int idx)
 {
 	return PSRAM_CONFIG_BASE + ((uint32_t)idx * MAX_CONFIG_SIZE);
@@ -179,29 +174,19 @@ static void default_button0_handler(void)
 
 static void default_button1_handler(void)
 {
-	LOG_WRN("Data Button pressed and Sender initialized: %d", sender.active);
-	if (get_device_type() == DEVICE_TYPE_SENSOR && !sender.active) {
+	if (get_device_type() == DEVICE_TYPE_SENSOR) {
+		static uint16_t data_id = 0x01;
 		uint16_t size = 256;
+		slm_at_structure_t report = {
+			.data_id = (data_id == 255) ? (data_id = 1) : data_id++, // wrap around to 1 after 255 to avoid potential overflow issues in other parts of the code
+			.data_len = size,
+			.device_id = get_device_id(),
+			.device_type = get_device_type(),
+		};
 
-		infra_entry_t entry;
-		int err = storage_infra_get(0, &entry);
-		if (err) {
-			LOG_ERR("storage_infra_get failed (%d)", err);
-			return;
-		}
-
-		sender.active = true;
-		sender.dst_id = entry.device_id;
-		sender.gen_device_id = get_device_id();
-		sender.data_id = 0x10; // For testing purpose, data_id is hardcoded to 0x10,
-		sender.priority = PACKET_PRIORITY_LOW;
-		sender.total_size = size;
-		sender.chunk_count = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
-		sender.last_chunk_size = (size % SEND_DATA_MAX) ? (size % SEND_DATA_MAX) : SEND_DATA_MAX;
-		sender.next_chunk = 0;
+		LOG_INF("Button 1 pressed, building dummy report with size %d", size);
 
 		uint8_t chunk[256];
-		uint32_t base = slot_psram_addr(0);
 		uint16_t written = 0;
 
 		while (written < size) {
@@ -210,27 +195,18 @@ static void default_button1_handler(void)
 				chunk[i] = (uint8_t)((written + i) & 0xFF);
 			}
 			if (written == 0) {
-				sender.crc32 = crc32_ieee(chunk, n);
+				report.data_crc32 = crc32_ieee(chunk, n);
 			} else {
-				sender.crc32 = crc32_ieee_update(sender.crc32, chunk, n);
-			}
-			int err = psram_write(base + written, chunk, n);
-			if (err) {
-				LOG_ERR("build_dummy_data: psram_write @0x%06x failed (%d)", base + written, err);
-				return;
+				report.data_crc32 = crc32_ieee_update(report.data_crc32, chunk, n);
 			}
 			written += n;
 		}
 
-		report_init_t init_pkt = {
-			.gen_device_id = sender.gen_device_id,
-			.data_id = sender.data_id,
-			.total_size = sender.total_size,
-			.chunk_count = sender.chunk_count,
-			.last_chunk_size = sender.last_chunk_size,
-			.crc32 = sender.crc32,
-		};
-		send_report_init(&init_pkt, sender.dst_id, entry.device_type, sender.priority);
+		int err = validate_at_report(&report, PACKET_PRIORITY_LOW, chunk);
+		if (err) {
+			LOG_ERR("validate_at_report failed (%d)", err);
+		}
+		return;
 	}
 }
 

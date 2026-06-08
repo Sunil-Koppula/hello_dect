@@ -33,9 +33,14 @@ static const struct gpio_dt_spec pin0 = GPIO_DT_SPEC_GET(DEVTYPE_PIN0_NODE, gpio
 static const struct gpio_dt_spec pin1 = GPIO_DT_SPEC_GET(DEVTYPE_PIN1_NODE, gpios);
 
 static device_info_t device_info;
+static bool device_info_initialized = false;
 
 int product_info_init(void)
 {
+	if (device_info_initialized) {
+		return 0;
+	}
+
 	int err;
 	int bit0, bit1;
 
@@ -96,7 +101,8 @@ int product_info_init(void)
 	radio_set_device_id(hw_id);
 	set_device_id(hw_id);
 
-	set_serial_number(0xFFFFFFFFFFFFFFFF);
+	// For testing purposes, set serial number to device ID
+	set_serial_number(get_device_id());
 
 	/* Set initial hop and connected device based on device type. */
 	set_connected_device_id(0xFFFF);  /* invalid ID by default */
@@ -116,6 +122,7 @@ int product_info_init(void)
 		return -EINVAL;
 	}
 
+	device_info_initialized = true;
 	return 0;
 }
 
@@ -141,6 +148,22 @@ uint16_t get_device_id(void)
 
 void set_serial_number(uint64_t serial_num)
 {
+	// testing purpose only
+	if (device_info.serial_number != serial_num && device_info_initialized) {
+		// Send device updated packet to gateway to update serial number
+		device_updated_t du_pkt = {
+			.device_type = get_device_type(),
+			.device_id = get_device_id(),
+			.serial_num = serial_num,
+			.version = FIRMWARE_VERSION,
+			.connected_device_id = get_device_type() == DEVICE_TYPE_SENSOR ? get_connected_device_id() : 0xFFFF,
+			.hop_num = get_device_type() == DEVICE_TYPE_ANCHOR ? get_hop_number() : 0xFF,
+			.sensor_count = get_device_type() == DEVICE_TYPE_ANCHOR ? storage_sensor_count() : 0xFF,
+		};
+		send_device_updated(&du_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
+		LOG_WRN("Serial number updated to 0x%016llX, sent DEVICE_UPDATED to gateway", serial_num);
+	}
+
 	device_info.serial_number = serial_num;
 }
 

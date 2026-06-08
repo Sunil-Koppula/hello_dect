@@ -574,7 +574,7 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
         return;
     }
 
-    LOG_INF_MAG("   Received DEVICE_UPDATED from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->hdr.device_id), pkt->hdr.device_id, (rssi_2 / 2), pkt->hdr.status);
+    LOG_INF_MAG("   Received DEVICE_UPDATED from %s ID:%d for device %s ID:%d with RSSI:%d (status: 0x%02x)", device_type_str(pkt->hdr.device_type), dst_id, device_type_str(pkt->device_type), pkt->device_id, (rssi_2 / 2), pkt->hdr.status);
 
     // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
     if (pkt->hdr.device_type != DEVICE_TYPE_GATEWAY && pkt->hdr.device_type != DEVICE_TYPE_ANCHOR && pkt->hdr.device_type != DEVICE_TYPE_SENSOR) {
@@ -595,7 +595,7 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
                 status = check_mesh_storage(dst_id);
                 if (status == STATUS_ALREADY_EXISTS) {
-                    update_mesh_storage(pkt->hdr.device_id, pkt->hop_num, pkt->version, pkt->connected_device_id, pkt->sensor_count);
+                    status = update_mesh_storage(dst_id, pkt->hop_num, pkt->version, pkt->connected_device_id, pkt->sensor_count);
                     LOG_INF("Updated mesh storage for device %s ID:%d based on DEVICE_UPDATED", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
                 } else {
                     LOG_WRN("Received DEVICE_UPDATED for device %s ID:%d which is not in mesh storage", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);

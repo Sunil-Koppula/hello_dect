@@ -53,7 +53,7 @@ struct report_slot {
 	struct nbtimeout idle_timeout;
 };
 
-extern struct report_sender sender;
+extern struct report_sender report_sender[MAX_ANCHORS];
 extern struct report_slot report_slot[DATA_SLOT_COUNT];
 
 /* Initialize the report module. Must be called after psram_init(). */
@@ -71,7 +71,7 @@ int report_slot_release_by_id(uint16_t device_id, uint16_t report_id, bool is_su
 /* TX helpers */
 int send_report_init(report_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
 int send_report_init_ack(report_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
-int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
+int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t sender_idx);
 int send_report_chunk_ack(report_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
 int send_report_received(report_received_t *pkt, uint16_t dst_id, uint8_t dst_type);
 int send_report_received_ack(report_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);

@@ -23,7 +23,7 @@ LOG_MODULE_REGISTER(data, CONFIG_DATA_LOG_LEVEL);
 static report_chunk_t chunk_pkt;
 static uint8_t crc_stage[CRC_VERIFY_STAGE_SIZE];
 
-struct report_sender sender;
+struct report_sender report_sender[MAX_ANCHORS];
 struct report_slot report_slot[DATA_SLOT_COUNT];
 
 static uint16_t high_prio_report_count = 0;
@@ -36,7 +36,24 @@ static uint32_t slot_psram_addr(int idx)
 }
 
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
-/* -------------------------------------------------------------------------------**** Report Slots ****------------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------------------**** Report Sender ****----------------------------------------------------------------------------- */
+static int find_sender_slot(uint16_t dst_id, uint8_t data_id)
+{
+	for (int i = 0; i < MAX_ANCHORS; i++) {
+		if (report_sender[i].active && report_sender[i].gen_device_id == dst_id && report_sender[i].data_id == data_id) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void free_sender_slot(int idx)
+{
+	report_sender[idx].active = false;
+}
+
+/* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------------------**** Report Slots ****------------------------------------------------------------------------------ */
 
 static int find_slot(uint16_t gen_device_id, uint8_t data_id)
 {
@@ -108,10 +125,12 @@ static void update_report_count(uint8_t priority, bool is_increment)
 	return;
 }
 
-static void report_slot_free(int idx)
+static void report_slot_free(int idx, uint8_t sender_idx)
 {
 	update_report_count(report_slot[idx].priority, false);
-	sender.active = false;
+	if (sender_idx >= 0 && sender_idx < MAX_ANCHORS) {
+		free_sender_slot(sender_idx);
+	}
 	report_slot[idx].active = false;
 	report_slot[idx].is_sent = false;
 	report_slot[idx].upstream_ready = false;
@@ -119,54 +138,62 @@ static void report_slot_free(int idx)
 	nbtimeout_stop(&report_slot[idx].idle_timeout);
 }
 
-static uint8_t chunk_size_for(uint8_t chunk_idx)
+static uint8_t chunk_size_for(uint8_t chunk_idx, uint8_t sender_idx)
 {
-	if (chunk_idx == sender.chunk_count - 1) {
-		return sender.last_chunk_size;
+	if (chunk_idx == report_sender[sender_idx].chunk_count - 1) {
+		return report_sender[sender_idx].last_chunk_size;
 	}
 	return SEND_DATA_MAX;
 }
 
-static int send_next_chunk(uint16_t dst_id, uint8_t dst_type)
+static int send_next_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t sender_idx)
 {
-	uint8_t idx = sender.next_chunk;
-	if (idx >= sender.chunk_count) {
+	uint8_t idx = report_sender[sender_idx].next_chunk;
+	if (idx >= report_sender[sender_idx].chunk_count) {
 		LOG_ERR("send_next_chunk called but all chunks already sent");
 		return -EINVAL;
 	}
-	uint8_t csz = chunk_size_for(idx);
+	uint8_t csz = chunk_size_for(idx, sender_idx);
 
 	memset(&chunk_pkt, 0, sizeof(chunk_pkt));
-	chunk_pkt.gen_device_id = sender.gen_device_id;
-	chunk_pkt.data_id = sender.data_id;
+	chunk_pkt.gen_device_id = report_sender[sender_idx].gen_device_id;
+	chunk_pkt.data_id = report_sender[sender_idx].data_id;
 	chunk_pkt.chunk_index = idx;
 
 	uint32_t addr = slot_psram_addr(0) + (uint32_t)idx * SEND_DATA_MAX;
 	int err = psram_read(addr, chunk_pkt.data, csz);
 	if (err) {
 		LOG_ERR("psram_read @0x%06x failed (%d), aborting transfer", addr, err);
-		sender.active = false;
+		report_sender[sender_idx].active = false;
 		return err;
 	}
 
-	send_report_chunk(&chunk_pkt, dst_id, dst_type, sender.priority);
-	sender.next_chunk = idx + 1;
+	send_report_chunk(&chunk_pkt, dst_id, dst_type, report_sender[sender_idx].priority, sender_idx);
+	report_sender[sender_idx].next_chunk = idx + 1;
 	return 0;
 }
 
 static uint8_t validate_slot(const report_init_t *pkt)
 {
+	bool already_active = false;
 	int idx = find_slot(pkt->gen_device_id, pkt->data_id);
-	if (idx < 0) {
+	if (idx >= 0) {
+		already_active = true;
+	} else if (idx < 0) {
 		idx = alloc_slot();
 		if (idx < 0) {
 			LOG_WRN("REPORT_INIT rejected: no free slot");
 			return STATUS_RESOURCE_UNAVAILABLE;
 		}
 	}
-	if (report_slot[idx].upstream_ready) {
+
+	if (report_slot[idx].upstream_ready && already_active) {
 		LOG_WRN("REPORT_INIT rejected: slot already active and ready for upstream for gen %d prio %d", pkt->gen_device_id, pkt->hdr.priority);
 		return STATUS_ALREADY_EXISTS;
+	} else if (already_active) {
+		LOG_WRN("REPORT_INIT warning: slot already active but not ready for upstream, reusing slot for gen %d prio %d", pkt->gen_device_id, pkt->hdr.priority);
+	} else {
+		update_report_count(pkt->hdr.priority, true);
 	}
 
 	report_slot[idx].active = true;
@@ -181,9 +208,10 @@ static uint8_t validate_slot(const report_init_t *pkt)
 	memset(report_slot[idx].received, 0, sizeof(report_slot[idx].received));
 	report_slot[idx].received_count = 0;
 
-	update_report_count(report_slot[idx].priority, true);
 	nbtimeout_init(&report_slot[idx].idle_timeout, DATA_SLOT_TIMEOUT_MS, 0);
 	nbtimeout_start(&report_slot[idx].idle_timeout);
+
+	LOG_INF("REPORT_INIT accepted (alloc_slot %d) for gen %d data_id %d, total_size %d, chunk_count %d, priority %d", idx, pkt->gen_device_id, pkt->data_id, pkt->total_size, pkt->chunk_count, pkt->hdr.priority);
 
 	return STATUS_SUCCESS;
 }
@@ -235,7 +263,7 @@ static uint8_t validate_report_chunk(const report_chunk_t *pkt)
 			int err = psram_read(base_addr + offset, crc_stage, n);
 			if (err) {
 				LOG_ERR("Transfer complete but psram_read @0x%06x failed (%d), freeing slot", base_addr + offset, err);
-				report_slot_free(idx);
+				report_slot_free(idx, -1);
 				return STATUS_CRC_FAIL;
 			}
 			crc = first_stage ? crc32_ieee(crc_stage, n) : crc32_ieee_update(crc, crc_stage, n);
@@ -255,7 +283,7 @@ static uint8_t validate_report_chunk(const report_chunk_t *pkt)
 			}
 		} else {
 			LOG_ERR("CRC mismatch for gen %d data_id %d: expected 0x%08x computed 0x%08x, freeing slot", pkt->gen_device_id, pkt->data_id, report_slot[idx].crc32, crc);
-			report_slot_free(idx);
+			report_slot_free(idx, -1);
 			return STATUS_CRC_FAIL;
 		}
 	}
@@ -271,7 +299,7 @@ static void gateway_report_tick(void)
 	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
 		if (report_slot[i].active && report_slot[i].upstream_ready && report_slot[i].is_sent && nbtimeout_expired(&report_slot[i].idle_timeout)) {
 			LOG_WRN("Report gen %d data_id %d idle timeout expired, freeing slot", report_slot[i].gen_device_id, report_slot[i].data_id);
-			report_slot_free(i);
+			report_slot_free(i, -1);
 		}
 	}
 
@@ -344,84 +372,86 @@ static void anchor_report_tick(void)
 		return;
 	}
 
-	int idx = 0;
+	for (int sender_idx = 0; sender_idx < MAX_ANCHORS; sender_idx++) {
 
-	if (sender.active) {
-		if (nbtimeout_expired(&sender.timeout)) {
-			LOG_WRN("Sender timeout expired for gen %d data_id %d, marking sender as inactive to retry", sender.gen_device_id, sender.data_id);
-			idx = find_slot(sender.gen_device_id, sender.data_id);
-			if (idx >= 0) {
-				report_slot[idx].is_sent = false;
-			} else {
-				LOG_ERR("Sender timeout but failed to find matching report slot for gen %d data_id %d", sender.gen_device_id, sender.data_id);
+		int idx = 0;
+
+		if (report_sender[sender_idx].active) {
+			if (nbtimeout_expired(&report_sender[sender_idx].timeout)) {
+				LOG_WRN("Sender timeout expired for gen %d data_id %d, marking sender as inactive to retry", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+				idx = find_slot(report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+				if (idx >= 0) {
+					report_slot[idx].is_sent = false;
+				} else {
+					LOG_ERR("Sender timeout but failed to find matching report slot for gen %d data_id %d", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+				}
+				nbtimeout_stop(&report_sender[sender_idx].timeout);
+				report_sender[sender_idx].active = false;
 			}
-			nbtimeout_stop(&sender.timeout);
-			sender.active = false;
+			return;
 		}
-		return;
-	}
 
-	if (high_prio_report_count > 0) {
-		for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
-			if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_HIGH) {
-				break;
+		if (high_prio_report_count > 0) {
+			for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
+				if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_HIGH) {
+					break;
+				}
 			}
-		}
-	} else if (med_prio_report_count > 0) {
-		for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
-			if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_MEDIUM) {
-				break;
+		} else if (med_prio_report_count > 0) {
+			for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
+				if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_MEDIUM) {
+					break;
+				}
 			}
-		}
-	} else if (low_prio_report_count > 0) {
-		for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
-			if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_LOW) {
-				break;
+		} else if (low_prio_report_count > 0) {
+			for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
+				if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_LOW) {
+					break;
+				}
 			}
+		} else {
+			return;
 		}
-	} else {
-		return;
+
+		if (idx >= DATA_SLOT_COUNT) {
+			return;
+		}
+
+		// Validate report details before attempting
+		if (report_slot[idx].gen_device_id == 0 || report_slot[idx].data_id == 0 || report_slot[idx].total_size == 0 || report_slot[idx].chunk_count == 0) {
+			LOG_WRN("Invalid report details in slot %d, gen_device_id %d data_id %d prio %d", idx, report_slot[idx].gen_device_id, report_slot[idx].data_id, report_slot[idx].priority);
+			update_report_count(report_slot[idx].priority, false);
+			return;
+		}
+
+		LOG_INF("Attempting to resend report for gen %d data_id %d", report_slot[idx].gen_device_id, report_slot[idx].data_id);
+
+		report_sender[sender_idx].active = true;
+		report_sender[sender_idx].dst_id = infra_devices[0].entry.device_id;
+		report_sender[sender_idx].gen_device_id = report_slot[idx].gen_device_id;
+		report_sender[sender_idx].data_id = report_slot[idx].data_id;
+		report_sender[sender_idx].priority = report_slot[idx].priority;
+		report_sender[sender_idx].total_size = report_slot[idx].total_size;
+		report_sender[sender_idx].chunk_count = report_slot[idx].chunk_count;
+		report_sender[sender_idx].last_chunk_size = report_slot[idx].last_chunk_size;
+		report_sender[sender_idx].crc32 = report_slot[idx].crc32;
+		report_sender[sender_idx].next_chunk = 0;
+
+		report_init_t init_pkt = {
+			.gen_device_id = report_sender[sender_idx].gen_device_id,
+			.data_id = report_sender[sender_idx].data_id,
+			.report_time_ms = k_uptime_get(),
+			.total_size = report_sender[sender_idx].total_size,
+			.chunk_count = report_sender[sender_idx].chunk_count,
+			.last_chunk_size = report_sender[sender_idx].last_chunk_size,
+			.crc32 = report_sender[sender_idx].crc32,
+		};
+		LOG_INF_CYAN("Sender is active and processing report for gen %d report_id %d", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+		send_report_init(&init_pkt, report_sender[sender_idx].dst_id, infra_devices[0].entry.device_type, report_sender[sender_idx].priority);
+		nbtimeout_init(&report_sender[sender_idx].timeout, SENDER_TIMEOUT_MS, 0);
+		nbtimeout_start(&report_sender[sender_idx].timeout);
+		report_slot[idx].is_sent = true;
 	}
-
-	if (idx >= DATA_SLOT_COUNT) {
-		return;
-	}
-
-	// Validate report details before attempting
-	if (report_slot[idx].gen_device_id == 0 || report_slot[idx].data_id == 0 || report_slot[idx].total_size == 0 || report_slot[idx].chunk_count == 0) {
-		LOG_WRN("Invalid report details in slot %d, gen_device_id %d data_id %d prio %d", idx, report_slot[idx].gen_device_id, report_slot[idx].data_id, report_slot[idx].priority);
-		update_report_count(report_slot[idx].priority, false);
-		return;
-	}
-
-	LOG_INF("Attempting to resend report for gen %d data_id %d", report_slot[idx].gen_device_id, report_slot[idx].data_id);
-
-	sender.active = true;
-	sender.dst_id = infra_devices[0].entry.device_id;
-	sender.gen_device_id = report_slot[idx].gen_device_id;
-	sender.data_id = report_slot[idx].data_id;
-	sender.priority = report_slot[idx].priority;
-	sender.total_size = report_slot[idx].total_size;
-	sender.chunk_count = report_slot[idx].chunk_count;
-	sender.last_chunk_size = report_slot[idx].last_chunk_size;
-	sender.crc32 = report_slot[idx].crc32;
-	sender.next_chunk = 0;
-
-	report_init_t init_pkt = {
-		.gen_device_id = sender.gen_device_id,
-		.data_id = sender.data_id,
-		.report_time_ms = k_uptime_get(),
-		.total_size = sender.total_size,
-		.chunk_count = sender.chunk_count,
-		.last_chunk_size = sender.last_chunk_size,
-		.crc32 = sender.crc32,
-	};
-	LOG_INF_CYAN("Sender is active and processing report for gen %d report_id %d", sender.gen_device_id, sender.data_id);
-	send_report_init(&init_pkt, sender.dst_id, infra_devices[0].entry.device_type, sender.priority);
-	nbtimeout_init(&sender.timeout, SENDER_TIMEOUT_MS, 0);
-	nbtimeout_start(&sender.timeout);
-	report_slot[idx].is_sent = true;
-	
 }
 
 static void sensor_report_tick(void)
@@ -430,79 +460,86 @@ static void sensor_report_tick(void)
 		return;
 	}
 
-	int idx = 0;
+	for (int sender_idx = 0; sender_idx < MAX_ANCHORS; sender_idx++) {
 
-	if (sender.active) {
-		if (nbtimeout_expired(&sender.timeout)) {
-			LOG_WRN("Sender timeout expired for gen %d data_id %d, marking sender as inactive to retry", sender.gen_device_id, sender.data_id);
-			idx = find_slot(sender.gen_device_id, sender.data_id);
-			if (idx >= 0) {
-				report_slot[idx].is_sent = false;
-			} else {
-				LOG_ERR("Sender timeout but failed to find matching report slot for gen %d data_id %d", sender.gen_device_id, sender.data_id);
+		int idx = 0;
+
+		if (report_sender[sender_idx].active) {
+			if (nbtimeout_expired(&report_sender[sender_idx].timeout)) {
+				LOG_WRN("Sender timeout expired for gen %d data_id %d, marking sender as inactive to retry", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+				idx = find_slot(report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+				if (idx >= 0) {
+					report_slot[idx].is_sent = false;
+				} else {
+					LOG_ERR("Sender timeout but failed to find matching report slot for gen %d data_id %d", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+				}
+				nbtimeout_stop(&report_sender[sender_idx].timeout);
+				report_sender[sender_idx].active = false;
 			}
-			nbtimeout_stop(&sender.timeout);
-			sender.active = false;
+			return;
 		}
-		return;
+
+		if (high_prio_report_count > 0) {
+			for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
+				if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_HIGH) {
+					break;
+				}
+			}
+		} else if (med_prio_report_count > 0) {
+			for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
+				if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_MEDIUM) {
+					break;
+				}
+			}
+		} else if (low_prio_report_count > 0) {
+			for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
+				if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_LOW) {
+					break;
+				}
+			}
+		} else {
+			return;
+		}
+
+		if (idx >= DATA_SLOT_COUNT) {
+			return;
+		}
+
+		// Validate report details before attempting
+		if (report_slot[idx].gen_device_id == 0 || report_slot[idx].data_id == 0 || report_slot[idx].total_size == 0 || report_slot[idx].chunk_count == 0) {
+			LOG_WRN("Invalid report details in slot %d, gen_device_id %d data_id %d prio %d", idx, report_slot[idx].gen_device_id, report_slot[idx].data_id, report_slot[idx].priority);
+			update_report_count(report_slot[idx].priority, false);
+			return;
+		}
+
+		LOG_INF("Attempting to resend report for gen %d data_id %d (Slot %d)", report_slot[idx].gen_device_id, report_slot[idx].data_id, idx);
+
+		report_sender[sender_idx].active = true;
+		report_sender[sender_idx].dst_id = infra_devices[0].entry.device_id;
+		report_sender[sender_idx].gen_device_id = report_slot[idx].gen_device_id;
+		report_sender[sender_idx].data_id = report_slot[idx].data_id;
+		report_sender[sender_idx].priority = report_slot[idx].priority;
+		report_sender[sender_idx].total_size = report_slot[idx].total_size;
+		report_sender[sender_idx].chunk_count = report_slot[idx].chunk_count;
+		report_sender[sender_idx].last_chunk_size = report_slot[idx].last_chunk_size;
+		report_sender[sender_idx].crc32 = report_slot[idx].crc32;
+		report_sender[sender_idx].next_chunk = 0;
+
+		report_init_t init_pkt = {
+			.gen_device_id = report_sender[sender_idx].gen_device_id,
+			.data_id = report_sender[sender_idx].data_id,
+			.report_time_ms = k_uptime_get(),
+			.total_size = report_sender[sender_idx].total_size,
+			.chunk_count = report_sender[sender_idx].chunk_count,
+			.last_chunk_size = report_sender[sender_idx].last_chunk_size,
+			.crc32 = report_sender[sender_idx].crc32,
+		};
+		LOG_INF_CYAN("Sender %d is active and processing report for gen %d report_id %d", sender_idx, report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+		send_report_init(&init_pkt, report_sender[sender_idx].dst_id, infra_devices[0].entry.device_type, report_sender[sender_idx].priority);
+		nbtimeout_init(&report_sender[sender_idx].timeout, SENDER_TIMEOUT_MS, 0);
+		nbtimeout_start(&report_sender[sender_idx].timeout);
+		report_slot[idx].is_sent = true;
 	}
-
-	if (high_prio_report_count > 0) {
-		for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
-			if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_HIGH) {
-				break;
-			}
-		}
-	} else if (med_prio_report_count > 0) {
-		for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
-			if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_MEDIUM) {
-				break;
-			}
-		}
-	} else if (low_prio_report_count > 0) {
-		for (idx = 0; idx < DATA_SLOT_COUNT; idx++) {
-			if (report_slot[idx].active && report_slot[idx].upstream_ready && !report_slot[idx].is_sent && report_slot[idx].priority == PACKET_PRIORITY_LOW) {
-				break;
-			}
-		}
-	} else {
-		return;
-	}
-
-	// Validate report details before attempting
-	if (report_slot[idx].gen_device_id == 0 || report_slot[idx].data_id == 0 || report_slot[idx].total_size == 0 || report_slot[idx].chunk_count == 0) {
-		LOG_WRN("Invalid report details in slot %d, gen_device_id %d data_id %d prio %d", idx, report_slot[idx].gen_device_id, report_slot[idx].data_id, report_slot[idx].priority);
-		update_report_count(report_slot[idx].priority, false);
-		return;
-	}
-
-	LOG_INF("Attempting to resend report for gen %d data_id %d (Slot %d)", report_slot[idx].gen_device_id, report_slot[idx].data_id, idx);
-
-	sender.active = true;
-	sender.dst_id = infra_devices[0].entry.device_id;
-	sender.gen_device_id = report_slot[idx].gen_device_id;
-	sender.data_id = report_slot[idx].data_id;
-	sender.priority = report_slot[idx].priority;
-	sender.total_size = report_slot[idx].total_size;
-	sender.chunk_count = report_slot[idx].chunk_count;
-	sender.last_chunk_size = report_slot[idx].last_chunk_size;
-	sender.crc32 = report_slot[idx].crc32;
-	sender.next_chunk = 0;
-
-	report_init_t init_pkt = {
-		.gen_device_id = sender.gen_device_id,
-		.data_id = sender.data_id,
-		.report_time_ms = k_uptime_get(),
-		.total_size = sender.total_size,
-		.chunk_count = sender.chunk_count,
-		.last_chunk_size = sender.last_chunk_size,
-		.crc32 = sender.crc32,
-	};
-	LOG_INF_CYAN("Sender is active and processing report for gen %d report_id %d", sender.gen_device_id, sender.data_id);
-	send_report_init(&init_pkt, sender.dst_id, infra_devices[0].entry.device_type, sender.priority);
-	nbtimeout_init(&sender.timeout, SENDER_TIMEOUT_MS, 0);
-	nbtimeout_start(&sender.timeout);
-	report_slot[idx].is_sent = true;
 }
 
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
@@ -535,7 +572,7 @@ int send_report_init_ack(report_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_ty
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
-int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority)
+int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t sender_idx)
 {
 	pkt->hdr.packet_type = PACKET_REPORT_CHUNK;
 	pkt->hdr.device_type = get_device_type();
@@ -546,7 +583,7 @@ int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, ui
 	// Add tracker entry for retries
 	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_REPORT_CHUNK, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
-	LOG_INF_GRN("----> Sending REPORT_CHUNK to device %s ID:%d for SENSOR ID:%d (Report ID: %d, Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index));
+	LOG_INF_GRN("----> Sending REPORT_CHUNK to device %s ID:%d for SENSOR ID:%d (Report ID: %d, Chunk: %d, Size: %d)", device_type_str(dst_type), dst_id, pkt->gen_device_id, pkt->data_id, pkt->chunk_index, chunk_size_for(pkt->chunk_index, sender_idx));
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -685,13 +722,18 @@ void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16
 		case DEVICE_TYPE_ANCHOR:
 		{
 			if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+				uint8_t sender_idx = find_sender_slot(pkt->gen_device_id, pkt->data_id);
+				if (sender_idx < 0) {
+					LOG_ERR("No active sender found for gen %d data_id %d, this should not happen", pkt->gen_device_id, pkt->data_id);
+					return;
+				}
 				if (pkt->hdr.status == STATUS_SUCCESS) {
 					// Start sending data chunks if status is success
-					if (!sender.active || sender.dst_id != dst_id || sender.gen_device_id != pkt->gen_device_id || sender.data_id != pkt->data_id) {
-						LOG_WRN("REPORT_INIT_ACK from %d but sender inactive or dst mismatch", dst_id);
+					if (!report_sender[sender_idx].active || report_sender[sender_idx].dst_id != dst_id || report_sender[sender_idx].gen_device_id != pkt->gen_device_id || report_sender[sender_idx].data_id != pkt->data_id) {
+						LOG_WRN("REPORT_INIT_ACK from %d but sender %d inactive or dst mismatch", dst_id, sender_idx);
 						return;
 					}
-					send_next_chunk(dst_id, pkt->hdr.device_type);
+					send_next_chunk(dst_id, pkt->hdr.device_type, sender_idx);
 					return;
 				} else if (pkt->hdr.status == STATUS_ALREADY_EXISTS) {
 					LOG_WRN("Received REPORT_INIT_ACK with status ALREADY_EXISTS for gen %d data_id %d", pkt->gen_device_id, pkt->data_id);
@@ -699,10 +741,9 @@ void handle_report_init_ack(const report_init_ack_t *pkt, uint16_t dst_id, int16
 					if (idx < 0) {
 						LOG_ERR("No active slot found for ALREADY_EXISTS ack for gen %d data_id %d, this should not happen", pkt->gen_device_id, pkt->data_id);
 					} else {
-						report_slot_free(idx);
+						report_slot_free(idx, sender_idx);
 					}
-				} 
-				sender.active = false;
+				}
 			} else {
 				// Reject report init ack except from gateway and anchor
 				return;
@@ -796,20 +837,25 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 	tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
 	// Validate that the ack is for the current active sender transfer, if not ignore the packet
-	if (!sender.active || sender.gen_device_id != pkt->gen_device_id || sender.data_id != pkt->data_id || sender.dst_id != dst_id) {
-		LOG_WRN("REPORT_CHUNK_ACK ignored: sender inactive or gen/data/dst mismatch (got %d/%d/%d, have %d/%d/%d)", pkt->gen_device_id, pkt->data_id, dst_id, sender.gen_device_id, sender.data_id, sender.dst_id);
+	uint8_t sender_idx = find_sender_slot(pkt->gen_device_id, pkt->data_id);
+	if (sender_idx < 0) {
+		LOG_WRN("No active sender found for gen %d data_id %d, ignoring REPORT_CHUNK_ACK", pkt->gen_device_id, pkt->data_id);
+		return;
+	}
+	if (!report_sender[sender_idx].active || report_sender[sender_idx].gen_device_id != pkt->gen_device_id || report_sender[sender_idx].data_id != pkt->data_id || report_sender[sender_idx].dst_id != dst_id) {
+		LOG_WRN("REPORT_CHUNK_ACK ignored: sender inactive or gen/data/dst mismatch (got %d/%d/%d, have %d/%d/%d)", pkt->gen_device_id, pkt->data_id, dst_id, report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id, report_sender[sender_idx].dst_id);
 		return;
 	}
 
-	if (sender.next_chunk >= sender.chunk_count && pkt->hdr.status == STATUS_SUCCESS) {
-		LOG_INF("Transfer complete: %u bytes in %u chunks to ID:%d", sender.total_size, sender.chunk_count, sender.dst_id);
-		int idx = find_slot(sender.gen_device_id, sender.data_id);
+	if (report_sender[sender_idx].next_chunk >= report_sender[sender_idx].chunk_count && pkt->hdr.status == STATUS_SUCCESS) {
+		LOG_INF("Transfer complete: %u bytes in %u chunks to ID:%d", report_sender[sender_idx].total_size, report_sender[sender_idx].chunk_count, report_sender[sender_idx].dst_id);
+		int idx = find_slot(report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
 		if (idx < 0) {
-			LOG_ERR("No active slot found for completed transfer gen %d data_id %d, this should not happen", sender.gen_device_id, sender.data_id);
+			LOG_ERR("No active slot found for completed transfer gen %d data_id %d, this should not happen", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
 		} else {
-			report_slot_free(idx);
+			report_slot_free(idx, sender_idx);
 		}
-		sender.active = false;
+		report_sender[sender_idx].active = false;
 		return;
 	}
 
@@ -830,16 +876,16 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 				if (pkt->hdr.status == STATUS_NOT_FOUND || pkt->hdr.status == STATUS_RESOURCE_UNAVAILABLE || pkt->hdr.status == STATUS_CRC_FAIL) {
 					LOG_WRN("Received REPORT_CHUNK_ACK with NOT_FOUND, RESOURCE_UNAVAILABLE, or CRC_FAIL, resending REPORT_INIT");
 					report_slot[pkt->chunk_index].is_sent = false;
-					sender.active = false;
+					report_sender[sender_idx].active = false;
 					return;
 				} else if (pkt->hdr.status == STATUS_FAILURE || pkt->hdr.status == STATUS_INVALID_PARAMETER) {
 					// Rebuild same chunk and resend
-					sender.next_chunk--;
+					report_sender[sender_idx].next_chunk--;
 				}
 				// Send next chunk if status is success
-				if (send_next_chunk(dst_id, pkt->hdr.device_type) != 0) {
-					report_slot_free(find_slot(sender.gen_device_id, sender.data_id));
-					sender.active = false;
+				if (send_next_chunk(dst_id, pkt->hdr.device_type, sender_idx) != 0) {
+					report_slot_free(find_slot(report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id), sender_idx);
+					report_sender[sender_idx].active = false;
 				}
 			} else {
 				// Reject report chunk ack except from gateway and anchor
@@ -1012,7 +1058,9 @@ int report_init(void)
 	for (int i = 0; i < DATA_SLOT_COUNT; i++) {
 		report_slot[i].active = false;
 	}
-	sender.active = false;
+	for (int i = 0; i < MAX_ANCHORS; i++) {
+		report_sender[i].active = false;
+	}
 
 	LOG_INF("Report module Initialized with %d slots (slot size=%d) at PSRAM 0x%06x-0x%06x", DATA_SLOT_COUNT,
 		MAX_REPORT_SIZE, DATA_PSRAM_BASE, DATA_PSRAM_BASE + DATA_PSRAM_SIZE - 1);
@@ -1027,7 +1075,7 @@ void report_tick(void)
 			LOG_WRN("Slot %d (gen %d) idle timeout, freeing (%u/%u chunks)",
 				i, report_slot[i].gen_device_id,
 				report_slot[i].received_count, report_slot[i].chunk_count);
-			report_slot_free(i);
+			report_slot_free(i, -1);
 		}
 	}
 
@@ -1085,7 +1133,7 @@ int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const
 	int err = psram_write(slot_psram_addr(idx), data, report->data_len);
 	if (err) {
 		LOG_ERR("psram_write @0x%06x failed (%d), freeing slot", slot_psram_addr(idx), err);
-		report_slot_free(idx);
+		report_slot_free(idx, -1);
 		return err;
 	}
 
@@ -1137,7 +1185,12 @@ int report_slot_release_by_id(uint16_t device_id, uint16_t report_id, bool is_su
 			} else {
 				LOG_WRN("Releasing slot %d for report ID:%d after failed processing", i, report_id);
 				report_slot[i].is_sent = false;
-				sender.active = false;
+				uint8_t sender_idx = find_sender_slot(report_slot[i].gen_device_id, report_slot[i].data_id);
+				if (sender_idx >= 0) {
+					report_sender[sender_idx].active = false;
+				} else {
+					LOG_WRN("No active sender found for report ID:%d to release", report_id);
+				}
 				return 0;
 			}
 		}
