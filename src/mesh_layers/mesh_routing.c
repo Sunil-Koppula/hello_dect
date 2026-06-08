@@ -40,6 +40,13 @@ static route_info_t build_route_info(const route_info_t *pkt)
 
 static config_t build_config_pkt(const route_info_t *pkt)
 {
+    if (config_slot[pkt->data_id].is_transfered) {
+        LOG_WRN(" Slot %d Config ID %d for device %s ID:%d has already been transferred to mesh, skipping building config packet",
+                pkt->data_id, config_slot[pkt->data_id].config_id, device_type_str(pkt->device_type), pkt->device_id);
+        config_t empty_pkt = {0};
+        return empty_pkt;
+    }
+
     LOG_INF("Before sorting");
     for (int i = 0; i < MAX_DEPTH; i++) {
         if (pkt->route_info[i].device_id != 0xFFFF) {
@@ -54,12 +61,12 @@ static config_t build_config_pkt(const route_info_t *pkt)
         .dst_device_id = pkt->device_id,
         .dst_device_type = pkt->device_type,
         .data_type = pkt->data_type,
-        .data_id = config_slots[idx].config_id,
-        .config_len = config_slots[idx].config_len,
-        .config_crc32 = config_slots[idx].config_crc32,
+        .data_id = config_slot[idx].config_id,
+        .config_len = config_slot[idx].config_len,
+        .config_crc32 = config_slot[idx].config_crc32,
     };
 
-    int err = psram_read(addr, config_pkt.config, config_slots[idx].config_len);
+    int err = psram_read(addr, config_pkt.config, config_slot[idx].config_len);
     if (err) {
         LOG_ERR("psram_read @0x%06x failed (%d)", addr, err);
         config_pkt.config_len = 0;
@@ -86,14 +93,22 @@ static config_t build_config_pkt(const route_info_t *pkt)
     }
 
     // Print Config pkt except config data for debugging
-    LOG_INF("Built config packet for device %s ID:%d with data type 0x%02x, data ID %d, config len %d, crc32 0x%08x",
-        device_type_str(config_pkt.dst_device_type), config_pkt.dst_device_id, config_pkt.data_type, config_pkt.data_id, config_pkt.config_len, config_pkt.config_crc32);
+    LOG_INF("Built config packet for device %s ID:%d with data type 0x%02x, data ID %d, config len %d, crc32 0x%08x (alloc slot %d)",
+        device_type_str(config_pkt.dst_device_type), config_pkt.dst_device_id, config_pkt.data_type, config_pkt.data_id, config_pkt.config_len, config_pkt.config_crc32, pkt->data_id);
 
+    config_slot[pkt->data_id].is_transfered = true;
     return config_pkt;
 }
 
 static report_received_t build_report_received_pkt(const route_info_t *pkt)
 {
+    if (report_slot[pkt->data_id].is_transfered) {
+        LOG_WRN(" Slot %d Report ID %d for device %s ID:%d has already been transferred to mesh, skipping building report received packet",
+                pkt->data_id, report_slot[pkt->data_id].data_id, device_type_str(pkt->device_type), pkt->device_id);
+        report_received_t empty_pkt = {0};
+        return empty_pkt;
+    }
+
     LOG_INF("Before sorting");
     for (int i = 0; i < MAX_DEPTH; i++) {
         if (pkt->route_info[i].device_id != 0xFFFF) {
@@ -103,7 +118,7 @@ static report_received_t build_report_received_pkt(const route_info_t *pkt)
 
     report_received_t recv_pkt = {
         .gen_device_id = pkt->device_id,
-        .data_id = pkt->data_id,
+        .data_id = report_slot[pkt->data_id].data_id,
         .hdr.status = STATUS_SUCCESS,
     };
 
@@ -131,6 +146,7 @@ static report_received_t build_report_received_pkt(const route_info_t *pkt)
     LOG_INF("Built report received packet for device %s ID:%d with data type 0x%02x, data ID %d",
         device_type_str(DEVICE_TYPE_SENSOR), recv_pkt.gen_device_id, DATA_TYPE_REPORT, recv_pkt.data_id);
 
+    report_slot[pkt->data_id].is_transfered = true;
     return recv_pkt;
 }
 
@@ -389,6 +405,13 @@ void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
         return;
     }
 
+    route_info_ack_t ack_pkt = {
+        .device_id = pkt->device_id,
+        .device_type = pkt->device_type,
+        .data_type = pkt->data_type,
+        .data_id = pkt->data_id,
+    };
+
     switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         {
@@ -400,13 +423,19 @@ void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
                     config_t config_pkt = build_config_pkt(pkt);
                     if (config_pkt.config_len == 0) {
                         LOG_WRN("No config data for device %s ID:%d, cannot send config", device_type_str(pkt->device_type), pkt->device_id);
+                        send_route_info_ack(&ack_pkt, dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, STATUS_FAILURE);
                         return;
                     }
-                    send_config(&config_pkt, dst_id, DEVICE_TYPE_ANCHOR, STATUS_SUCCESS);
+                    send_config(&config_pkt, config_pkt.route_info[0].device_id, DEVICE_TYPE_ANCHOR, STATUS_SUCCESS);
                 } else if (pkt->data_type == DATA_TYPE_REPORT) {
                     // Build report received packet and send
                     report_received_t recv_pkt = build_report_received_pkt(pkt);
-                    send_report_received(&recv_pkt, dst_id, DEVICE_TYPE_ANCHOR);
+                    if (recv_pkt.data_id == 0) {
+                        LOG_WRN("No report data for device %s ID:%d, cannot send report received", device_type_str(pkt->device_type), pkt->device_id);
+                        send_route_info_ack(&ack_pkt, dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, STATUS_FAILURE);
+                        return;
+                    }
+                    send_report_received(&recv_pkt, recv_pkt.route_info[0].device_id, DEVICE_TYPE_ANCHOR);
                 }
             } else {
                 // Reject route info except from anchor
@@ -441,13 +470,6 @@ void handle_route_info(const route_info_t *pkt, uint16_t dst_id, int16_t rssi_2)
         }
         break;
     }
-
-    route_info_ack_t ack_pkt = {
-        .device_id = pkt->device_id,
-        .device_type = pkt->device_type,
-        .data_type = pkt->data_type,
-        .data_id = pkt->data_id,
-    };
 
     send_route_info_ack(&ack_pkt, dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, pkt->hdr.status);
     return;

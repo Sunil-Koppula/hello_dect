@@ -176,15 +176,13 @@ void update_sensor_storage(uint16_t device_id, uint16_t version)
 /* Check Mesh Storage */
 uint8_t check_mesh_storage(uint16_t device_id)
 {
-    mesh_entry_t entry;
-
-    for (int i = 0; i < storage_mesh_count(); i++) {
-        if (storage_mesh_get(i, &entry) == 0 && entry.device_id == device_id) {
+    for (int idx = 0; idx < mesh_count; idx++) {
+        if (mesh_devices[idx].device_id == device_id) {
             return STATUS_ALREADY_EXISTS;
         }
     }
 
-    if (storage_mesh_count() >= MAX_DEVICES) {
+    if (mesh_count >= MAX_DEVICES) {
         return STATUS_STORAGE_FULL;
     }
 
@@ -192,28 +190,44 @@ uint8_t check_mesh_storage(uint16_t device_id)
 }
 
 /* Update Mesh Storage */
-void update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, uint16_t connected_device_id, uint8_t sensor_cnt)
+uint8_t update_mesh_storage(uint16_t device_id, uint8_t hop_num, uint16_t version, uint16_t connected_device_id, uint8_t sensor_cnt)
 {
     mesh_entry_t entry;
-    for (int i = 0; i < storage_mesh_count(); i++) {
-        if (storage_mesh_get(i, &entry) == 0 && entry.device_id == device_id) {
-            if (entry.hop_num != hop_num && hop_num != 0xFF) {
-                entry.hop_num = hop_num;
-            }
-            if (entry.version != version) {
-                entry.version = version;
-            }
-            if (entry.connected_device_id != connected_device_id && connected_device_id != 0xFFFF) {
-                entry.connected_device_id = connected_device_id;
-            }
-            if (entry.sensor_count != sensor_cnt && sensor_cnt != 0xFF) {
-                entry.sensor_count = sensor_cnt;
-            }
-            int err = storage_mesh_update(i, &entry);
-            if (err) {
-                LOG_ERR("Failed to update mesh entry for device %d, err %d", device_id, err);
-            }
+    int idx = -1;
+
+    for (idx = 0; idx < mesh_count; idx++) {
+        if (mesh_devices[idx].device_id == device_id) {
             break;
         }
+        if (idx == mesh_count - 1) {
+            LOG_WRN("Device ID %d not found in mesh storage", device_id);
+            return STATUS_NOT_FOUND;
+        }
     }
+
+    if (storage_mesh_get(idx, &entry) == 0) {
+        if (entry.hop_num != hop_num && hop_num != 0xFF) {
+            entry.hop_num = hop_num;
+            mesh_devices[idx].hop_num = hop_num;
+        }
+        if (entry.version != version) {
+            entry.version = version;
+        }
+        if (entry.connected_device_id != connected_device_id && connected_device_id != 0xFFFF) {
+            entry.connected_device_id = connected_device_id;
+            mesh_devices[idx].connected_device_id = connected_device_id;
+        }
+        if (entry.sensor_count != sensor_cnt && sensor_cnt != 0xFF) {
+            entry.sensor_count = sensor_cnt;
+        }
+        int err = storage_mesh_update(idx, &entry);
+        if (err) {
+            LOG_ERR("Failed to update mesh entry for device %d, err %d", device_id, err);
+            return STATUS_FAILURE;
+        }
+    } else {
+        LOG_ERR("Failed to get mesh entry for device %d, err %d", device_id, idx);
+        return STATUS_FAILURE;
+    }
+    return STATUS_SUCCESS;
 }

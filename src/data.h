@@ -6,15 +6,22 @@
 #include <stdbool.h>
 #include "protocol.h"
 #include "psram.h"
+#include "timeout.h"
 #include "slm_at_main.h"
 
-#define DATA_PSRAM_BASE          PSRAM_DATA_BASE
-#define DATA_SLOT_COUNT          512
-#define MAX_REPORT_SIZE   		 256
-#define DATA_PSRAM_SIZE          (DATA_SLOT_COUNT * MAX_REPORT_SIZE)
-#define DATA_SLOT_TIMEOUT_MS     30000  /* free slot if idle this long */
+#define DATA_PSRAM_BASE			PSRAM_DATA_BASE
+#define DATA_SLOT_COUNT			512
+#define MAX_REPORT_SIZE			256
+#define DATA_PSRAM_SIZE			(DATA_SLOT_COUNT * MAX_REPORT_SIZE)
+#define DATA_SLOT_TIMEOUT_MS	(30 * 1000)  /* 30 seconds idle timeout for report slots */
+#define PROCESS_REPORT_SLOTS	8  /* limit how many report slots we process per tick to avoid long blocking */
+#define DATA_DUP_TIMEOUT_MS		(30 * 1000) /* 30 seconds timeout for duplicate report detection */
+#define SENDER_TIMEOUT_MS		(30 * 1000) /* 30 seconds timeout for sender to wait for Completion */
 
-struct data_sender {
+#define DATA_MAX_CHUNKS        	((MAX_REPORT_SIZE + SEND_DATA_MAX - 1) / SEND_DATA_MAX)
+#define CRC_VERIFY_STAGE_SIZE 	256
+
+struct report_sender {
 	bool     active;
 	uint16_t dst_id;
 	uint16_t gen_device_id;  /* original origin — preserved across hops */
@@ -25,26 +32,46 @@ struct data_sender {
 	uint8_t  last_chunk_size;
 	uint8_t  next_chunk;
 	uint32_t crc32;
+	struct nbtimeout timeout;
 };
 
-extern struct data_sender sender;
+struct report_slot {
+	bool     active;
+	bool	 upstream_ready;
+	bool     is_sent;
+	bool	 is_transfered;
+	uint16_t gen_device_id;
+	uint8_t data_id;
+	uint8_t  priority;
+	uint64_t report_time_ms;
+	uint16_t total_size;
+	uint8_t  chunk_count;
+	uint8_t  last_chunk_size;
+	uint32_t crc32;
+	bool     received[DATA_MAX_CHUNKS];
+	uint8_t  received_count;
+	struct nbtimeout idle_timeout;
+};
 
-/* Initialize the data module. Must be called after psram_init(). */
-int data_init(void);
+extern struct report_sender report_sender[MAX_ANCHORS];
+extern struct report_slot report_slot[DATA_SLOT_COUNT];
+
+/* Initialize the report module. Must be called after psram_init(). */
+int report_init(void);
 
 /* Call from main loop to expire stale slots. */
-void data_tick(void);
+void report_tick(void);
 
 /* Validate an AT report before processing. */
-int validate_at_report(const slm_at_config_t *report, uint8_t priority, const uint8_t *data);
+int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const uint8_t *data);
 
 /* Release a report slot by its ID. */
-int report_slot_release_by_id(uint16_t report_id, bool is_success);
+int report_slot_release_by_id(uint16_t device_id, uint16_t report_id, bool is_success);
 
 /* TX helpers */
 int send_report_init(report_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
 int send_report_init_ack(report_init_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
-int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);
+int send_report_chunk(report_chunk_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t sender_idx);
 int send_report_chunk_ack(report_chunk_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);
 int send_report_received(report_received_t *pkt, uint16_t dst_id, uint8_t dst_type);
 int send_report_received_ack(report_received_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority, uint8_t tracking_id);

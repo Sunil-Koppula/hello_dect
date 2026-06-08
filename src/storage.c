@@ -437,6 +437,12 @@ int storage_mesh_add(const mesh_entry_t *entry)
 		return err;
 	}
 
+	mesh_devices[mesh_count].device_type = entry->device_type;
+	mesh_devices[mesh_count].device_id = entry->device_id;
+	mesh_devices[mesh_count].serial_num = entry->serial_num;
+	mesh_devices[mesh_count].connected_device_id = entry->connected_device_id;
+	mesh_devices[mesh_count].hop_num = entry->hop_num;
+
 	mesh_count++;
 	return write_header(STORAGE_MESH_OFFSET, mesh_count);
 }
@@ -485,15 +491,23 @@ int storage_mesh_remove(uint16_t index)
 		return -EINVAL;
 	}
 
-	/* Shift entries after index up by one. The CRC inside each entry is
-	 * already valid from when it was last written, so we can reuse it. */
 	for (uint16_t i = index + 1; i < mesh_count; i++) {
-		mesh_entry_t entry;
-		int err = storage_mesh_get(i, &entry);
+		mesh_devices[i - 1] = mesh_devices[i];
+	}
+	
+	uint16_t move = mesh_count - 1 - index;   /* entries to shift */
+	if (move > 0) {
+		static mesh_entry_t shift_buf[MAX_DEVICES];
+
+		uint32_t src = STORAGE_MESH_OFFSET + STORAGE_HEADER_SIZE + (uint32_t)(index + 1) * sizeof(mesh_entry_t);
+		uint32_t dst = STORAGE_MESH_OFFSET + STORAGE_HEADER_SIZE + (uint32_t)index * sizeof(mesh_entry_t);
+		size_t   len = (size_t)move * sizeof(mesh_entry_t);
+
+		int err = eeprom_read(eeprom_dev, src, shift_buf, len);
 		if (err) {
 			return err;
 		}
-		err = write_entry(STORAGE_MESH_OFFSET, i - 1, &entry, sizeof(entry));
+		err = eeprom_write(eeprom_dev, dst, shift_buf, len);
 		if (err) {
 			return err;
 		}

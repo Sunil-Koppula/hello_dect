@@ -307,7 +307,7 @@ static void cmd_config(const char *args)
         return;
     }
 
-    slm_at_config_t config = {
+    slm_at_structure_t config = {
         .data_id = (uint16_t)v_id,
         .data_len = (uint16_t)v_len,
         .data_crc32 = (uint32_t)v_crc,
@@ -350,7 +350,7 @@ static void cmd_config(const char *args)
         }
     }
     if (found) {
-        hop_num = get_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
+        hop_num = find_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
         if (hop_num == 0xFF) {
             found = false;
             LOG_WRN("AT#CONFIG: SN 0x%016llx in mesh but no route found", (unsigned long long)sn);
@@ -372,10 +372,10 @@ static void cmd_config(const char *args)
         return;
     }
 
-    LOG_INF("AT#CONFIG accepted: sn=0x%016llx %s ID:%d cfg_id=%u len=%u",
+    LOG_INF("AT#CONFIG accepted: sn=0x%016llx %s ID:%d cfg_id=%u len=%u (alloc slot %d)",
             (unsigned long long)sn,
             device_type_str(config.device_type),
-            config.device_id, config.data_id, config.data_len);
+            config.device_id, config.data_id, config.data_len, err);
 
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp),
@@ -448,7 +448,7 @@ static void cmd_report(const char *args)
         return;
     }
 
-    slm_at_config_t config = {
+    slm_at_structure_t report = {
         .data_id = (uint16_t)v_id,
         .data_len = (uint16_t)v_len,
         .data_crc32 = (uint32_t)v_crc,
@@ -459,23 +459,23 @@ static void cmd_report(const char *args)
     /* Field 5: the payload hex. */
     size_t      hex_len;
     const char *payload_hex = field_get(args, 5, &hex_len);
-    if (payload_hex == NULL || hex_len != (size_t)config.data_len * 2) {
+    if (payload_hex == NULL || hex_len != (size_t)report.data_len * 2) {
         at_error();
         return;
     }
 
     uint8_t payload[MAX_REPORT_SIZE];
     int     decoded = hex_decode(payload_hex, hex_len, payload, sizeof(payload));
-    if (decoded < 0 || decoded != config.data_len) {
+    if (decoded < 0 || decoded != report.data_len) {
         at_error();
         return;
     }
 
     /* CRC32 over the payload must match. */
     uint32_t calc_crc32 = crc32_ieee(payload, (size_t)decoded);
-    if (calc_crc32 != config.data_crc32) {
+    if (calc_crc32 != report.data_crc32) {
         LOG_WRN("AT#REPORT sn=0x%016llx id=%u CRC mismatch: got 0x%08x, calc 0x%08x",
-                (unsigned long long)sn, config.data_id, config.data_crc32, calc_crc32);
+                (unsigned long long)sn, report.data_id, report.data_crc32, calc_crc32);
         at_error();
         return;
     }
@@ -487,7 +487,7 @@ static void cmd_report(const char *args)
         return;
     }
 
-    int err = validate_at_report(&config, (uint8_t)v_prio, payload);
+    int err = validate_at_report(&report, (uint8_t)v_prio, payload);
     if (err < 0) {
         at_error();
         return;
@@ -496,13 +496,13 @@ static void cmd_report(const char *args)
     LOG_INF("AT#REPORT accepted: sn=0x%016llx %s ID:%d len=%u",
             (unsigned long long)sn,
             device_type_str(get_device_type()),
-            config.data_id, config.data_len);
+            report.data_id, report.data_len);
          
     char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     snprintf(resp, sizeof(resp),
         "#REPORT:\"0x%016llx\",\"%u\",\"%u\",\"0x%08lx\"",
-        (unsigned long long)sn, config.data_id, config.data_len,
-        (unsigned long)config.data_crc32);
+        (unsigned long long)sn, report.data_id, report.data_len,
+        (unsigned long)report.data_crc32);
     at_send_line(resp);
     at_ok();
 }
@@ -535,7 +535,7 @@ static void cmd_report_ack(const char *args)
         }
     }
     if (found) {
-        hop_num = get_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
+        hop_num = find_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
         if (hop_num == 0xFF) {
             found = false;
             LOG_WRN("AT#REPORT: SN 0x%016llx in mesh but no route found", (unsigned long long)v_sn);
@@ -564,11 +564,12 @@ static void dispatch(char *line)
     if (strcmp(line, "OK") == 0) {
         switch (pending_ack.data_type) {
             case DATA_TYPE_CONFIG:
-                (void)config_slot_release_by_id(pending_ack.id, true);
+                (void)config_slot_release_by_id(pending_ack.id, STATUS_SUCCESS);
                 break;
 
             case DATA_TYPE_REPORT:
-                (void)report_slot_release_by_id(pending_ack.id, true);
+                uint16_t device_id = find_device_id_by_sn(pending_ack.sn);
+                (void)report_slot_release_by_id(device_id, pending_ack.id, true);
                 break;
 
             default:
@@ -586,7 +587,8 @@ static void dispatch(char *line)
                 break;
 
             case DATA_TYPE_REPORT:
-                (void)report_slot_release_by_id(pending_ack.id, false);
+                uint16_t device_id = find_device_id_by_sn(pending_ack.sn);
+                (void)report_slot_release_by_id(device_id, pending_ack.id, false);
                 break;
 
             default:

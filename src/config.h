@@ -9,12 +9,18 @@
 #include "timeout.h"
 #include "slm_at_main.h"
 
-#define CONFIG_SLOT_COUNT        MAX_DEVICES
-#define CONFIG_PSRAM_SIZE        (CONFIG_SLOT_COUNT * MAX_CONFIG_SIZE)
+#define CONFIG_SLOT_COUNT			MAX_DEVICES
+#define CONFIG_PSRAM_SIZE			(CONFIG_SLOT_COUNT * MAX_CONFIG_SIZE)
+#define PROCESS_CONFIG_SLOTS		8 // Max number of config slots to process per tick to avoid long blocking in main loop
+#define GATEWAY_CONFIG_TIMEOUT_MS	(2 * 60 * 1000) // 2 minutes timeout for gateway
+#define SENSOR_CONFIG_TIMEOUT_MS	(30 * 1000) // 30 seconds timeout for sensor
+#define SENSOR_CONFIG_MAX_RETRIES	3 // Max retries for sensor to apply config
 
 struct config_slot {
 	bool active;
 	bool is_sent;
+	bool is_applied;
+	bool is_transfered;
 	uint16_t dst_device_id;
 	uint8_t dst_device_type;
 	uint16_t config_id;
@@ -23,7 +29,7 @@ struct config_slot {
 	struct nbtimeout timeout;
 };
 
-extern struct config_slot config_slots[CONFIG_SLOT_COUNT];
+extern struct config_slot config_slot[CONFIG_SLOT_COUNT];
 
 /* Initialize the config module. Must be called after psram_init(). */
 int config_init(void);
@@ -32,10 +38,10 @@ int config_init(void);
 void config_tick(void);
 
 /* Validate an AT config command and its payload. */
-int validate_at_config(const slm_at_config_t *config, const uint8_t *data);
+int validate_at_config(const slm_at_structure_t *config, const uint8_t *data);
 
 /* Release a config slot by its ID. */
-int config_slot_release_by_id(uint16_t config_id, bool is_success);
+int config_slot_release_by_id(uint16_t config_id, uint8_t status);
 
 /* TX helpers */
 int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);

@@ -9,7 +9,7 @@ void nbtimeout_init(struct nbtimeout *t, uint32_t duration_ms, uint8_t max_retri
 {
 	t->deadline_ms = 0;
 	t->duration_ms = duration_ms;
-	t->retries = 0;
+	t->retries = 1;
 	t->max_retries = max_retries;
 }
 

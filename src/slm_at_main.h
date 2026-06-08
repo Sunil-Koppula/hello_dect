@@ -27,7 +27,7 @@ typedef struct {
     uint16_t data_id;
     uint16_t data_len;
     uint32_t data_crc32;
-} slm_at_config_t;
+} slm_at_structure_t;
 
 /**
  * @brief  Initialize the AT command processor (brings up the UART transport).

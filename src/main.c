@@ -119,7 +119,7 @@ int main(void)
 		// Config Processor
 		config_tick();
 		// Report/Data Processor
-		data_tick();
+		report_tick();
 		// Large Data Processor
 		large_data_tick();
 		// Implement OTA later

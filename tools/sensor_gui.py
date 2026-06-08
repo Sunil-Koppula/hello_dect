@@ -65,6 +65,8 @@ class SensorWorker:
         self.hum_override = None
         self.force_alarm = 0            # extra alarm bits OR-ed in
         self._send_now = threading.Event()
+        # data_id auto-increments per report, wrapping at DATA_ID_MAX -> 1.
+        self.data_id = max(1, min(sim.DATA_ID_MAX, args.data_id))
 
     # -- helpers ---------------------------------------------------------
     def log(self, msg: str) -> None:
@@ -87,19 +89,21 @@ class SensorWorker:
         alarm = st.compute_alarm_flags() | self.force_alarm
         priority = sim.PRIO_ALARM if alarm else sim.PRIO_NORMAL
         payload = st.snapshot_payload(alarm)
-        line = sim.build_at_report(st.sn, self.args.data_id, payload, priority)
+        data_id = self.data_id
+        line = sim.build_at_report(st.sn, data_id, payload, priority)
         try:
             self.io.write(line.encode("ascii", errors="replace"))
         except Exception as e:
             self.log(f"serial write failed: {e!r}")
             return
+        self.data_id = sim.next_data_id(self.data_id)   # advance for next report
         with st.lock:
             st.last_alarm_flags = alarm
             st.last_priority = priority
             st.last_at_command = line.strip()
-            st.last_response = f"sent ({reason}, prio={priority})"
+            st.last_response = f"sent ({reason}, id={data_id}, prio={priority})"
         crc = zlib.crc32(payload) & 0xFFFFFFFF
-        self.log(f">>> AT#REPORT ({reason}) prio={priority} "
+        self.log(f">>> AT#REPORT ({reason}) id={data_id} prio={priority} "
                  f"alarm=0x{alarm:04X}[{sim.alarm_text(alarm)}] crc=0x{crc:08X}")
 
     # -- report loop -----------------------------------------------------

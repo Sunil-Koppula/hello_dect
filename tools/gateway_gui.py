@@ -154,8 +154,12 @@ class GatewayGUI(tk.Tk):
 
     # -- config form -----------------------------------------------------
     def _build_config_form(self, default_sn: str):
-        f = ttk.LabelFrame(self, text="Push AT#CONFIG to sensor", padding=8)
+        f = ttk.LabelFrame(self, text="Config (manual push + auto-reply to every report)", padding=8)
         f.pack(fill="x", pady=4)
+        ttk.Label(f, text="Auto-config is ON: these values are pushed back to "
+                  "every reporting sensor's SN. 'Dest SN' is used only for the "
+                  "manual Send button.", foreground="gray", wraplength=820,
+                  justify="left").grid(row=7, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         self.e = {}
 
@@ -194,14 +198,17 @@ class GatewayGUI(tk.Tk):
         ttk.Button(f, text="Send AT#CONFIG", command=self._send_config).grid(
             row=6, column=3, sticky="e")
 
-    def _send_config(self):
+    def _build_config_from_form(self, dest_sn_hex: str):
+        """Build (sn, data_id, payload) from the current form fields, targeting
+        dest_sn_hex. Returns None on a parse error (logged). Must be called on
+        the Tk thread (reads widget values)."""
         try:
-            sn = int(self.e["sn"].get(), 16)
+            sn = int(dest_sn_hex, 16)
             data_id = int(self.e["data_id"].get(), 0)
             command = (sim.CMD_DEMO_MODE if self.v_demo.get() else 0) | \
                       (sim.CMD_RESET if self.v_reset.get() else 0)
             payload = sim.build_config_payload(
-                dest_sn_hex=self.e["sn"].get(),
+                dest_sn_hex=dest_sn_hex,
                 command=command,
                 new_fw_version=int(self.e["fw"].get(), 0),
                 battery_level_min=int(self.e["bat_min"].get()),
@@ -215,7 +222,14 @@ class GatewayGUI(tk.Tk):
             )
         except ValueError as e:
             self.worker.log(f"config form error: {e}")
+            return None
+        return sn, data_id, payload
+
+    def _send_config(self):
+        built = self._build_config_from_form(self.e["sn"].get())
+        if built is None:
             return
+        sn, data_id, payload = built
         self.worker.send_config(sn, data_id, payload)
 
     # -- report table ----------------------------------------------------
@@ -289,9 +303,21 @@ class GatewayGUI(tk.Tk):
                     self.txt.configure(state="disabled")
                 elif kind == "report":
                     self._add_report_row(data)
+                    self._auto_send_config(data)
         except queue.Empty:
             pass
         self.after(100, self._drain_events)
+
+    def _auto_send_config(self, rep: dict):
+        """On every received report, push the current form's config back to the
+        reporting sensor's SN (always-on auto-config)."""
+        dest_sn_hex = rep["sn"]          # 16-hex AT-header SN of the reporter
+        built = self._build_config_from_form(dest_sn_hex)
+        if built is None:
+            return
+        sn, data_id, payload = built
+        self.worker.log(f"auto-config -> reporter SN 0x{sn:016X} (id={data_id})")
+        self.worker.send_config(sn, data_id, payload)
 
     def _on_close(self):
         self.worker.stop()
