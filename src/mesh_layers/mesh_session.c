@@ -582,11 +582,6 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
         return;
     }
 
-    // Process only packets with status_success
-    if (pkt->hdr.status != STATUS_SUCCESS) {
-        return;
-    }
-
     uint8_t status;
 
     switch (get_device_type()) {
@@ -595,8 +590,29 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
                 status = check_mesh_storage(dst_id);
                 if (status == STATUS_ALREADY_EXISTS) {
-                    status = update_mesh_storage(dst_id, pkt->hop_num, pkt->version, pkt->connected_device_id, pkt->sensor_count);
-                    LOG_INF("Updated mesh storage for device %s ID:%d based on DEVICE_UPDATED", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                    if (pkt->hdr.status == STATUS_SUCCESS) {
+                        status = update_mesh_storage(dst_id, pkt->hop_num, pkt->version, pkt->connected_device_id, pkt->sensor_count);
+                        LOG_INF("Updated mesh storage for device %s ID:%d based on DEVICE_UPDATED", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                    } else if (pkt->hdr.status == STATUS_DEVICE_REMOVED) {
+                        // Remove from mesh storage
+                        for (int idx = 0; idx < mesh_count; idx++) {
+                            if (mesh_devices[idx].device_id == pkt->device_id) {
+                                int err = storage_mesh_remove(idx);
+                                if (err) {
+                                    LOG_ERR("Failed to remove device %s ID:%d from mesh storage, err %d", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id, err);
+                                    status = STATUS_FAILURE;
+                                } else {
+                                    LOG_INF("Removed device %s ID:%d from mesh storage based on DEVICE_UPDATED with DEVICE_REMOVED status", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                                    status = STATUS_SUCCESS;
+                                }
+                                break;
+                            }
+                            if (idx == mesh_count - 1) {
+                                LOG_WRN("Received DEVICE_UPDATED with DEVICE_REMOVED for device %s ID:%d which is not in mesh storage", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                                status = STATUS_NOT_FOUND;
+                            }
+                        }
+                    }
                 } else {
                     LOG_WRN("Received DEVICE_UPDATED for device %s ID:%d which is not in mesh storage", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
                     status = STATUS_NOT_FOUND;

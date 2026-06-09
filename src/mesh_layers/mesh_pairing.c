@@ -273,10 +273,10 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
         return;
     }
 
-    // // For Testing Purpose: Sensor will not pair with gateway
-    // if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR && get_device_type() == DEVICE_TYPE_GATEWAY) {
-    //     return;
-    // }
+    // For Testing Purpose: Sensor will not pair with gateway
+    if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR && get_device_type() == DEVICE_TYPE_GATEWAY) {
+        return;
+    }
 
     uint8_t status;
 
