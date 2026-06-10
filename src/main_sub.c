@@ -61,7 +61,7 @@ static int main_sub_init(void)
                     return 0;
                 }
             }
-            send_pair_request();
+            send_pair_request(true);
         }
         break;
 
@@ -75,7 +75,7 @@ static int main_sub_init(void)
             }
             /* Not paired — start pairing. */
             LOG_INF("Sensor not paired!");
-            send_pair_request();
+            send_pair_request(true);
         }
         break;
 

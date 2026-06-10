@@ -13,7 +13,7 @@ void mesh_pairing_tick(void);
 void mesh_pairing_set_pending_request(void);
 
 /* TX helpers */
-int send_pair_request(void);
+int send_pair_request(bool include_tracker);
 int send_pair_response(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status);
 int send_pair_confirm(uint16_t dst_id, uint8_t dst_type, uint8_t status);
 int send_pair_ack(uint16_t dst_id, uint8_t dst_type, uint8_t tracking_id, uint8_t status);

@@ -97,6 +97,7 @@ typedef enum {
 #define STATUS_AUTH_FAILED              0x0F
 #define STATUS_COMPLETE                 0x10
 #define STATUS_NO_ROUTE				 	0x11
+#define STATUS_PING_DEVICE			 	0x12
 #define STATUS_VENDOR_SPECIFIC          0x1F
 
 /********** Common Packet Header **********/

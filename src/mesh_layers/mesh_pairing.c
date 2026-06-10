@@ -151,7 +151,7 @@ static void build_joined_network(const pair_ack_t *pkt, uint16_t dst_id, int16_t
 /* -------------------------------------------------------------------------------**** TX Helpers ****------------------------------------------------------------------------------- */
 
 /* Send pairing request packet. */
-int send_pair_request(void)
+int send_pair_request(bool include_tracker)
 {
     uint32_t random_num = generate_random_number();
     uint32_t hash = compute_pair_hash(get_device_id(), random_num);
@@ -170,7 +170,9 @@ int send_pair_request(void)
     };
 
     // Add tracker entry for retries
-    tracker_add(get_device_id(), 0, packet.hdr.tracking_id, PACKET_PAIR_REQUEST, 2 * PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    if (include_tracker) {
+        tracker_add(get_device_id(), 0, packet.hdr.tracking_id, PACKET_PAIR_REQUEST, 2 * PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    }
 
     LOG_INF_GRN("Sending PAIR_REQUEST");
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);

@@ -380,7 +380,6 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
             factory_reset();
             return;
         }
-        
     }
 
     switch (get_device_type()) {
@@ -446,6 +445,10 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
                 // Reject ping device except from gateway, anchor, and sensor
                 return;
             }
+            if (pkt->hdr.status == STATUS_PING_DEVICE) {
+                send_ping_ack(dst_id, pkt->hdr.device_type, pkt->dst_device_id, pkt->hdr.tracking_id, STATUS_PING_DEVICE);
+                return;
+            }
             // Set the mesh time
             mesh_time_set(pkt->timestamp);
             set_mesh_devices_count(pkt->total_devices);
@@ -476,7 +479,7 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
     // Send ACK back to the sender
     send_ping_ack(dst_id, pkt->hdr.device_type, pkt->dst_device_id, pkt->hdr.tracking_id, STATUS_SUCCESS);
 
-    LOG_INF("Mesh Time %llu seconds", mesh_time_get() / 1000);
+    LOG_INF("Set--Mesh Time %llu seconds", mesh_time_get() / 1000);
     return;
 }
 

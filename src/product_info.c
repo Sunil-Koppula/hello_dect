@@ -281,7 +281,7 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 
 		// Send Pair Request because connected device is unreachable, and sensor should send data to gateway through new paired device.
 		LOG_WRN("%s ID:%d is unreachable, send PAIR_REQUEST to find new route to gateway", device_type_str(get_device_type()), device_id);
-		send_pair_request();
+		send_pair_request(true);
 		return;
 	} else if (get_device_type() == DEVICE_TYPE_SENSOR) {
 		infra_devices[0].last_comm_ms = k_uptime_get();
