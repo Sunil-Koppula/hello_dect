@@ -10,8 +10,8 @@
 #include "product_info.h"
 #include "protocol.h"
 
-#define PACKET_TIMEOUT_MS                   500
-#define PING_TIMEOUT_MS                     (2 * 60 * 1000)
+#define PACKET_TIMEOUT_MS                   750
+#define PING_TIMEOUT_MS                     (30 * 1000)
 #define PAIR_RESPONSE_COLLECT_WINDOW_MS     3000
 #define PACKET_MAX_RETRIES                  5
 #define MAX_COMM_FAILURES                   3

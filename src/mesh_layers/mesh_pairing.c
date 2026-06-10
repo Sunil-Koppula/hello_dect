@@ -29,7 +29,7 @@ static struct response_candidate resp_candidates[MAX_PAIR_RESPONSE_CANDIDATES];
 static int resp_candidate_count;
 static int resp_candidate_idx = 0;
 static struct nbtimeout collect_timer;
-static bool collecting;
+static bool collecting = false;
 static bool process_next_request = false;
 
 void mesh_pairing_set_pending_request(void)
@@ -83,7 +83,7 @@ static void select_and_confirm(int idx)
     struct response_candidate *c = &resp_candidates[idx];
 
     /* Skip if already stored. */
-    uint8_t status = check_infra_storage(c->sender_id, c->device_type, true);
+    uint8_t status = check_infra_storage(c->sender_id, c->device_type, false);
 
     if (status == STATUS_STORAGE_FULL) {
         LOG_WRN("Infra storage full, stopping selection");
@@ -103,6 +103,47 @@ static void select_and_confirm(int idx)
         // Sensor only pairs with one anchor, so stop after the first confirmation
         resp_candidate_count = 0;
         return;
+    }
+}
+
+static void build_joined_network(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2) {
+    infra_entry_t entry;
+    entry.device_id = dst_id;
+    entry.device_type = pkt->hdr.device_type;
+    entry.hop_num = pkt->hop_num;
+    entry.rssi_2 = rssi_2;
+    entry.version = pkt->version;
+    int err = storage_infra_add(&entry);
+    if (err) {
+        LOG_ERR("Failed to store paired device, err %d", err);
+        return;
+    }
+    LOG_INF("%s ID:%d paired and stored in infra (total %d)", device_type_str(pkt->hdr.device_type), dst_id, storage_infra_count());
+
+    // Update connected device ID and hop number
+    device_info_update();
+
+    // Send Joined Network packet to the newly paired device
+    joined_network_t jn_pkt = {
+        .device_type = get_device_type(),
+        .device_id = get_device_id(),
+        .serial_num = get_serial_number(),
+        .version = get_firmware_version(),
+    };
+
+    if (get_device_type() == DEVICE_TYPE_ANCHOR) {
+        jn_pkt.connected_device_id = infra_devices[0].entry.device_id;
+        jn_pkt.hop_num = get_hop_number();
+        jn_pkt.sensor_count = storage_sensor_count();
+    } else if (get_device_type() == DEVICE_TYPE_SENSOR) {
+        set_connected_device_id(dst_id);
+        jn_pkt.connected_device_id = dst_id;
+        jn_pkt.hop_num = 0xFF;
+        jn_pkt.sensor_count = 0xFF;
+    }
+
+    if (storage_infra_count() == 1) {
+        send_joined_network(&jn_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
     }
 }
 
@@ -129,7 +170,7 @@ int send_pair_request(void)
     };
 
     // Add tracker entry for retries
-    tracker_add(get_device_id(), 0, packet.hdr.tracking_id, PACKET_PAIR_REQUEST, 5 * PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
+    tracker_add(get_device_id(), 0, packet.hdr.tracking_id, PACKET_PAIR_REQUEST, 2 * PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, &packet, sizeof(packet));
 
     LOG_INF_GRN("Sending PAIR_REQUEST");
     return tx_queue_put(&packet, sizeof(packet), packet.hdr.priority);
@@ -256,6 +297,28 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
         return;
     }
 
+    // // For Testing Purpose: Sensor will not pair with gateway
+    // if ((pkt->hdr.device_type == DEVICE_TYPE_SENSOR || dst_id != 0x926B) && get_device_type() == DEVICE_TYPE_GATEWAY) {
+    //     return;
+    // }
+
+    uint8_t status;
+
+    if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
+        // Check if device is already paired with this anchor
+        status = check_infra_storage(dst_id, pkt->hdr.device_type, false);
+    } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
+        // Check if device is already paired with this sensor
+        status = check_sensor_storage(dst_id);
+    } else {
+        // Reject pair request except from anchor and sensor
+        return;
+    }
+
+    if (status == STATUS_ALREADY_EXISTS) {
+        return;
+    }
+
     LOG_INF_MAG("   Recieved PAIR_REQUEST from %s ID:%d and RSSI:%d (status: %d)", device_type_str(pkt->hdr.device_type), dst_id, (rssi_2 / 2), pkt->hdr.status);
 
     // Validate sender type: only accept if it's from a valid device type (gateway, anchor, sensor)
@@ -273,27 +336,16 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
         return;
     }
 
-    // For Testing Purpose: Sensor will not pair with gateway
-    if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR && get_device_type() == DEVICE_TYPE_GATEWAY) {
-        return;
-    }
-
-    uint8_t status;
-
     switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         case DEVICE_TYPE_ANCHOR:
         {
-            if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-                // Check if device is already paired with this anchor
-                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
-            } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
-                // Check if device is already paired with this sensor
-                status = check_sensor_storage(dst_id);
-            } else {
-                // Reject pair request except from anchor and sensor
-                return;
+            if (status == STATUS_SUCCESS && get_mesh_devices_count() >= MAX_DEVICES) {
+                status = STATUS_STORAGE_FULL;
             }
+
+            // Send response based on device type and storage check result
+            send_pair_response(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
         }
         break;
 
@@ -311,13 +363,6 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
         }
         break;
     }
-
-    if (status == STATUS_SUCCESS && get_mesh_devices_count() >= MAX_DEVICES) {
-        status = STATUS_STORAGE_FULL;
-    }
-
-    // Send response based on device type and storage check result
-    send_pair_response(dst_id, pkt->hdr.device_type, pkt->hdr.tracking_id, status);
 
     return;
 }
@@ -347,8 +392,8 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
     /* Remove tracker entry for the pair request. */
     tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
-    // Process only packets with status_success or status_already_exixts
-    if (pkt->hdr.status != STATUS_SUCCESS && pkt->hdr.status != STATUS_ALREADY_EXISTS) {
+    // Process only packets with status_success
+    if (pkt->hdr.status != STATUS_SUCCESS) {
         return;
     }
 
@@ -364,7 +409,7 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 // Check if device is already paired with this gateway/anchor
-                if (check_infra_storage(dst_id, pkt->hdr.device_type, true) == STATUS_ALREADY_EXISTS) {
+                if (check_infra_storage(dst_id, pkt->hdr.device_type, false) == STATUS_ALREADY_EXISTS) {
                     // send repair request
                     send_repair_request(dst_id, pkt->hdr.device_type);
                     return;
@@ -418,6 +463,12 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
 
     /* Add to candidates if there's room. */
     if (resp_candidate_count < MAX_PAIR_RESPONSE_CANDIDATES) {
+        // Check if the candidate is already in the list (can happen if multiple responses are received due to retries)
+        for (int i = 0; i < resp_candidate_count; i++) {
+            if (resp_candidates[i].sender_id == dst_id) {
+                return;
+            }
+        }
         resp_candidates[resp_candidate_count++] = (struct response_candidate){
             .sender_id = dst_id,
             .device_type = pkt->hdr.device_type,
@@ -461,7 +512,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 // Check if device is already paired with this anchor
-                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, false);
                 if (status == STATUS_SUCCESS) {
                     // Add to infra storage
                     infra_entry_t entry;
@@ -475,6 +526,7 @@ void handle_pair_confirm(const pair_confirm_t *pkt, uint16_t dst_id, int16_t rss
                         LOG_ERR("Failed to store paired anchor, err %d", err);
                         return;
                     }
+                    device_info_update();
                     LOG_INF("ANCHOR ID:%d paired and stored in infra (total %d)", dst_id, storage_infra_count());
                 } else if (status == STATUS_ALREADY_EXISTS) {
                     LOG_INF("ANCHOR ID:%d already paired, received PAIR_CONFIRM with success", dst_id);
@@ -594,43 +646,7 @@ void handle_pair_ack(const pair_ack_t *pkt, uint16_t dst_id, int16_t rssi_2)
 
     // If status is success, it means the device is newly paired, add to storage if not exist.
     if (status == STATUS_SUCCESS) {
-        infra_entry_t entry;
-        entry.device_id = dst_id;
-        entry.device_type = pkt->hdr.device_type;
-        entry.hop_num = pkt->hop_num;
-        entry.rssi_2 = rssi_2;
-        entry.version = pkt->version;
-        int err = storage_infra_add(&entry);
-        if (err) {
-            LOG_ERR("Failed to store paired device, err %d", err);
-            return;
-        }
-        LOG_INF("%s ID:%d paired and stored in infra (total %d)", device_type_str(pkt->hdr.device_type), dst_id, storage_infra_count());
-
-        // Send Joined Network packet to the newly paired device
-        joined_network_t jn_pkt = {
-            .device_type = get_device_type(),
-            .device_id = get_device_id(),
-            .serial_num = get_serial_number(),
-            .version = get_firmware_version(),
-        };
-
-        if (get_device_type() == DEVICE_TYPE_ANCHOR) {
-            device_info_update();
-            jn_pkt.connected_device_id = 0xFFFF; // Anchor doesn't have connected device ID at this point, set to 0xFFFF to indicate
-            jn_pkt.hop_num = get_hop_number();
-            jn_pkt.sensor_count = storage_sensor_count();
-        } else if (get_device_type() == DEVICE_TYPE_SENSOR) {
-            set_connected_device_id(dst_id);
-            jn_pkt.connected_device_id = dst_id;
-            jn_pkt.hop_num = 0xFF;
-            jn_pkt.sensor_count = 0xFF;
-        }
-
-        if (storage_infra_count() == 1) {
-            send_joined_network(&jn_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
-        }
-
+        build_joined_network(pkt, dst_id, rssi_2);
     } else if (status == STATUS_ALREADY_EXISTS) {
         LOG_INF("%s ID:%d already paired, received PAIR_ACK with success", device_type_str(pkt->hdr.device_type), dst_id);
     } else if (status == STATUS_STORAGE_FULL) {
@@ -673,12 +689,36 @@ void handle_repair_request(const repair_request_t *pkt, uint16_t dst_id, int16_t
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 // Check if device is already paired with this anchor
-                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
-                status = (status == STATUS_ALREADY_EXISTS) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, false);
+                if (status == STATUS_SUCCESS && pkt->hop_num != 0xFF) {
+                    // Add to infra storage
+                    infra_entry_t entry;
+                    entry.device_id = dst_id;
+                    entry.device_type = pkt->hdr.device_type;
+                    entry.hop_num = pkt->hop_num == pkt->hop_num;
+                    entry.rssi_2 = rssi_2;
+                    entry.version = pkt->version;
+                    int err = storage_infra_add(&entry);
+                    if (err) {
+                        LOG_ERR("Failed to store repaired anchor, err %d", err);
+                        return;
+                    }
+                    device_info_update();
+                }
             } else if (pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
                 // Check if device is already paired with this sensor
                 status = check_sensor_storage(dst_id);
-                status = (status == STATUS_ALREADY_EXISTS) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
+                if (status == STATUS_SUCCESS) {
+                    // Add to sensor storage
+                    sensor_entry_t entry;
+                    entry.device_id = dst_id;
+                    entry.version = pkt->version;
+                    int err = storage_sensor_add(&entry);
+                    if (err) {
+                        LOG_ERR("Failed to store repaired sensor, err %d", err);
+                        return;
+                    }
+                }
             } else {
                 // Reject repair request except from anchor and sensor
                 return;
@@ -726,7 +766,7 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
     tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
     // Process only packets with status_success
-    if (pkt->hdr.status != STATUS_SUCCESS) {
+    if (pkt->hdr.status != STATUS_SUCCESS && pkt->hdr.status != STATUS_ALREADY_EXISTS && pkt->hdr.status != STATUS_STORAGE_FULL) {
         return;
     }
 
@@ -744,7 +784,21 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
                 // Check if device is already paired with this anchor/gateway
-                status = check_infra_storage(dst_id, pkt->hdr.device_type, true);
+                if (pkt->hdr.status == STATUS_STORAGE_FULL) {
+                    LOG_WRN("Storage full, cannot store repaired device %s ID:%d, removing from storage", device_type_str(pkt->hdr.device_type), dst_id);
+                    for (int i = 0; i < infra_count; i++) {
+                        if (infra_devices[i].entry.device_id == dst_id) {
+                            storage_infra_remove(i);
+                            device_info_update();
+                            break;
+                        }
+                        if (i == infra_count - 1) {
+                            LOG_WRN("Device %s ID:%d not found in storage when trying to remove after receiving STORAGE_FULL status, maybe already removed", device_type_str(pkt->hdr.device_type), dst_id);
+                        }
+                    }
+                    return;
+                }
+                status = check_infra_storage(dst_id, pkt->hdr.device_type, false);
                 if (status == STATUS_ALREADY_EXISTS) {
                     // Update the infra storage with new hop number and rssi
                     if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
@@ -779,7 +833,7 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
                 // Check if device is already paired with this anchor/gateway
-                status = check_infra_storage(pkt->hdr.device_id, pkt->hdr.device_type, false);
+                status = check_infra_storage(pkt->hdr.device_id, pkt->hdr.device_type, true);
                 if (status == STATUS_ALREADY_EXISTS) {
                     // Update the infra storage with new hop number and rssi
                     if (update_infra_storage(pkt->hdr.device_id, pkt->hop_num, rssi_2)) {
@@ -798,7 +852,6 @@ void handle_repair_response(const repair_response_t *pkt, uint16_t dst_id, int16
                         return;
                     }
                     LOG_INF("Stored repaired device %s ID:%d successfully", device_type_str(pkt->hdr.device_type), dst_id);
-                    device_info_update();
                 } else {
                     LOG_WRN("Storage is full, cannot store repaired device %s ID:%d", device_type_str(pkt->hdr.device_type), dst_id);
                     return;

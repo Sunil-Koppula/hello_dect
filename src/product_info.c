@@ -231,8 +231,18 @@ void device_info_update(void)
 	if (temp_hop_num != get_hop_number() && get_hop_number() != 0xFF) {
 		LOG_INF("Updating hop number from %d to %d", get_hop_number(), temp_hop_num);
 		// Send device updated packet to gateway to update hop number and connected device ID
-		// Implement Later
+		device_updated_t du_pkt = {
+			.device_type = get_device_type(),
+			.device_id = get_device_id(),
+			.serial_num = get_serial_number(),
+			.version = FIRMWARE_VERSION,
+			.connected_device_id = infra_devices[0].entry.device_id,
+			.hop_num = temp_hop_num,
+			.sensor_count = storage_sensor_count(),
+		};
+		send_device_updated(&du_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
 	}
+	set_connected_device_id(infra_devices[0].entry.device_id);
 	set_hop_number(temp_hop_num);
 }
 
@@ -300,7 +310,6 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 					LOG_ERR("Failed to remove device from infra storage, err %d", err);
 				}
 				device_info_update(); // Update device info such as hop number
-				// Also remove from Route Table and send route update to gateway
 
 			}
 			return;

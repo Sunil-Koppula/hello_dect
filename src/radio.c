@@ -179,7 +179,6 @@ static bool should_enqueue(uint8_t packet_type, uint16_t sender_id)
 	if ((packet_type >= PACKET_PAIR_REQUEST && packet_type <= PACKET_PAIR_ACK) ||
 	    packet_type == PACKET_REPAIR_REQUEST ||
 	    packet_type == PACKET_REPAIR_RESPONSE) {
-		is_known_device(sender_id); /* Touch known devices cache to update last_comm_ms for this sender. */
 		return true;
 	}
 

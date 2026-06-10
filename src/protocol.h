@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 
-#define MAX_DEPTH           8
+#define MAX_DEPTH           4
 #define MAX_ANCHORS         8
 #define MAX_SENSORS         64
 #define MAX_DEVICES         256
