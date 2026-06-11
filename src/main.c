@@ -21,6 +21,7 @@
 #include "mesh.h"
 #include "tracker.h"
 #include "testing/buttons.h"
+#include "testing/led.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 
@@ -106,6 +107,7 @@ int main(void)
 
 	/* Testing Purpose Only*/
 	buttons_init();
+	led_init();
 
 	while (1) {
 		// Main Sub State Machine

@@ -220,29 +220,51 @@ void device_info_update(void)
 
 	if (infra_count == 0) {
 		LOG_WRN("No infra devices found, setting hop number to 0xFF and connected device ID to 0xFFFF");
+		factory_reset();
 		set_hop_number(0xFF);
 		set_connected_device_id(0xFFFF);
 		return;
 	}
 
-	/* Read all infra entries into a local array. */
-	infra_entry_t entry;
-	int err = storage_infra_get(0, &entry);
-	if (err) {
-		LOG_ERR("Failed to read infra storage, err %d", err);
-		return;
+	for (int i = 0; i < infra_count; i++) {
+		if (get_hop_number() >= infra_devices[i].entry.hop_num) {
+			break;
+		}
+		if (i == infra_count - 1) {
+			// Factory reset because there is no upstream
+			factory_reset();
+			LOG_WRN("Factory Reset, no upstream device found for anchor");
+			k_msleep(500);
+			sys_reboot(SYS_REBOOT_COLD);
+		}
 	}
 
-	uint8_t temp_hop_num = (entry.hop_num < 0xFE) ? entry.hop_num + 1 : 0xFF;
+	uint8_t temp_hop_num = (infra_devices[0].entry.hop_num < 0xFE) ? infra_devices[0].entry.hop_num + 1 : 0xFF;
+	if (temp_hop_num == 0xFF || temp_hop_num > MAX_DEPTH) {
+		LOG_WRN("Upstream device has invalid hop number, setting hop number to 0xFF");
+		factory_reset();
+		LOG_WRN("Factory Reset, no upstream device found for anchor");
+		k_msleep(500);
+		sys_reboot(SYS_REBOOT_COLD);
+	}
 
 	/* Best entry is now at index 0. */
 	if (temp_hop_num != get_hop_number() && get_hop_number() != 0xFF) {
 		LOG_INF("Updating hop number from %d to %d", get_hop_number(), temp_hop_num);
 		// Send device updated packet to gateway to update hop number and connected device ID
-		// Implement Later
+		device_updated_t du_pkt = {
+			.device_type = get_device_type(),
+			.device_id = get_device_id(),
+			.serial_num = get_serial_number(),
+			.version = FIRMWARE_VERSION,
+			.connected_device_id = infra_devices[0].entry.device_id,
+			.hop_num = temp_hop_num,
+			.sensor_count = storage_sensor_count(),
+		};
+		send_device_updated(&du_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
 	}
+	set_connected_device_id(infra_devices[0].entry.device_id);
 	set_hop_number(temp_hop_num);
-	set_connected_device_id(entry.device_id);
 }
 
 bool is_known_device(uint16_t device_id)
@@ -280,7 +302,7 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 
 		// Send Pair Request because connected device is unreachable, and sensor should send data to gateway through new paired device.
 		LOG_WRN("%s ID:%d is unreachable, send PAIR_REQUEST to find new route to gateway", device_type_str(get_device_type()), device_id);
-		send_pair_request();
+		send_pair_request(true);
 		return;
 	} else if (get_device_type() == DEVICE_TYPE_SENSOR) {
 		infra_devices[0].last_comm_ms = k_uptime_get();
@@ -308,8 +330,7 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 				if (err) {
 					LOG_ERR("Failed to remove device from infra storage, err %d", err);
 				}
-
-				// Also remove from Route Table and send route update to gateway
+				device_info_update(); // Update device info such as hop number
 			}
 			return;
 		}
@@ -333,8 +354,26 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 					LOG_ERR("Failed to remove device from sensor storage, err %d", err);
 				}
 				// Send Device Updated packet to gateway that sensor is removed because it's unreachable
-
-
+				device_updated_t du_pkt = {
+					.device_type = DEVICE_TYPE_SENSOR,
+					.device_id = device_id,
+					.serial_num = 0, // Not used
+					.version = 0, // Not used
+					.connected_device_id = 0xFFFF,
+					.hop_num = 0xFF,
+					.sensor_count = 0xFF,
+				};
+				send_device_updated(&du_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_DEVICE_REMOVED);
+				
+				// Update device info such as sensor count
+				du_pkt.device_type = get_device_type();
+				du_pkt.device_id = get_device_id();
+				du_pkt.serial_num = get_serial_number();
+				du_pkt.version = get_firmware_version();
+				du_pkt.connected_device_id = 0xFFFF;
+				du_pkt.hop_num = get_hop_number();
+				du_pkt.sensor_count = storage_sensor_count();
+				send_device_updated(&du_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
 			}
 			return;
 		}

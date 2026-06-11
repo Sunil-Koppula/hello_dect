@@ -311,7 +311,7 @@ void tracker_default_expired_cb(int index, struct data_tracker *entry, bool exha
 			set_temp_id(0xFFFF);
 		}
 
-		if (entry->packet_type == PACKET_JOINED_NETWORK) {
+		if (entry->packet_type > PACKET_PAIR_ACK) {
 			known_device_update_comm_time(entry->dst_id, false);
 		}
 

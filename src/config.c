@@ -240,6 +240,47 @@ static void anchor_config_tick(void)
 				config_slot_free(i);
 			}
 		}
+
+		if (config_slot[i].active && config_slot[i].is_sent && !config_slot[i].is_transfered) {
+			if (nbtimeout_expired(&config_slot[i].timeout)) {
+				if (nbtimeout_retry(&config_slot[i].timeout)) {
+					LOG_WRN("Config slot %d for device ID 0x%04X exhausted retries, freeing slot", i, config_slot[i].dst_device_id);
+					config_slot_free(i);
+				} else {
+					LOG_WRN("Config slot %d for device ID 0x%04X timed out (retry %d/%d), re-sending config", i, config_slot[i].dst_device_id,
+						nbtimeout_retries(&config_slot[i].timeout), SENSOR_CONFIG_MAX_RETRIES);
+					config_slot[i].is_sent = false;
+				}
+			}
+		}
+	}
+
+	for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
+		if (config_slot[i].active && !config_slot[i].is_sent && !config_slot[i].is_transfered) {
+			if (check_sensor_storage(config_slot[i].dst_device_id) == STATUS_ALREADY_EXISTS) {
+				config_t config_pkt = {
+					.dst_device_id = config_slot[i].dst_device_id,
+					.dst_device_type = config_slot[i].dst_device_type,
+					.data_type = DATA_TYPE_CONFIG,
+					.data_id = config_slot[i].config_id,
+					.config_len = config_slot[i].config_len,
+					.config_crc32 = config_slot[i].config_crc32,
+				};
+				// Read config data from PSRAM
+				uint32_t addr = config_slot_psram_addr(i);
+				int err = psram_read(addr, config_pkt.config, config_slot[i].config_len);
+				if (err) {
+					LOG_ERR("psram_read @0x%06x failed (%d), cannot transfer config", addr, err);
+					continue;
+				}
+				// Send config packet
+				config_slot[i].is_sent = true;
+				send_config(&config_pkt, config_slot[i].dst_device_id, config_slot[i].dst_device_type, PACKET_PRIORITY_HIGH);
+			} else {
+				LOG_WRN("Sensor device ID 0x%04X not found in storage, cannot transfer config", config_slot[i].dst_device_id);
+				continue;
+			}
+		}
 	}
 }
 
@@ -254,7 +295,6 @@ static void sensor_config_tick(void)
 			if (config_slot[i].is_applied) {
 				// Stop the timer
 				nbtimeout_reset(&config_slot[i].timeout);
-				nbtimeout_stop(&config_slot[i].timeout);
 			}
 
 			if (nbtimeout_expired(&config_slot[i].timeout)) {
@@ -448,6 +488,9 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 							config_pkt.route_info[0].device_id = 0xFFFF;
 							config_pkt.route_info[0].hop_num = 0xFF;
 							send_config(&config_pkt, pkt->dst_device_id, pkt->dst_device_type, PACKET_PRIORITY_HIGH);
+							nbtimeout_init(&config_slot[idx].timeout, 30 * 1000, 3);
+							nbtimeout_start(&config_slot[idx].timeout);
+							config_slot[idx].is_sent = true;
 							break;
 						}
 						if (i == sensor_count - 1) {
@@ -465,6 +508,9 @@ void handle_config(const config_t *pkt, uint16_t dst_id, int16_t rssi_2)
 					config_pkt.route_info[MAX_DEPTH - 1].device_id = 0xFFFF;
 					config_pkt.route_info[MAX_DEPTH - 1].hop_num = 0xFF;
 					send_config(&config_pkt, config_pkt.route_info[0].device_id, DEVICE_TYPE_ANCHOR, PACKET_PRIORITY_HIGH);
+					nbtimeout_init(&config_slot[idx].timeout, 60 * 1000, 0);
+					nbtimeout_start(&config_slot[idx].timeout);
+					config_slot[idx].is_sent = true;
 				} else {
 					LOG_WRN("CONFIG from device %s ID:%d has invalid route info, rejecting", device_type_str(pkt->hdr.device_type), dst_id);
 					ack.hdr.status = STATUS_INVALID_PARAMETER;

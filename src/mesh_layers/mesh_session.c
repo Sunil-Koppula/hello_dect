@@ -380,7 +380,6 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
             factory_reset();
             return;
         }
-        
     }
 
     switch (get_device_type()) {
@@ -412,25 +411,10 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
                     }
                 }
             }
-            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY) {
+            if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
                 // Check if we need to update hop number
                 if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
-                    LOG_INF("Updated hop number for GATEWAY ID:%d to hop:%d based on PING_DEVICE", dst_id, get_hop_number());
-                    device_updated_t du_pkt = {
-                        .device_type = get_device_type(),
-                        .device_id = get_device_id(),
-                        .serial_num = get_serial_number(),
-                        .version = FIRMWARE_VERSION,
-                        .connected_device_id = 0xFFFF,
-                        .hop_num = get_hop_number(),
-                        .sensor_count = storage_sensor_count(),
-                    };
-                    send_device_updated(&du_pkt, dst_id, pkt->hdr.device_type, STATUS_SUCCESS);
-                }
-            } else if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-                // Check if we need to update hop number
-                if (update_infra_storage(dst_id, pkt->hop_num, rssi_2)) {
-                    LOG_INF("Updated hop number for ANCHOR ID:%d to hop:%d based on PING_DEVICE", dst_id, get_hop_number());
+                    LOG_INF("Updated hop number to hop:%d based on PING_DEVICE of %s ID:%d", get_hop_number(), device_type_str(pkt->hdr.device_type), dst_id);
                     device_updated_t du_pkt = {
                         .device_type = get_device_type(),
                         .device_id = get_device_id(),
@@ -444,6 +428,10 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
                 }
             } else {
                 // Reject ping device except from gateway, anchor, and sensor
+                return;
+            }
+            if (pkt->hdr.status == STATUS_PING_DEVICE) {
+                send_ping_ack(dst_id, pkt->hdr.device_type, pkt->dst_device_id, pkt->hdr.tracking_id, STATUS_PING_DEVICE);
                 return;
             }
             // Set the mesh time
@@ -476,7 +464,7 @@ void handle_ping_device(const ping_device_t *pkt, uint16_t dst_id, int16_t rssi_
     // Send ACK back to the sender
     send_ping_ack(dst_id, pkt->hdr.device_type, pkt->dst_device_id, pkt->hdr.tracking_id, STATUS_SUCCESS);
 
-    LOG_INF("Mesh Time %llu seconds", mesh_time_get() / 1000);
+    LOG_INF("Set--Mesh Time %llu seconds", mesh_time_get() / 1000);
     return;
 }
 
@@ -582,11 +570,6 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
         return;
     }
 
-    // Process only packets with status_success
-    if (pkt->hdr.status != STATUS_SUCCESS) {
-        return;
-    }
-
     uint8_t status;
 
     switch (get_device_type()) {
@@ -595,8 +578,29 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
             if (pkt->hdr.device_type == DEVICE_TYPE_ANCHOR || pkt->hdr.device_type == DEVICE_TYPE_SENSOR) {
                 status = check_mesh_storage(dst_id);
                 if (status == STATUS_ALREADY_EXISTS) {
-                    status = update_mesh_storage(dst_id, pkt->hop_num, pkt->version, pkt->connected_device_id, pkt->sensor_count);
-                    LOG_INF("Updated mesh storage for device %s ID:%d based on DEVICE_UPDATED", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                    if (pkt->hdr.status == STATUS_SUCCESS) {
+                        status = update_mesh_storage(dst_id, pkt->hop_num, pkt->version, pkt->connected_device_id, pkt->sensor_count);
+                        LOG_INF("Updated mesh storage for device %s ID:%d based on DEVICE_UPDATED", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                    } else if (pkt->hdr.status == STATUS_DEVICE_REMOVED) {
+                        // Remove from mesh storage
+                        for (int idx = 0; idx < mesh_count; idx++) {
+                            if (mesh_devices[idx].device_id == pkt->device_id) {
+                                int err = storage_mesh_remove(idx);
+                                if (err) {
+                                    LOG_ERR("Failed to remove device %s ID:%d from mesh storage, err %d", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id, err);
+                                    status = STATUS_FAILURE;
+                                } else {
+                                    LOG_INF("Removed device %s ID:%d from mesh storage based on DEVICE_UPDATED with DEVICE_REMOVED status", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                                    status = STATUS_SUCCESS;
+                                }
+                                break;
+                            }
+                            if (idx == mesh_count - 1) {
+                                LOG_WRN("Received DEVICE_UPDATED with DEVICE_REMOVED for device %s ID:%d which is not in mesh storage", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                                status = STATUS_NOT_FOUND;
+                            }
+                        }
+                    }
                 } else {
                     LOG_WRN("Received DEVICE_UPDATED for device %s ID:%d which is not in mesh storage", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
                     status = STATUS_NOT_FOUND;
@@ -614,9 +618,16 @@ void handle_device_updated(const device_updated_t *pkt, uint16_t dst_id, int16_t
                 // Upstream the update to gateway
                 status = STATUS_SUCCESS;
                 LOG_INF("Forwarding DEVICE_UPDATED from %s ID:%d, updating infra storage", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
-                infra_entry_t entry;
-                storage_infra_get(0, &entry);
-                send_device_updated(pkt, entry.device_id, pkt->hdr.device_type, pkt->hdr.status);
+                if (infra_devices[0].entry.device_id != dst_id) {
+                    send_device_updated(pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, pkt->hdr.status);
+                } else if (infra_count > 1) {
+                    // If the update is from the current primary anchor, also forward to the backup anchor if exists
+                    send_device_updated(pkt, infra_devices[1].entry.device_id, infra_devices[1].entry.device_type, pkt->hdr.status);
+                } else {
+                    LOG_WRN("Received DEVICE_UPDATED from %s ID:%d but no valid anchor to forward", device_type_str(pkt->hdr.device_type), pkt->hdr.device_id);
+                    status = STATUS_NO_ROUTE;
+                }
+                
             } else {
                 // Reject device updated except from anchor and sensor
                 return;
@@ -679,7 +690,37 @@ void handle_device_updated_ack(const device_updated_ack_t *pkt, uint16_t dst_id,
         case DEVICE_TYPE_ANCHOR:
         {
             if (pkt->hdr.device_type == DEVICE_TYPE_GATEWAY || pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
-            // Implement any necessary action if needed when anchor receives device updated ack from gateway/anchor
+                // Implement any necessary action if needed when anchor receives device updated ack from gateway/anchor
+                if (pkt->hdr.status == STATUS_NO_ROUTE) {
+                    if (infra_count > 1) {
+                        device_updated_t du_pkt = {
+                            .device_type = get_device_type(),
+                            .device_id = get_device_id(),
+                            .serial_num = get_serial_number(),
+                            .version = FIRMWARE_VERSION,
+                            .connected_device_id = 0xFFFF,
+                            .hop_num = get_hop_number(),
+                            .sensor_count = storage_sensor_count(),
+                        };
+                        if (infra_devices[0].entry.device_id == dst_id) {
+                            send_device_updated(&du_pkt, infra_devices[1].entry.device_id, infra_devices[1].entry.device_type, STATUS_SUCCESS);
+                        } else {
+                            send_device_updated(&du_pkt, infra_devices[0].entry.device_id, infra_devices[0].entry.device_type, STATUS_SUCCESS);
+                        }
+                        return;
+                    }
+                    // Remove this device from infra storage
+                    for (int i = 0; i < infra_count; i++) {
+                        if (infra_devices[i].entry.device_id == dst_id) {
+                            int err = storage_infra_remove(i);
+                            if (err) {
+                                LOG_ERR("Failed to remove device %s ID:%d from infra storage, err %d", device_type_str(pkt->hdr.device_type), dst_id, err);
+                            }
+                            device_info_update();
+                            break;
+                        }
+                    }
+                }
             }
             else {
                 // Reject device updated ack except from anchor and gateway
