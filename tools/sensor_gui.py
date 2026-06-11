@@ -67,6 +67,9 @@ class SensorWorker:
         self._send_now = threading.Event()
         # data_id auto-increments per report, wrapping at DATA_ID_MAX -> 1.
         self.data_id = max(1, min(sim.DATA_ID_MAX, args.data_id))
+        # Separate id stream + busy guard for large-data (AT#LD) transfers.
+        self.ld_data_id = 1
+        self._ld_busy = False
 
     # -- helpers ---------------------------------------------------------
     def log(self, msg: str) -> None:
@@ -74,6 +77,54 @@ class SensorWorker:
 
     def request_send(self) -> None:
         self._send_now.set()
+
+    # -- large-data (AT#LDINIT + AT#LD) ----------------------------------
+    def send_large_data(self, total_bytes: int) -> None:
+        """Kick off a dummy sound-record large-data transfer on a background
+        thread so the Tk loop stays responsive. Ignored if one is in flight."""
+        if self._ld_busy:
+            self.log("LD: a transfer is already in progress")
+            return
+        self._ld_busy = True
+        threading.Thread(target=self._ld_worker, args=(total_bytes,),
+                         daemon=True).start()
+
+    def _ld_worker(self, total_bytes: int) -> None:
+        data_id = self.ld_data_id
+        try:
+            blob = sim.make_dummy_sound_record(total_bytes)
+            crc16 = sim._crc16_ccitt(blob)
+            chunks = list(sim.iter_ld_chunks(blob))
+            n = len(chunks)
+            last = len(chunks[-1][2])
+            sim._drain_resp_q(self.io)
+
+            # Announce, then wait for the device to consume it.
+            init = sim.build_at_ldinit(self.state.sn, data_id, len(blob),
+                                       n, last, crc16)
+            self.io.write(init.encode("ascii", errors="replace"))
+            self.log(f">>> AT#LDINIT id={data_id} total={len(blob)} "
+                     f"chunks={n} last={last} crc16=0x{crc16:04X}")
+            sim._await_ack(self.io, sim.LD_ACK_TIMEOUT_S)
+
+            # Flow-controlled: one line in flight, wait for OK/ERROR per chunk.
+            for i, (page, chunk, payload) in enumerate(chunks):
+                if self.stop_evt.is_set():
+                    self.log("LD: aborted (shutting down)")
+                    return
+                line = sim.build_at_ld(self.state.sn, data_id, page, chunk, payload)
+                self.io.write(line.encode("ascii", errors="replace"))
+                ack = sim._await_ack(self.io, sim.LD_ACK_TIMEOUT_S)
+                if (i + 1) % 50 == 0 or (i + 1) == n:
+                    self.log(f">>> AT#LD {i + 1}/{n} (p{page:02X} c{chunk:02X}) "
+                             f"[{ack or 'timeout'}]")
+
+            self.log(f">>> LD done: {len(blob)} B in {n} chunks (id={data_id})")
+            self.ld_data_id = sim.next_data_id(self.ld_data_id)
+        except Exception as e:
+            self.log(f"LD error: {e!r}")
+        finally:
+            self._ld_busy = False
 
     # -- the AT#REPORT send ---------------------------------------------
     def _send(self, reason: str) -> None:
@@ -159,7 +210,17 @@ class SensorWorker:
             buf = bytearray(parts[-1], "ascii")
             for raw in parts[:-1]:
                 line = raw.strip()
-                if not line or not line.startswith("AT#CONFIG="):
+                if not line:
+                    continue
+                # Surface terminal responses (OK/ERROR/#...) so the flow-
+                # controlled AT#LD sender can pace on them.
+                if line in ("OK", "ERROR") or line.startswith("#"):
+                    try:
+                        self.io.resp_q.put_nowait(line)
+                    except queue.Full:
+                        pass
+                    continue
+                if not line.startswith("AT#CONFIG="):
                     continue
                 ok, summary, parsed = sim.parse_at_config(line)
                 if not ok:
@@ -286,6 +347,15 @@ class SensorGUI(tk.Tk):
         ttk.Checkbutton(f, text="Force alarm (TEMP1)", variable=self.v_force,
                         command=self._toggle_force).grid(row=2, column=0, columnspan=2, sticky="w", pady=4)
         ttk.Button(f, text="Send report now", command=self.worker.request_send).grid(row=2, column=4, columnspan=2, sticky="e")
+
+        # Large-data (sound record) test transfers.
+        ttk.Label(f, text="Large data:").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Button(f, text="Send LD 100KB",
+                   command=lambda: self.worker.send_large_data(100 * 1024)
+                   ).grid(row=3, column=1, columnspan=2, padx=4, sticky="w")
+        ttk.Button(f, text="Send LD 200KB",
+                   command=lambda: self.worker.send_large_data(200 * 1024)
+                   ).grid(row=3, column=3, columnspan=2, padx=4, sticky="w")
 
     def _build_at_panel(self):
         f = self._section("Last AT Command / Response")
