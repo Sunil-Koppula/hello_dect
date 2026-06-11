@@ -220,12 +220,33 @@ void device_info_update(void)
 
 	if (infra_count == 0) {
 		LOG_WRN("No infra devices found, setting hop number to 0xFF and connected device ID to 0xFFFF");
+		factory_reset();
 		set_hop_number(0xFF);
 		set_connected_device_id(0xFFFF);
 		return;
 	}
 
+	for (int i = 0; i < infra_count; i++) {
+		if (get_hop_number() >= infra_devices[i].entry.hop_num) {
+			break;
+		}
+		if (i == infra_count - 1) {
+			// Factory reset because there is no upstream
+			factory_reset();
+			LOG_WRN("Factory Reset, no upstream device found for anchor");
+			k_msleep(500);
+			sys_reboot(SYS_REBOOT_COLD);
+		}
+	}
+
 	uint8_t temp_hop_num = (infra_devices[0].entry.hop_num < 0xFE) ? infra_devices[0].entry.hop_num + 1 : 0xFF;
+	if (temp_hop_num == 0xFF || temp_hop_num > MAX_DEPTH) {
+		LOG_WRN("Upstream device has invalid hop number, setting hop number to 0xFF");
+		factory_reset();
+		LOG_WRN("Factory Reset, no upstream device found for anchor");
+		k_msleep(500);
+		sys_reboot(SYS_REBOOT_COLD);
+	}
 
 	/* Best entry is now at index 0. */
 	if (temp_hop_num != get_hop_number() && get_hop_number() != 0xFF) {
@@ -310,7 +331,6 @@ void known_device_update_comm_time(uint16_t device_id, bool is_successful_comm)
 					LOG_ERR("Failed to remove device from infra storage, err %d", err);
 				}
 				device_info_update(); // Update device info such as hop number
-
 			}
 			return;
 		}

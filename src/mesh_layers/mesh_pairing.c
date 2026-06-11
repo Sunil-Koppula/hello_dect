@@ -386,7 +386,7 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
         return;
     }
 
-    if (get_hop_number() == 0xFF && pkt->hop_num == 0xFF) {
+    if (get_hop_number() == 0xFF && (pkt->hop_num == 0xFF || pkt->hop_num >= MAX_DEPTH)) {
         // This means the responder is not in the network yet, so reject
         return;
     }
