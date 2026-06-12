@@ -229,13 +229,18 @@ static void slm_at_consume_ringbuf(struct k_work *work)
     size_t len;
 
     if (k_sem_take(&data_msg_sem, K_SECONDS(1)) == 0) {
-        len = ring_buf_get(&slm->rx_ringbuf, (uint8_t *)g_data_msg.buf,
-                           sizeof(g_data_msg.buf));
-        if (len != 0) {
-            g_data_msg.size          = len;
-            g_data_msg.message_ready = true;
+        if (!g_data_msg.message_ready) {
+            len = ring_buf_get(&slm->rx_ringbuf, (uint8_t *)g_data_msg.buf, sizeof(g_data_msg.buf));
+            if (len != 0) {
+                g_data_msg.size = len;
+                g_data_msg.message_ready = true;
+            }
         }
         k_sem_give(&data_msg_sem);
+    }
+
+    if (!ring_buf_is_empty(&slm->rx_ringbuf)) {
+        k_work_schedule(&slm->uart_rx_work, K_MSEC(SLM_UART_MIN_10_MS_DELAY_TIME));
     }
 }
 

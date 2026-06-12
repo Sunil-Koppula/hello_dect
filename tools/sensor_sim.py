@@ -78,7 +78,8 @@ MAX_CONFIG_SIZE = 128           # src/config.h MAX_CONFIG_SIZE
 # (src/slm_at_main.c) -> ~955-char line, safely under the firmware's
 # SLM_UART_AT_COMMAND_LEN (1024, minus 1 for the NUL = 1023 usable).
 AT_LD_PAYLOAD_MAX = 450         # bytes of binary payload per AT#LD chunk
-LD_CHUNKS_PER_PAGE = 256        # chunk index is uint8; roll to next page after 256
+LD_CHUNKS_PER_PAGE = 20         # chunk index rolls to next page after 20, matching
+                                # LARGE_DATA_CHUNKS_PER_SIZE in src/large_data.h
 LARGE_DATA_MAX_TRANSFER = 200 * 1024  # src/large_data.h LARGE_DATA_MAX_TRANSFER_SIZE
 # Flow control: the firmware AT RX buffer cannot absorb back-to-back lines (it
 # disables RX and wedges), so AT#LD chunks are sent one at a time, waiting for
@@ -953,12 +954,28 @@ def _drain_resp_q(io: SerialIO) -> None:
 
 
 def _await_ack(io: SerialIO, timeout_s: float) -> Optional[str]:
-    """Block until the device replies (OK/ERROR/#...) or timeout. Returns the
-    response token, or None on timeout."""
-    try:
-        return io.resp_q.get(timeout=timeout_s)
-    except queue.Empty:
-        return None
+    """Block until the device sends a TERMINAL response (OK/ERROR), discarding
+    any intermediate '#...' info lines (e.g. the '#LDINIT:' echo cmd_ld_init
+    emits before its OK). Returns the terminal token, or None on timeout.
+
+    Waiting for the terminal — not merely the first line — is what keeps
+    large-data strictly one-line-in-flight. If we returned on the '#LDINIT:'
+    echo, its trailing 'OK' would be left in the queue and instantly consumed
+    as the next chunk's ack, so the host would run a line ahead; two ~1 KB
+    AT#LD lines then coalesce in the firmware's RX ring buffer, get split at
+    the drain boundary, and wedge RX."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            tok = io.resp_q.get(timeout=remaining)
+        except queue.Empty:
+            return None
+        if tok in ("OK", "ERROR"):
+            return tok
+        # An informational '#...' line — keep waiting for the terminal token.
 
 
 def send_large_data(io: SerialIO, state: SensorState, blob: bytes,

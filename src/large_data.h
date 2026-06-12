@@ -8,7 +8,8 @@
 #include "psram.h"
 #include "timeout.h"
 
-#define LARGE_DATA_SLOT_SIZE                    (20 * SEND_DATA_MAX)
+#define LARGE_DATA_CHUNKS_PER_SIZE              20
+#define LARGE_DATA_SLOT_SIZE                    (LARGE_DATA_CHUNKS_PER_SIZE * SEND_DATA_MAX)
 #define LARGE_DATA_SLOT_COUNT                   (PSRAM_LARGE_DATA_SIZE / LARGE_DATA_SLOT_SIZE)
 #define LARGE_DATA_PSRAM_SIZE                   (LARGE_DATA_SLOT_COUNT * LARGE_DATA_SLOT_SIZE)
 
@@ -17,10 +18,10 @@
 #define SOUND_RECORD_DATA_MAX_SIZE              (200 * 1024)  /* 200KB max sound record size */
 #define LARGE_DATA_MAX_TRANSFER_SIZE            (SOUND_RECORD_DATA_MAX_SIZE + 64) /* some buffer for metadata */
 #define LARGE_DATA_SLOT_TIMEOUT_MS              (30 * 1000)  /* free slot if idle this long */
-#define PACKET_LARGE_DATA_TIMEOUT_MS            100 /* 100ms timeout for waiting ACKs before retrying */
-#define SENDER_TIMEOUT_MS                       3 * 60 * 1000 /* 3 minutes timeout for sender to wait for transfer completion before giving up */
+#define PACKET_LARGE_DATA_TIMEOUT_MS            (100) /* 100ms timeout for waiting ACKs before retrying */
+#define LD_SENDER_TIMEOUT_MS                    (3 * 60 * 1000) /* 3 minutes timeout for sender to wait for transfer completion before giving up */
 
-#define CRC_VERIFY_STAGE_SIZE 1024  /* Read and process data in 1KB stages for CRC verification */
+#define LD_CRC_VERIFY_STAGE_SIZE                1024  /* Read and process data in 1KB stages for CRC verification */
 
 struct large_data_sender {
     bool        active;
