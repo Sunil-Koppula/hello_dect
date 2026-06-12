@@ -372,23 +372,41 @@ def build_at_config(sn: int, data_id: int, payload: bytes) -> str:
 
 
 def build_at_ldinit(sn: int, data_id: int, total_size: int,
-                    total_chunks: int, last_chunk_size: int, crc16: int) -> str:
-    """AT#LDINIT="<SN16>","<ID4>","<TOTAL_SIZE8>","<TOTAL_CHUNKS4>","<LAST_CHUNK_SIZE4>","<CRC16_4>"
-    — 6 fields. Announces a large-data transfer (total size, chunk count, size
-    of the final chunk, and a CRC16-CCITT over the whole transfer) before the
-    AT#LD chunks are streamed."""
+                    total_chunks: int, last_chunk_size: int,
+                    data_crc32: int) -> str:
+    """AT#LDINIT="<SN16>","<ID4>","<TOTAL_SIZE8>","<TOTAL_CHUNKS4>","<LAST_CHUNK_SIZE4>","<CRC32_8>","<CRC16_4>"
+    — 7 fields. Announces a large-data transfer: total_size is the size of the
+    whole structure being sent; total_chunks/last_chunk_size describe the AT#LD
+    framing.
+
+    There are two distinct CRCs here, covering two different things:
+      * CRC32 = IEEE (zlib.crc32) over the ENTIRE large-data blob. The device
+        stores it and, once every AT#LD chunk has arrived, recomputes the CRC32
+        over the staged blob to verify the whole transfer end-to-end (and to
+        forward it upstream over the mesh).
+      * CRC16 = CCITT-FALSE over the init metadata itself (this line's fields,
+        NOT the data) so the device can verify the init line arrived intact
+        over serial. It now also covers the CRC32 field, so a corrupted
+        whole-data CRC32 is caught here too.
+
+    CRC16 is taken over the metadata packed big-endian as
+    <SN:u64><ID:u16><TOTAL_SIZE:u32><TOTAL_CHUNKS:u16><LAST_CHUNK_SIZE:u16><CRC32:u32>,
+    matching crc16(0x1021, 0xFFFF, ...) in src/large_data.c cmd_ld_init()."""
     if not (0 < total_size <= LARGE_DATA_MAX_TRANSFER):
         raise ValueError(f"total_size must be 1..{LARGE_DATA_MAX_TRANSFER} bytes")
     if not (0 < total_chunks <= 0xFFFF):
         raise ValueError("total_chunks must be 1..0xFFFF")
     if not (0 < last_chunk_size <= AT_LD_PAYLOAD_MAX):
         raise ValueError(f"last_chunk_size must be 1..{AT_LD_PAYLOAD_MAX}")
-    if not (0 <= crc16 <= 0xFFFF):
-        raise ValueError("crc16 must fit uint16")
+    meta = struct.pack(">QHIHHI", sn & 0xFFFFFFFFFFFFFFFF, data_id & 0xFFFF,
+                       total_size & 0xFFFFFFFF, total_chunks & 0xFFFF,
+                       last_chunk_size & 0xFFFF, data_crc32 & 0xFFFFFFFF)
+    crc16 = _crc16_ccitt(meta)
     return (
         '\r\nAT#LDINIT='
         f'"{sn:016X}","{data_id:04X}","{total_size:08X}",'
-        f'"{total_chunks:04X}","{last_chunk_size:04X}","{crc16:04X}"\r\n'
+        f'"{total_chunks:04X}","{last_chunk_size:04X}",'
+        f'"{data_crc32 & 0xFFFFFFFF:08X}","{crc16:04X}"\r\n'
     )
 
 
@@ -957,20 +975,20 @@ def send_large_data(io: SerialIO, state: SensorState, blob: bytes,
     total = len(blob)
     if total == 0:
         return
-    crc16 = _crc16_ccitt(blob)
     chunks = list(iter_ld_chunks(blob))
     n = len(chunks)
     last_chunk_size = len(chunks[-1][2])
+    data_crc32 = zlib.crc32(blob) & 0xFFFFFFFF
     _drain_resp_q(io)
 
     # 1) Announce the transfer, then wait for the device to consume it.
-    init_line = build_at_ldinit(state.sn, data_id, total, n, last_chunk_size, crc16)
+    init_line = build_at_ldinit(state.sn, data_id, total, n, last_chunk_size,
+                                data_crc32)
     io.write(init_line.encode("ascii", errors="replace"))
     with state.lock:
         state.last_at_command = (f">> AT#LDINIT id={data_id} total={total} "
                                  f"chunks={n}")
-        state.last_response = (f"large-data: init sent ({total} B, {n} chunks, "
-                               f"crc16=0x{crc16:04X})")
+        state.last_response = f"large-data: init sent ({total} B, {n} chunks)"
     render_dashboard(state)
     _await_ack(io, ack_timeout_s)
 

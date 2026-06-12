@@ -307,61 +307,6 @@ static void default_button2_handler(void)
 	} else if (get_device_type() == DEVICE_TYPE_SENSOR) {
 		LOG_WRN("Large Data Button pressed");
 		// For testing, always use slot 0 and send large data to gateway
-		uint32_t size = 100 * 1024; // 100KB large data
-
-		infra_entry_t entry;
-		int err = storage_infra_get(0, &entry);
-		if (err) {
-			LOG_ERR("storage_infra_get failed (%d)", err);
-			return;
-		}
-
-		ld_sender.active = true;
-		ld_sender.dst_id = entry.device_id;
-		ld_sender.gen_device_id = get_device_id();
-		ld_sender.data_id = 0x02; // For testing purpose, data_id
-		ld_sender.priority = PACKET_PRIORITY_MEDIUM;
-		ld_sender.base_addr = LARGE_DATA_PSRAM_BASE;
-		ld_sender.total_size = size;
-		ld_sender.page_count = (size + SEND_DATA_MAX * 20 - 1) / (SEND_DATA_MAX * 20);
-		ld_sender.last_page_size = (size % (SEND_DATA_MAX * 20)) ? (size % (SEND_DATA_MAX * 20)) : (SEND_DATA_MAX * 20);
-		ld_sender.total_chunks = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
-		ld_sender.next_chunk = 0;
-
-		uint8_t chunk[1024];
-		uint32_t base = LARGE_DATA_PSRAM_BASE;
-		uint32_t written = 0;
-
-		while (written < size) {
-			uint32_t n = MIN((uint32_t)sizeof(chunk), size - written);
-			for (uint32_t i = 0; i < n; i++) {
-				chunk[i] = (uint8_t)((written + i) & 0xFF);
-			}
-
-			if (written == 0) {
-				ld_sender.crc32 = crc32_ieee(chunk, n);
-			} else {
-				ld_sender.crc32 = crc32_ieee_update(ld_sender.crc32, chunk, n);
-			}
-
-			int err = psram_write(base + written, chunk, n);
-			if (err) {
-				LOG_ERR("build_dummy_large_data: psram_write @0x%06x failed (%d)", base + written, err);
-				return;
-			}
-			written += n;
-		}
-		LOG_WRN("Large data of size %d bytes written to PSRAM with CRC32 0x%08x", size, ld_sender.crc32);
-
-		large_data_init_t init_pkt = {
-			.gen_device_id = ld_sender.gen_device_id,
-			.data_id = ld_sender.data_id,
-			.total_size = ld_sender.total_size,
-			.page_count = ld_sender.page_count,
-			.last_page_size = ld_sender.last_page_size,
-			.crc32 = ld_sender.crc32,
-		};
-		send_large_data_init(&init_pkt, ld_sender.dst_id, entry.device_type, ld_sender.priority);
 	}
 }
 

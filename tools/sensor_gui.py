@@ -93,18 +93,18 @@ class SensorWorker:
         data_id = self.ld_data_id
         try:
             blob = sim.make_dummy_sound_record(total_bytes)
-            crc16 = sim._crc16_ccitt(blob)
             chunks = list(sim.iter_ld_chunks(blob))
             n = len(chunks)
             last = len(chunks[-1][2])
+            data_crc32 = zlib.crc32(blob) & 0xFFFFFFFF
             sim._drain_resp_q(self.io)
 
             # Announce, then wait for the device to consume it.
-            init = sim.build_at_ldinit(self.state.sn, data_id, len(blob),
-                                       n, last, crc16)
+            init = sim.build_at_ldinit(self.state.sn, data_id, len(blob), n, last,
+                                       data_crc32)
             self.io.write(init.encode("ascii", errors="replace"))
             self.log(f">>> AT#LDINIT id={data_id} total={len(blob)} "
-                     f"chunks={n} last={last} crc16=0x{crc16:04X}")
+                     f"chunks={n} last={last}")
             sim._await_ack(self.io, sim.LD_ACK_TIMEOUT_S)
 
             # Flow-controlled: one line in flight, wait for OK/ERROR per chunk.

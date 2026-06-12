@@ -362,7 +362,7 @@ typedef struct {
 	int64_t report_time_ms;			/* timestamp in ms when the report was generated at the sensor */
 	uint32_t total_size;			/* total size of the data being sent (can be larger than what fits in one packet) */
 	uint8_t page_count;				/* total number of pages that will be sent */
-	uint16_t last_page_size;		/* size of the last page (since it may be smaller than the others) */
+	uint16_t last_chunk_size;		/* size of the last chunk (since it may be smaller than the others) */
 	uint32_t crc32;					/* CRC32 of the entire data for integrity checking */
 } __attribute__((packed)) large_data_init_t;
 

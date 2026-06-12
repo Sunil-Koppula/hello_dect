@@ -45,8 +45,8 @@ LOG_MODULE_REGISTER(slm_at_main, CONFIG_MAIN_LOG_LEVEL);
 #include "data.h"
 #include "psram.h"
 #include "protocol.h"
+#include "large_data.h"
 
-#define AT_DATA_PAYLOAD_MAX 450
 
 /* ---- Public response strings (extern'd from other modules if needed). ---- */
 const char AT_RESP_OK[]    = {"\r\nOK\r\n"};
@@ -70,7 +70,7 @@ static at_pending_ack_t pending_ack = {
 
 /* ---- Local helpers ---------------------------------------------------- */
 
-static void at_send_line(const char *s)
+void at_send_line(const char *s)
 {
     char buf[SLM_UART_STRING_MESSAGE_SIZE_MAX];
     int  n = snprintf(buf, sizeof(buf), "\r\n%s\r\n", s);
@@ -79,13 +79,13 @@ static void at_send_line(const char *s)
     }
 }
 
-static void at_ok(void)
+void at_ok(void)
 {
     (void)slm_at_tx_write((const uint8_t *)AT_RESP_OK,
                           strlen(AT_RESP_OK), false);
 }
 
-static void at_error(void)
+void at_error(void)
 {
     (void)slm_at_tx_write((const uint8_t *)AT_RESP_ERROR,
                           strlen(AT_RESP_ERROR), false);
@@ -113,7 +113,7 @@ static int hex_nibble(char c)
  * pointer to the first char inside the quotes and writes its length (chars
  * between the quotes, may be 0) to *len_out. Returns NULL if there is no
  * idx-th complete "..." field. */
-static const char *field_get(const char *args, unsigned idx, size_t *len_out)
+const char *field_get(const char *args, unsigned idx, size_t *len_out)
 {
     const char *p = args;
     for (unsigned n = 0; ; n++) {
@@ -135,7 +135,7 @@ static const char *field_get(const char *args, unsigned idx, size_t *len_out)
 
 /* Extract the idx-th quoted field and parse its contents as a big-endian hex
  * number into *out. The field must be non-empty and all hex. */
-static int field_hex_u64(const char *args, unsigned idx, uint64_t *out)
+int field_hex_u64(const char *args, unsigned idx, uint64_t *out)
 {
     size_t      len;
     const char *f = field_get(args, idx, &len);
@@ -156,7 +156,7 @@ static int field_hex_u64(const char *args, unsigned idx, uint64_t *out)
 
 /* ---- Hex helper for the AT#DATA payload --------------------- */
 
-static int hex_decode(const char *hex, size_t hex_len, uint8_t *out, size_t out_max)
+int hex_decode(const char *hex, size_t hex_len, uint8_t *out, size_t out_max)
 {
     if ((hex_len % 2) != 0) {
         return -EINVAL;
@@ -630,9 +630,13 @@ static void dispatch(char *line)
                 char *p = strstr(line, "AT#REPORT") + strlen("AT#REPORT");
                 cmd_report(p);
                 return;
+            } else if (strstr(line, "AT#LDINIT") != NULL) {
+                char *p = strstr(line, "AT#LDINIT") + strlen("AT#LDINIT");
+                cmd_ld_init(p);
+                return;
             } else if (strstr(line, "AT#LD") != NULL) {
-                // Implement later
-                at_ok();
+                char *p = strstr(line, "AT#LD") + strlen("AT#LD");
+                cmd_ld_chunk(p);
                 return;
             } else if (strstr(line, "#CONFIG") != NULL) {
                 char *p = strstr(line, "#CONFIG");
