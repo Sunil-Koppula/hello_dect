@@ -208,30 +208,41 @@ class GatewayGUI(tk.Tk):
     def _build_config_from_form(self, dest_sn_hex: str):
         """Build (sn, data_id, payload) from the current form fields, targeting
         dest_sn_hex. Returns None on a parse error (logged). Must be called on
-        the Tk thread (reads widget values)."""
+        the Tk thread (reads widget values). Blank numeric fields fall back to
+        the given default rather than raising."""
+        def num(key, base=10, default=0):
+            s = self.e[key].get().strip()
+            if not s:
+                return default
+            return int(s, base)
+
+        dest_sn_hex = (dest_sn_hex or "").strip()
+        if not dest_sn_hex:
+            self.worker.log("config form error: Dest SN (hex) is empty")
+            return None
         try:
             sn = int(dest_sn_hex, 16)
-            data_id = int(self.e["data_id"].get(), 0)
+            data_id = num("data_id", base=0, default=1)
             command = (sim.CMD_DEMO_MODE if self.v_demo.get() else 0) | \
                       (sim.CMD_RESET if self.v_reset.get() else 0)
             payload = sim.build_config_payload(
                 dest_sn_hex=dest_sn_hex,
                 command=command,
-                new_fw_version=int(self.e["fw"].get(), 0),
-                battery_level_min=int(self.e["bat_min"].get()),
-                sleep_time_sec=int(self.e["sleep"].get()),
-                temp_max=int(self.e["tmax"].get()),
-                temp_min=int(self.e["tmin"].get()),
-                hum_max=int(self.e["hmax"].get()),
-                hum_min=int(self.e["hmin"].get()),
-                temp_max2=int(self.e["tmax2"].get()),
-                temp_min2=int(self.e["tmin2"].get()),
-                hum_max2=int(self.e["hmax2"].get()),
-                hum_min2=int(self.e["hmin2"].get()),
-                ultrasound_level_max=int(self.e["us_max"].get()),
-                ultrasound_center_frequency=int(self.e["us_freq"].get()),
-                vibration_level_max=int(self.e["vib_max"].get()),
-                random_number=int(self.e["rand"].get()),
+                new_fw_version=num("fw", base=0, default=1),
+                battery_level_min=num("bat_min", default=30),
+                sleep_time_sec=num("sleep", default=600),
+                temp_max=num("tmax", default=40),
+                temp_min=num("tmin", default=-10),
+                hum_max=num("hmax", default=80),
+                hum_min=num("hmin", default=20),
+                temp_max2=num("tmax2", default=40),
+                temp_min2=num("tmin2", default=-10),
+                hum_max2=num("hmax2", default=80),
+                hum_min2=num("hmin2", default=20),
+                ultrasound_level_max=num("us_max", default=100),
+                ultrasound_center_frequency=num("us_freq", default=0),
+                vibration_level_max=num("vib_max", default=500),
+                random_number=num("rand", default=0),
                 config_flags=sim.FLAG_NOT_ENCRYPTED if self.v_notenc.get() else 0,
             )
         except ValueError as e:
