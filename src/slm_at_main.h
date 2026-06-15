@@ -21,6 +21,8 @@
 extern "C" {
 #endif
 
+#define AT_DATA_PAYLOAD_MAX 450
+
 typedef struct {
     uint16_t device_id;
     uint8_t device_type;
@@ -41,6 +43,43 @@ int slm_at_init(void);
  *         main loop (matches h745's slm_at_run_cycle() pattern).
  */
 void slm_at_run_cycle(void);
+
+/**
+ * @brief  Extract the idx-th quoted field and parse its contents as a big-endian hex
+ *         number into *out. The field must be non-empty and all hex.
+ * @param  args  The AT command arguments string.
+ * @param  idx   The index of the quoted field to extract.
+ * @param  out   Pointer to the output variable.
+ * @return 0 on success, otherwise a negative error code.
+ */
+int field_hex_u64(const char *args, unsigned idx, uint64_t *out);
+
+/**
+ * @brief  Decode a hex string into binary data.
+ * @param  hex      The hex string.
+ * @param  hex_len  The length of the hex string.
+ * @param  out      Pointer to the output buffer.
+ * @param  out_max  Maximum number of bytes that can be written to out.
+ * @return Number of bytes written to out on success, otherwise a negative error code.
+ */
+int hex_decode(const char *hex, size_t hex_len, uint8_t *out, size_t out_max);
+
+/**
+ * @brief  Locate the idx-th double-quoted field in 'args'. Returns a pointer to
+ *         the first char inside the quotes and writes its length to *len_out,
+ *         or NULL if there is no idx-th complete "..." field.
+ */
+const char *field_get(const char *args, unsigned idx, size_t *len_out);
+
+/** @brief Emit the standard "\r\nOK\r\n" AT response. */
+void at_ok(void);
+
+/** @brief Emit the standard "\r\nERROR\r\n" AT response. */
+void at_error(void);
+
+/** @brief Emit "\r\n<s>\r\n" as an AT response line. */
+void at_send_line(const char *s);
+
 
 #ifdef __cplusplus
 }

@@ -48,6 +48,7 @@ Requires: pyserial  (pip install pyserial)
 from __future__ import annotations
 
 import argparse
+import queue
 import random
 import struct
 import sys
@@ -69,6 +70,22 @@ DEFAULT_TIMEOUT_S = 2.0
 
 MAX_REPORT_SIZE = 256           # src/data.h MAX_REPORT_SIZE
 MAX_CONFIG_SIZE = 128           # src/config.h MAX_CONFIG_SIZE
+
+# AT#LD large-data transfer (sensor -> board over serial).
+# Payload is hex-encoded in the AT line, so the framed command is
+#   len("\r\nAT#LD=") + 6 quoted fields + 5 commas + 2*payload + "\r\n".
+# Capped at 450 B/chunk to match the firmware's AT_DATA_PAYLOAD_MAX
+# (src/slm_at_main.c) -> ~955-char line, safely under the firmware's
+# SLM_UART_AT_COMMAND_LEN (1024, minus 1 for the NUL = 1023 usable).
+AT_LD_PAYLOAD_MAX = 450         # bytes of binary payload per AT#LD chunk
+LD_CHUNKS_PER_PAGE = 20         # chunk index rolls to next page after 20, matching
+                                # LARGE_DATA_CHUNKS_PER_SIZE in src/large_data.h
+LARGE_DATA_MAX_TRANSFER = 200 * 1024  # src/large_data.h LARGE_DATA_MAX_TRANSFER_SIZE
+# Flow control: the firmware AT RX buffer cannot absorb back-to-back lines (it
+# disables RX and wedges), so AT#LD chunks are sent one at a time, waiting for
+# the device's OK/ERROR before the next. This is the max wait before proceeding
+# anyway (degraded pacing) if no response arrives.
+LD_ACK_TIMEOUT_S = 2.0
 
 # Real-world default timings (overridable via CLI for testing).
 BATTERY_PERIOD_S = 5 * 60       # -1% battery every 5 minutes
@@ -113,19 +130,16 @@ def alarm_text(flags: int) -> str:
 # ---------------------------------------------------------------------------
 # sensor_structure.c mirror — packing / unpacking
 #
-# C struct layout depends on the compiler's alignment rules. Default here is
-# natural alignment with a 4-byte enum; pass --packed if the firmware structs
-# are __attribute__((packed)). ENUM_SIZE can be set to 2 if -fshort-enums.
+# The C structs in tools/sensor_structure.c are __attribute__((packed)) and use
+# fixed-width integer fields (no bare enums), so the on-wire layout is a single,
+# deterministic, little-endian byte sequence — independent of the compiler's
+# alignment rules or -fshort-enums. The formats below mirror that exactly.
 # ---------------------------------------------------------------------------
 
 SENSOR_REPORT_INFO_MAX = 16
 SENSOR_CONFIG_INFO_MAX = 16
 SENSOR_DATA_STR_SN_MAX = 12
 SENSOR_REPORT_CONFIG_NAME_MAX = 6   # "ESC33"/"ESC21" fit (5 chars + NUL)
-
-PACKED = False
-ENUM_SIZE = 4
-_ENUM_FMT = {1: "B", 2: "H", 4: "I"}[ENUM_SIZE]
 
 # sensor_alarm_flags_t bits.
 ALARM_NONE         = 0x0000
@@ -156,75 +170,123 @@ def _name_bytes(s: str, n: int) -> bytes:
     return b + b"\x00" * (n - len(b))
 
 
-def _report_fmt(packed: bool) -> str:
-    """struct.pack format for sensor_data_structure_t."""
-    fmt = "<6s12s"                    # name[6], sn[12]
-    if not packed:
-        fmt += "2x"                   # align report_type enum
-    fmt += _ENUM_FMT                  # report_type
-    fmt += "H"                        # firmware_version
-    fmt += "B"                        # battery_level
-    if not packed:
-        fmt += "x"                    # align alarm_flags enum
-    fmt += _ENUM_FMT                  # alarm_flags
-    fmt += _ENUM_FMT                  # report_flags
-    fmt += "H"                        # report_crc16
-    if not packed:
-        fmt += "2x"                   # align union to even offset
-    fmt += f"{SENSOR_REPORT_INFO_MAX}s"   # report_info union
-    return fmt
+def _report_fmt() -> str:
+    """struct format for sensor_data_structure_t (packed, fixed-width)."""
+    return ("<"
+            "6s"   # name[6]
+            "12s"  # sn[12]
+            "H"    # report_type   (sensor_report_type_t)
+            "H"    # firmware_version
+            "B"    # battery_level
+            "H"    # alarm_flags    (sensor_alarm_flags_t bitmask)
+            "B"    # report_flags   (sensor_report_config_flags_t bitmask)
+            "H"    # report_crc16
+            f"{SENSOR_REPORT_INFO_MAX}s")  # report_info union
 
 
-def _config_fmt(packed: bool) -> str:
-    """struct.pack format for sensor_config_structure_t."""
-    fmt = "<6s6s"                     # name[6], dest_id[6]
-    fmt += _ENUM_FMT                  # command
-    fmt += "H"                        # new_firmware_version
-    fmt += "B"                        # battery_level_min
-    if not packed:
-        fmt += "x"                    # align sleep_time_sec
-    fmt += "H"                        # sleep_time_sec
-    if not packed:
-        fmt += "2x"                   # align config_flags enum
-    fmt += _ENUM_FMT                  # config_flags
-    fmt += "H"                        # config_crc16
-    fmt += f"{SENSOR_CONFIG_INFO_MAX}s"   # config_info union
-    return fmt
+def _config_fmt() -> str:
+    """struct format for sensor_config_structure_t (packed, fixed-width)."""
+    return ("<"
+            "6s"   # name[6]
+            "6s"   # dest_id[6]
+            "B"    # command        (sensor_config_cmd_t bitmask)
+            "H"    # new_firmware_version
+            "B"    # battery_level_min
+            "H"    # sleep_time_sec
+            "B"    # config_flags   (sensor_report_config_flags_t bitmask)
+            "H"    # config_crc16
+            f"{SENSOR_CONFIG_INFO_MAX}s")  # config_info union
 
 
-def _report_info_3300_fmt(packed: bool) -> str:
-    """struct format for sensor_report_info_3300_t inside the report_info union.
+# ---------------------------------------------------------------------------
+# Per-type report_info / config_info layouts (sensor_report_info_<type>_t and
+# sensor_config_info_<type>_t in sensor_structure.c). Every struct sits inside
+# a #pragma pack(push, 1) block, so the layout is fully packed (no internal
+# padding) and simply zero-filled out to the 16-byte union.
+#
+# Each field is (name, struct_code, scale): scale 100 means the raw integer is
+# hundredths (temperatures °C / humidities %RH); scale 1 is a raw count.
+# ---------------------------------------------------------------------------
 
-    Layout: temperature1(i16), humidity1(u16), temperature2(i16), humidity2(u16),
-    ultrasound_level(u16), ultrasound_frequency(u8), vibration_level(u16),
-    vibration_frequency(u8). Under natural alignment a pad byte precedes
-    vibration_level (u16 alignment) and one trails the struct -> 16 bytes; packed
-    is 14 bytes. Either way it sits in the 16-byte report_info union."""
-    fmt = "<hHhHHB"                   # temp1, hum1, temp2, hum2, us_level, us_freq
-    if not packed:
-        fmt += "x"                    # align vibration_level (u16)
-    fmt += "HB"                       # vibration_level, vibration_freq
-    if not packed:
-        fmt += "x"                    # trailing struct pad -> 16 bytes
-    return fmt
+# Reusable report_info fields.
+_R_T1 = ("temperature1", "h", 100)
+_R_H1 = ("humidity1", "H", 100)
+_R_T2 = ("temperature2", "h", 100)
+_R_H2 = ("humidity2", "H", 100)
+_R_UL = ("ultrasound_level", "H", 1)
+_R_UF = ("ultrasound_frequency", "B", 1)
+_R_VL = ("vibration_level", "H", 1)
+_R_VF = ("vibration_frequency", "B", 1)
+
+REPORT_INFO_LAYOUT = {
+    0x3100: [_R_T1, _R_H1, _R_VL, _R_VF],
+    0x3101: [_R_T1, _R_H1, _R_T2, _R_H2, _R_VL, _R_VF],
+    0x3102: [_R_T1, _R_H1, ("gas1", "H", 1), ("gas2", "H", 1), ("gas3", "H", 1),
+             _R_VL, _R_VF],
+    0x3103: [_R_T1, _R_H1, _R_T2, _R_H2, _R_VL, _R_VF],
+    0x3104: [_R_T1, _R_H1, _R_T2, _R_H2, ("current", "H", 1), _R_VL, _R_VF],
+    0x3105: [_R_T1, _R_H1, _R_T2, _R_H2, _R_UL, _R_UF, _R_VL, _R_VF],
+    0x3200: [_R_T1, _R_H1, _R_UL, _R_UF],
+    0x3300: [_R_T1, _R_H1, _R_T2, _R_H2, _R_UL, _R_UF, _R_VL, _R_VF],
+}
+
+# Reusable config_info fields.
+_C_TMX1 = ("temperature_max1", "b", 1)
+_C_TMN1 = ("temperature_min1", "b", 1)
+_C_HMX1 = ("humidity_max1", "B", 1)
+_C_HMN1 = ("humidity_min1", "B", 1)
+_C_TMX2 = ("temperature_max2", "b", 1)
+_C_TMN2 = ("temperature_min2", "b", 1)
+_C_HMX2 = ("humidity_max2", "B", 1)
+_C_HMN2 = ("humidity_min2", "B", 1)
+_C_ULMX = ("ultrasound_level_max", "H", 1)
+_C_UCF = ("ultrasound_center_frequency", "B", 1)
+_C_VMX = ("vibration_level_max", "H", 1)
+_C_RND = ("random_number", "B", 1)
+
+CONFIG_INFO_LAYOUT = {
+    0x3100: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_VMX, _C_RND],
+    0x3101: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             _C_VMX, _C_RND],
+    0x3102: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, ("gas1_max", "H", 1),
+             ("gas2_max", "H", 1), ("gas3_max", "H", 1), _C_VMX, _C_RND],
+    0x3103: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             _C_VMX, _C_RND],
+    0x3104: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             ("current_max", "H", 1), ("current_min", "H", 1), _C_VMX, _C_RND],
+    0x3105: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             _C_ULMX, _C_UCF, _C_VMX, _C_RND],
+    0x3200: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_ULMX, _C_UCF, _C_RND],
+    0x3300: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             _C_ULMX, _C_UCF, _C_VMX, _C_RND],
+}
 
 
-def _config_info_3300_fmt(packed: bool) -> str:
-    """struct format for sensor_config_info_3300_t inside the config_info union.
+def _info_fmt(layout) -> str:
+    """Little-endian, fully packed struct format for an info layout."""
+    return "<" + "".join(code for _, code, _ in layout)
 
-    Layout: temperature_max1/min1(i8), humidity_max1/min1(u8),
-    temperature_max2/min2(i8), humidity_max2/min2(u8), ultrasound_level_max(u16),
-    ultrasound_center_frequency(u8), vibration_level_max(u16), random_number(u8).
-    Under natural alignment a pad byte precedes vibration_level_max and one
-    trails the struct -> 16 bytes; packed is 14 bytes."""
-    fmt = "<bbBBbbBB"                 # t/h max/min for channels 1 and 2 (8 bytes)
-    fmt += "HB"                       # ultrasound_level_max, ultrasound_center_freq
-    if not packed:
-        fmt += "x"                    # align vibration_level_max (u16)
-    fmt += "HB"                       # vibration_level_max, random_number
-    if not packed:
-        fmt += "x"                    # trailing struct pad -> 16 bytes
-    return fmt
+
+def _decode_info(layout, data: bytes) -> dict:
+    """Unpack the leading bytes of an info union per `layout`, applying scales."""
+    fmt = _info_fmt(layout)
+    vals = struct.unpack(fmt, data[:struct.calcsize(fmt)])
+    out = {}
+    for (name, _code, scale), v in zip(layout, vals):
+        out[name] = (v / 100.0) if scale == 100 else v
+    return out
+
+
+def _report_info_3300_fmt() -> str:
+    """Packed struct format for sensor_report_info_3300_t (the 14-byte 3300
+    report_info; zero-padded out to the 16-byte report_info union)."""
+    return _info_fmt(REPORT_INFO_LAYOUT[0x3300])
+
+
+def _config_info_3300_fmt() -> str:
+    """Packed struct format for sensor_config_info_3300_t (14 bytes, zero-padded
+    out to the 16-byte config_info union)."""
+    return _info_fmt(CONFIG_INFO_LAYOUT[0x3300])
 
 
 def _crc16_ccitt(data: bytes, init: int = 0xFFFF) -> int:
@@ -259,7 +321,7 @@ def build_report_info_3300(*, temperature1: float, humidity1: float,
     vibration levels are raw uint16 and their frequencies raw uint8. Zero-padded
     out to SENSOR_REPORT_INFO_MAX."""
     info = struct.pack(
-        _report_info_3300_fmt(PACKED),
+        _report_info_3300_fmt(),
         _temp_x100(temperature1), _hum_x100(humidity1),
         _temp_x100(temperature2), _hum_x100(humidity2),
         ultrasound_level & 0xFFFF, ultrasound_frequency & 0xFF,
@@ -276,14 +338,14 @@ def build_report_payload(*, sn_hex: str, battery_level: int, alarm_flags: int,
         raise ValueError(f"report_info must be {SENSOR_REPORT_INFO_MAX} bytes")
     report_crc16 = _crc16_ccitt(report_info)
     return struct.pack(
-        _report_fmt(PACKED),
+        _report_fmt(),
         _name_bytes(REPORT_NAME, SENSOR_REPORT_CONFIG_NAME_MAX),
         _name_bytes(sn_hex.upper(), SENSOR_DATA_STR_SN_MAX),
         REPORT_TYPE_3300,
         firmware_version & 0xFFFF,
         battery_level & 0xFF,
-        alarm_flags & ((1 << (8 * ENUM_SIZE)) - 1),
-        report_flags & ((1 << (8 * ENUM_SIZE)) - 1),
+        alarm_flags & 0xFFFF,      # alarm_flags is uint16_t
+        report_flags & 0xFF,       # report_flags is uint8_t
         report_crc16 & 0xFFFF,
         report_info,
     )
@@ -292,21 +354,26 @@ def build_report_payload(*, sn_hex: str, battery_level: int, alarm_flags: int,
 def decode_report_payload(payload: bytes) -> Optional[dict]:
     """Decode a sensor_data_structure_t from AT#REPORT <DATA>. Returns a dict
     with a 'raw' marker on length mismatch so the caller can still show it."""
-    fmt = _report_fmt(PACKED)
+    fmt = _report_fmt()
     want = struct.calcsize(fmt)
     if len(payload) != want:
         return {"raw": payload.hex().upper(),
-                "note": f"len {len(payload)} != expected {want} (try --packed?)"}
+                "note": f"len {len(payload)} != expected {want}"}
     (name, sn, rtype, fw, battery, alarm_flags,
      report_flags, report_crc16, report_info) = struct.unpack(fmt, payload)
-    # report_info union as sensor_report_info_3300_t.
-    info_fmt = _report_info_3300_fmt(PACKED)
-    (t1, h1, t2, h2, us_lvl, us_freq,
-     vib_lvl, vib_freq) = struct.unpack(info_fmt, report_info[:struct.calcsize(info_fmt)])
-    return {
+    # Decode the report_info union per the report_type (see REPORT_INFO_LAYOUT).
+    layout = REPORT_INFO_LAYOUT.get(rtype)
+    info = {}
+    if layout is not None:
+        try:
+            info = _decode_info(layout, report_info)
+        except struct.error:
+            info = {}
+    result = {
         "name": name.split(b"\x00", 1)[0].decode("ascii", "replace"),
         "sn": sn.split(b"\x00", 1)[0].decode("ascii", "replace"),
         "report_type": rtype,
+        "report_type_known": layout is not None,
         "firmware_version": fw,
         "battery_level": battery,
         "alarm_flags_raw": alarm_flags,
@@ -314,36 +381,54 @@ def decode_report_payload(payload: bytes) -> Optional[dict]:
         "report_flags_raw": report_flags,
         "report_flags": f"0x{report_flags:02X}",
         "report_crc16": f"0x{report_crc16:04X}",
-        # channel-1 temp/hum kept as "temperature"/"humidity" for back-compat.
-        "temperature": t1 / 100.0,
-        "humidity": h1 / 100.0,
-        "temperature1": t1 / 100.0,
-        "humidity1": h1 / 100.0,
-        "temperature2": t2 / 100.0,
-        "humidity2": h2 / 100.0,
-        "ultrasound_level": us_lvl,
-        "ultrasound_frequency": us_freq,
-        "vibration_level": vib_lvl,
-        "vibration_frequency": vib_freq,
+        # All decoded type-specific fields (e.g. gas1/gas2/gas3, current).
+        "report_info": info,
+        "report_info_hex": report_info.hex().upper(),
+        # Canonical columns default to 0 so consumers always have the keys,
+        # regardless of which fields this report_type actually carries.
+        "temperature1": info.get("temperature1", 0.0),
+        "humidity1": info.get("humidity1", 0.0),
+        "temperature2": info.get("temperature2", 0.0),
+        "humidity2": info.get("humidity2", 0.0),
+        "ultrasound_level": info.get("ultrasound_level", 0),
+        "ultrasound_frequency": info.get("ultrasound_frequency", 0),
+        "vibration_level": info.get("vibration_level", 0),
+        "vibration_frequency": info.get("vibration_frequency", 0),
     }
+    # channel-1 temp/hum kept as "temperature"/"humidity" for back-compat.
+    result["temperature"] = result["temperature1"]
+    result["humidity"] = result["humidity1"]
+    # Surface type-specific extras at the top level for convenience.
+    for k in ("gas1", "gas2", "gas3", "current"):
+        if k in info:
+            result[k] = info[k]
+    return result
 
 
-def decode_config_payload(payload: bytes) -> Optional[dict]:
-    """Decode a sensor_config_structure_t from AT#CONFIG <DATA>. Returns None
-    (with a 'raw' marker) on length mismatch so the caller can still show it."""
-    fmt = _config_fmt(PACKED)
+def decode_config_payload(payload: bytes,
+                          sensor_type: int = 0x3300) -> Optional[dict]:
+    """Decode a sensor_config_structure_t from AT#CONFIG <DATA>. Returns a dict
+    with a 'raw' marker on length mismatch so the caller can still show it.
+
+    The config header carries no sensor type, so `sensor_type` selects which
+    sensor_config_info_<type>_t layout to apply to the config_info union
+    (defaults to 0x3300). See CONFIG_INFO_LAYOUT."""
+    fmt = _config_fmt()
     want = struct.calcsize(fmt)
     if len(payload) != want:
         return {"raw": payload.hex().upper(),
-                "note": f"len {len(payload)} != expected {want} (try --packed?)"}
+                "note": f"len {len(payload)} != expected {want}"}
     (name, dest_id, command, new_fw, bat_min, sleep_s,
      config_flags, config_crc16, config_info) = struct.unpack(fmt, payload)
     cmds = [k for k, v in CONFIG_CMD_FLAGS.items() if command & v]
-    # config_info union as sensor_config_info_3300_t.
-    info_fmt = _config_info_3300_fmt(PACKED)
-    (t_max1, t_min1, h_max1, h_min1, t_max2, t_min2, h_max2, h_min2,
-     us_lvl_max, us_center_freq, vib_lvl_max, rnd) = struct.unpack(
-        info_fmt, config_info[:struct.calcsize(info_fmt)])
+    # Decode the config_info union per the assumed sensor_type.
+    layout = CONFIG_INFO_LAYOUT.get(sensor_type)
+    info = {}
+    if layout is not None:
+        try:
+            info = _decode_info(layout, config_info)
+        except struct.error:
+            info = {}
     return {
         "name": name.split(b"\x00", 1)[0].decode("ascii", "replace"),
         "dest_id": dest_id.hex().upper(),
@@ -356,16 +441,12 @@ def decode_config_payload(payload: bytes) -> Optional[dict]:
         "config_flags": f"0x{config_flags:02X}",
         "config_crc16": f"0x{config_crc16:04X}",
         "config_info": config_info.hex().upper(),
-        "config_info_3300": {
-            "temperature_max1": t_max1, "temperature_min1": t_min1,
-            "humidity_max1": h_max1, "humidity_min1": h_min1,
-            "temperature_max2": t_max2, "temperature_min2": t_min2,
-            "humidity_max2": h_max2, "humidity_min2": h_min2,
-            "ultrasound_level_max": us_lvl_max,
-            "ultrasound_center_frequency": us_center_freq,
-            "vibration_level_max": vib_lvl_max,
-            "random_number": rnd,
-        },
+        "sensor_type": sensor_type,
+        "sensor_type_known": layout is not None,
+        # Decoded config_info fields for this sensor_type.
+        "config_info_decoded": info,
+        # Back-compat alias kept for 3300 consumers (apply_config et al.).
+        "config_info_3300": info,
     }
 
 
@@ -388,7 +469,7 @@ def build_config_payload(*, dest_sn_hex: str, command: int, new_fw_version: int,
     The channel-1 args keep their original names for back-compat."""
     dest = int(dest_sn_hex, 16).to_bytes(8, "big")[-6:]   # low 6 bytes of SN
     info = struct.pack(
-        _config_info_3300_fmt(PACKED),
+        _config_info_3300_fmt(),
         temp_max, temp_min, hum_max & 0xFF, hum_min & 0xFF,
         temp_max2, temp_min2, hum_max2 & 0xFF, hum_min2 & 0xFF,
         ultrasound_level_max & 0xFFFF, ultrasound_center_frequency & 0xFF,
@@ -397,14 +478,14 @@ def build_config_payload(*, dest_sn_hex: str, command: int, new_fw_version: int,
     info += b"\x00" * (SENSOR_CONFIG_INFO_MAX - len(info))
     config_crc16 = _crc16_ccitt(info)
     return struct.pack(
-        _config_fmt(PACKED),
+        _config_fmt(),
         _name_bytes(CONFIG_NAME, SENSOR_REPORT_CONFIG_NAME_MAX),
         dest,
-        command & ((1 << (8 * ENUM_SIZE)) - 1),
+        command & 0xFF,            # command is uint8_t
         new_fw_version & 0xFFFF,
         battery_level_min & 0xFF,
         sleep_time_sec & 0xFFFF,
-        config_flags & ((1 << (8 * ENUM_SIZE)) - 1),
+        config_flags & 0xFF,       # config_flags is uint8_t
         config_crc16 & 0xFFFF,
         info,
     )
@@ -453,6 +534,79 @@ def build_at_config(sn: int, data_id: int, payload: bytes) -> str:
         f'"{sn:016X}","{data_id:04X}","{len(payload):04X}",'
         f'"{crc32:08X}","{payload.hex().upper()}"\r\n'
     )
+
+
+def build_at_ldinit(sn: int, data_id: int, total_size: int,
+                    total_chunks: int, last_chunk_size: int,
+                    data_crc32: int) -> str:
+    """AT#LDINIT="<SN16>","<ID4>","<TOTAL_SIZE8>","<TOTAL_CHUNKS4>","<LAST_CHUNK_SIZE4>","<CRC32_8>","<CRC16_4>"
+    — 7 fields. Announces a large-data transfer: total_size is the size of the
+    whole structure being sent; total_chunks/last_chunk_size describe the AT#LD
+    framing.
+
+    There are two distinct CRCs here, covering two different things:
+      * CRC32 = IEEE (zlib.crc32) over the ENTIRE large-data blob. The device
+        stores it and, once every AT#LD chunk has arrived, recomputes the CRC32
+        over the staged blob to verify the whole transfer end-to-end (and to
+        forward it upstream over the mesh).
+      * CRC16 = CCITT-FALSE over the init metadata itself (this line's fields,
+        NOT the data) so the device can verify the init line arrived intact
+        over serial. It now also covers the CRC32 field, so a corrupted
+        whole-data CRC32 is caught here too.
+
+    CRC16 is taken over the metadata packed big-endian as
+    <SN:u64><ID:u16><TOTAL_SIZE:u32><TOTAL_CHUNKS:u16><LAST_CHUNK_SIZE:u16><CRC32:u32>,
+    matching crc16(0x1021, 0xFFFF, ...) in src/large_data.c cmd_ld_init()."""
+    if not (0 < total_size <= LARGE_DATA_MAX_TRANSFER):
+        raise ValueError(f"total_size must be 1..{LARGE_DATA_MAX_TRANSFER} bytes")
+    if not (0 < total_chunks <= 0xFFFF):
+        raise ValueError("total_chunks must be 1..0xFFFF")
+    if not (0 < last_chunk_size <= AT_LD_PAYLOAD_MAX):
+        raise ValueError(f"last_chunk_size must be 1..{AT_LD_PAYLOAD_MAX}")
+    meta = struct.pack(">QHIHHI", sn & 0xFFFFFFFFFFFFFFFF, data_id & 0xFFFF,
+                       total_size & 0xFFFFFFFF, total_chunks & 0xFFFF,
+                       last_chunk_size & 0xFFFF, data_crc32 & 0xFFFFFFFF)
+    crc16 = _crc16_ccitt(meta)
+    return (
+        '\r\nAT#LDINIT='
+        f'"{sn:016X}","{data_id:04X}","{total_size:08X}",'
+        f'"{total_chunks:04X}","{last_chunk_size:04X}",'
+        f'"{data_crc32 & 0xFFFFFFFF:08X}","{crc16:04X}"\r\n'
+    )
+
+
+def build_at_ld(sn: int, data_id: int, page: int, chunk: int, payload: bytes) -> str:
+    """AT#LD="<SN16>","<ID4>","<PAGE2>","<CHUNK2>","<CRC16_4>","<HEX>" — 6 fields,
+    one serial chunk of the large-data transfer announced by AT#LDINIT (matched
+    by the same SN + ID). CRC16 is CCITT-FALSE over the chunk payload. Payload is
+    hex-encoded and capped at AT_LD_PAYLOAD_MAX so the framed line fits the
+    firmware's 1024-byte SLM_UART_AT_COMMAND_LEN buffer."""
+    if not (0 < len(payload) <= AT_LD_PAYLOAD_MAX):
+        raise ValueError(f"payload must be 1..{AT_LD_PAYLOAD_MAX} bytes")
+    if not (0 <= data_id <= 0xFFFF):
+        raise ValueError("data_id must fit uint16 (0..0xFFFF)")
+    if not (0 <= page <= 0xFF) or not (0 <= chunk <= 0xFF):
+        raise ValueError("page/chunk must fit uint8 (0..255)")
+    crc16 = _crc16_ccitt(payload)
+    return (
+        '\r\nAT#LD='
+        f'"{sn:016X}","{data_id:04X}","{page:02X}","{chunk:02X}",'
+        f'"{crc16:04X}","{payload.hex().upper()}"\r\n'
+    )
+
+
+def iter_ld_chunks(blob: bytes, chunk_size: int = AT_LD_PAYLOAD_MAX):
+    """Yield (page, chunk, payload) splitting blob into <=chunk_size serial
+    chunks, indexed page/chunk (both uint8; chunk wraps every LD_CHUNKS_PER_PAGE,
+    incrementing page). Raises if the transfer needs more than 256 pages."""
+    n = (len(blob) + chunk_size - 1) // chunk_size
+    for i in range(n):
+        page, chunk = divmod(i, LD_CHUNKS_PER_PAGE)
+        if page > 0xFF:
+            raise ValueError(
+                f"transfer needs {n} chunks, exceeds {0x100 * LD_CHUNKS_PER_PAGE} "
+                f"addressable with uint8 page/chunk")
+        yield page, chunk, blob[i * chunk_size:(i + 1) * chunk_size]
 
 
 def parse_at_report(line: str) -> tuple[bool, str, Optional[dict]]:
@@ -647,19 +801,19 @@ class SensorState:
                 notes.append("command NO (no-op)")
             if "config_flags_raw" in decoded:
                 self.config_flags = decoded["config_flags_raw"]
-            info = decoded.get("config_info_3300")
-            if info is not None:
-                self.temp_max = info["temperature_max1"]
-                self.temp_min = info["temperature_min1"]
-                self.hum_max = info["humidity_max1"]
-                self.hum_min = info["humidity_min1"]
-                self.temp_max2 = info["temperature_max2"]
-                self.temp_min2 = info["temperature_min2"]
-                self.hum_max2 = info["humidity_max2"]
-                self.hum_min2 = info["humidity_min2"]
-                self.ultrasound_level_max = info["ultrasound_level_max"]
-                self.ultrasound_center_frequency = info["ultrasound_center_frequency"]
-                self.vibration_level_max = info["vibration_level_max"]
+            info = decoded.get("config_info_decoded") or decoded.get("config_info_3300")
+            if info:
+                self.temp_max = info.get("temperature_max1", self.temp_max)
+                self.temp_min = info.get("temperature_min1", self.temp_min)
+                self.hum_max = info.get("humidity_max1", self.hum_max)
+                self.hum_min = info.get("humidity_min1", self.hum_min)
+                self.temp_max2 = info.get("temperature_max2", self.temp_max2)
+                self.temp_min2 = info.get("temperature_min2", self.temp_min2)
+                self.hum_max2 = info.get("humidity_max2", self.hum_max2)
+                self.hum_min2 = info.get("humidity_min2", self.hum_min2)
+                self.ultrasound_level_max = info.get("ultrasound_level_max", self.ultrasound_level_max)
+                self.ultrasound_center_frequency = info.get("ultrasound_center_frequency", self.ultrasound_center_frequency)
+                self.vibration_level_max = info.get("vibration_level_max", self.vibration_level_max)
                 notes.append(f"thresholds T1[{self.temp_min}..{self.temp_max}]°C "
                              f"H1[{self.hum_min}..{self.hum_max}]% "
                              f"T2[{self.temp_min2}..{self.temp_max2}]°C "
@@ -679,6 +833,9 @@ class SerialIO:
         self.ser = serial.Serial(port=port, baudrate=baud, timeout=0.1, rtscts=rtscts)
         self.timeout_s = timeout_s
         self._wlock = threading.Lock()
+        # Terminal AT responses (OK/ERROR/#...) surfaced by the reader thread so
+        # flow-controlled senders (send_large_data) can pace on them.
+        self.resp_q: "queue.Queue[str]" = queue.Queue(maxsize=128)
         time.sleep(0.05)
         self.ser.reset_input_buffer()
 
@@ -954,7 +1111,17 @@ def config_reader(io: SerialIO, state: SensorState, stop_evt: threading.Event) -
         buf = bytearray(parts[-1], "ascii")
         for raw in parts[:-1]:
             line = raw.strip()
-            if not line or not line.startswith("AT#CONFIG="):
+            if not line:
+                continue
+            # Surface terminal responses (OK/ERROR/#...) so flow-controlled
+            # senders like send_large_data() can pace on them.
+            if line in ("OK", "ERROR") or line.startswith("#"):
+                try:
+                    io.resp_q.put_nowait(line)
+                except queue.Full:
+                    pass
+                continue
+            if not line.startswith("AT#CONFIG="):
                 continue
             ok, summary, parsed = parse_at_config(line)
             if not ok:
@@ -980,9 +1147,122 @@ def config_reader(io: SerialIO, state: SensorState, stop_evt: threading.Event) -
 # Main report loop
 # ---------------------------------------------------------------------------
 
+def make_dummy_sound_record(n: int) -> bytes:
+    """Generate an n-byte dummy 'sound record' payload — a 0..255 ramp, matching
+    the firmware's large-data test pattern (byte i = i & 0xFF)."""
+    if n <= 0:
+        return b""
+    if n > LARGE_DATA_MAX_TRANSFER:
+        raise ValueError(f"size {n} B exceeds max {LARGE_DATA_MAX_TRANSFER} B")
+    return bytes(i & 0xFF for i in range(n))
+
+
+def _ld_blob_from_args(args) -> bytes:
+    """Build the one-shot large-data blob from --send-ld FILE or --ld-bytes N.
+    Returns b'' if neither was given."""
+    if args.send_ld:
+        with open(args.send_ld, "rb") as f:
+            data = f.read()
+        if len(data) > LARGE_DATA_MAX_TRANSFER:
+            raise ValueError(f"large-data blob {len(data)} B exceeds max "
+                             f"{LARGE_DATA_MAX_TRANSFER} B")
+        return data
+    if args.ld_bytes > 0:
+        return make_dummy_sound_record(args.ld_bytes)
+    return b""
+
+
+def _drain_resp_q(io: SerialIO) -> None:
+    """Discard buffered AT responses so a stale OK/ERROR isn't mistaken for the
+    ack of the next line we send."""
+    try:
+        while True:
+            io.resp_q.get_nowait()
+    except queue.Empty:
+        pass
+
+
+def _await_ack(io: SerialIO, timeout_s: float) -> Optional[str]:
+    """Block until the device sends a TERMINAL response (OK/ERROR), discarding
+    any intermediate '#...' info lines (e.g. the '#LDINIT:' echo cmd_ld_init
+    emits before its OK). Returns the terminal token, or None on timeout.
+
+    Waiting for the terminal — not merely the first line — is what keeps
+    large-data strictly one-line-in-flight. If we returned on the '#LDINIT:'
+    echo, its trailing 'OK' would be left in the queue and instantly consumed
+    as the next chunk's ack, so the host would run a line ahead; two ~1 KB
+    AT#LD lines then coalesce in the firmware's RX ring buffer, get split at
+    the drain boundary, and wedge RX."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            tok = io.resp_q.get(timeout=remaining)
+        except queue.Empty:
+            return None
+        if tok in ("OK", "ERROR"):
+            return tok
+        # An informational '#...' line — keep waiting for the terminal token.
+
+
+def send_large_data(io: SerialIO, state: SensorState, blob: bytes,
+                    data_id: int = 1, ack_timeout_s: float = LD_ACK_TIMEOUT_S) -> None:
+    """Stream a binary blob to the sensor board: one AT#LDINIT announcing the
+    transfer, then a sequence of AT#LD serial chunks (<= AT_LD_PAYLOAD_MAX bytes
+    each), paged/chunked and per-chunk CRC16'd.
+
+    FLOW-CONTROLLED: waits for the device's response (OK/ERROR) after each line
+    before sending the next, so there is never more than one ~1 KB line in
+    flight. This is required — the firmware's AT RX buffer cannot absorb
+    back-to-back lines (it disables RX and wedges). If no response arrives
+    within ack_timeout_s we proceed anyway (degraded pacing)."""
+    total = len(blob)
+    if total == 0:
+        return
+    chunks = list(iter_ld_chunks(blob))
+    n = len(chunks)
+    last_chunk_size = len(chunks[-1][2])
+    data_crc32 = zlib.crc32(blob) & 0xFFFFFFFF
+    _drain_resp_q(io)
+
+    # 1) Announce the transfer, then wait for the device to consume it.
+    init_line = build_at_ldinit(state.sn, data_id, total, n, last_chunk_size,
+                                data_crc32)
+    io.write(init_line.encode("ascii", errors="replace"))
+    with state.lock:
+        state.last_at_command = (f">> AT#LDINIT id={data_id} total={total} "
+                                 f"chunks={n}")
+        state.last_response = f"large-data: init sent ({total} B, {n} chunks)"
+    render_dashboard(state)
+    _await_ack(io, ack_timeout_s)
+
+    # 2) Stream the chunks, one in flight at a time (wait for ack between each).
+    for i, (page, chunk, payload) in enumerate(chunks):
+        line = build_at_ld(state.sn, data_id, page, chunk, payload)
+        io.write(line.encode("ascii", errors="replace"))
+        ack = _await_ack(io, ack_timeout_s)
+        with state.lock:
+            state.last_at_command = (f">> AT#LD p{page:02X} c{chunk:02X} "
+                                     f"({len(payload)} B)")
+            state.last_response = (f"large-data: chunk {i + 1}/{n} "
+                                   f"[{ack or 'timeout'}]")
+        render_dashboard(state)
+
+    with state.lock:
+        state.last_response = f"large-data: done ({total} B in {n} chunks)"
+    render_dashboard(state)
+
+
 def run(io: SerialIO, state: SensorState, args, stop_evt: threading.Event) -> None:
     # data_id auto-increments per report; first send uses args.data_id.
     data_id = max(1, min(DATA_ID_MAX, args.data_id))
+
+    # One-shot large-data transfer on startup, if requested.
+    ld_blob = _ld_blob_from_args(args)
+    if ld_blob:
+        send_large_data(io, state, ld_blob, data_id=args.ld_data_id)
 
     now = time.monotonic()
     next_battery = now + args.battery_period
@@ -1083,8 +1363,16 @@ def main(argv: list[str]) -> int:
     p.add_argument("--gen-period", type=float, default=GEN_PERIOD_S,
                    help="seconds between reading regeneration (default 120)")
 
+    p.add_argument("--send-ld", metavar="FILE",
+                   help="send FILE as a one-shot AT#LD large-data transfer at startup")
+    p.add_argument("--ld-bytes", type=lambda s: int(s, 0), default=0,
+                   help="send N generated dummy bytes as a one-shot AT#LD transfer "
+                        "(0 = off; mutually exclusive with --send-ld)")
+    p.add_argument("--ld-data-id", type=lambda s: int(s, 0), default=1,
+                   help="data_id for the AT#LDINIT/AT#LD large-data transfer (default 1)")
     p.add_argument("--packed", action="store_true",
-                   help="treat the C structs as __packed (no alignment padding)")
+                   help="deprecated/no-op: the wire layout is now fixed (packed, "
+                        "fixed-width) and no longer compiler-dependent")
     p.add_argument("--skip-sn-check", action="store_true",
                    help="skip the startup AT#SN?/AT#SN= provisioning handshake")
     p.add_argument("--no-clear", action="store_true",
@@ -1110,9 +1398,6 @@ def main(argv: list[str]) -> int:
     if not (0 <= sn < (1 << 64)):
         sys.stderr.write("error: --sn out of range for uint64\n")
         return 2
-
-    global PACKED
-    PACKED = args.packed
 
     port = args.port or autodetect_port()
     if not port:

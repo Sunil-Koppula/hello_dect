@@ -388,7 +388,7 @@ static void anchor_report_tick(void)
 				nbtimeout_stop(&report_sender[sender_idx].timeout);
 				report_sender[sender_idx].active = false;
 			}
-			return;
+			continue;;
 		}
 
 		if (high_prio_report_count > 0) {
@@ -476,7 +476,7 @@ static void sensor_report_tick(void)
 				nbtimeout_stop(&report_sender[sender_idx].timeout);
 				report_sender[sender_idx].active = false;
 			}
-			return;
+			continue;
 		}
 
 		if (high_prio_report_count > 0) {
@@ -509,6 +509,7 @@ static void sensor_report_tick(void)
 		if (report_slot[idx].gen_device_id == 0 || report_slot[idx].data_id == 0 || report_slot[idx].total_size == 0 || report_slot[idx].chunk_count == 0) {
 			LOG_WRN("Invalid report details in slot %d, gen_device_id %d data_id %d prio %d", idx, report_slot[idx].gen_device_id, report_slot[idx].data_id, report_slot[idx].priority);
 			update_report_count(report_slot[idx].priority, false);
+			report_slot_free(idx, -1);
 			return;
 		}
 
@@ -875,7 +876,12 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 				// If status is not found, resend the report init
 				if (pkt->hdr.status == STATUS_NOT_FOUND || pkt->hdr.status == STATUS_RESOURCE_UNAVAILABLE || pkt->hdr.status == STATUS_CRC_FAIL) {
 					LOG_WRN("Received REPORT_CHUNK_ACK with NOT_FOUND, RESOURCE_UNAVAILABLE, or CRC_FAIL, resending REPORT_INIT");
-					report_slot[pkt->chunk_index].is_sent = false;
+					int idx = find_slot(report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+					if (idx < 0) {
+						LOG_ERR("No active slot found for gen %d data_id %d on chunk ack error, this should not happen", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+						return;
+					}
+					report_slot[idx].is_sent = false;
 					report_sender[sender_idx].active = false;
 					return;
 				} else if (pkt->hdr.status == STATUS_FAILURE || pkt->hdr.status == STATUS_INVALID_PARAMETER) {
@@ -884,8 +890,13 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 				}
 				// Send next chunk if status is success
 				if (send_next_chunk(dst_id, pkt->hdr.device_type, sender_idx) != 0) {
-					report_slot_free(find_slot(report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id), sender_idx);
 					report_sender[sender_idx].active = false;
+					int idx = find_slot(report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+					if (idx < 0) {
+						LOG_ERR("No active slot found for gen %d data_id %d on chunk ack error, this should not happen", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+						return;
+					}
+					report_slot[idx].is_sent = false;
 				}
 			} else {
 				// Reject report chunk ack except from gateway and anchor
