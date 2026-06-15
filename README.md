@@ -186,7 +186,7 @@ Partition capacity is checked at compile time via `_Static_assert`.
 | Tracker | `0x000000` | 32 KB | Retry payloads |
 | Config | `0x008000` | 80 KB | Config slot staging |
 | Data | `0x100000` | 1 MB | Small report slots (≤ 256 B) |
-| Large data | `0x200000` | 6 MB | Large-transfer slots (4 KB pages) |
+| Large data | `0x200000` | 6 MB | Large-transfer slots (20-chunk pages, 3,600 B each) |
 
 ---
 
@@ -249,7 +249,9 @@ Build (full build first time, incremental thereafter):
 west build -d build --board nrf9151dk/nrf9151/ns --sysbuild .
 ```
 
-The merged image is produced at `build/merged.hex`.
+This is a **non-secure (`ns`) sysbuild**: the app is the non-secure image, and sysbuild also
+builds the **TF-M** secure firmware and the **MCUboot** bootloader as child images. The three are
+combined into the merged image at `build/merged.hex`.
 
 ---
 
@@ -296,7 +298,7 @@ Python utilities under `tools/` talk to a Gateway over the AT UART (UART1):
 | `gateway_gui.py` | GUI for monitoring the gateway / mesh. |
 | `sensor_gui.py` | GUI representing a sensor endpoint. |
 | `sensor_sim.py` | Sensor traffic simulator. |
-| `sensor_structure.c` / `config.bin` | Reference report/config payload structures. |
+| `sensor_structure.c` / `config.bin` | Shared application-layer payload schema (report/config/large-data structures for sensor types `0x3100`–`0x3300`), mirrored by the Python tools. |
 
 ---
 

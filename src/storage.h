@@ -16,7 +16,7 @@
  *   Offset 0x00080, 1KB — stored by Gateway + Anchor
  *
  * Partition 3: Mesh network table (full topology)
- *   Offset 0x03480, 12KB — stored by Gateway only
+ *   Offset 0x00480, 12KB — stored by Gateway only
  *
  * Each partition starts with a 4-byte header:
  *   [0-1] magic (0xDE, 0xC7)

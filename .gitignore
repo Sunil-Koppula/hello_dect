@@ -1,7 +1,9 @@
-#Build
+# Build
 /build/
 
+# PowerShell build scripts
 .program.ps1/
+.build.ps1/
 
 # Python Cache
 tools/__pycache__/
