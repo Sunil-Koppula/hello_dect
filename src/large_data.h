@@ -18,7 +18,7 @@
 #define SOUND_RECORD_DATA_MAX_SIZE              (200 * 1024)  /* 200KB max sound record size */
 #define LARGE_DATA_MAX_TRANSFER_SIZE            (SOUND_RECORD_DATA_MAX_SIZE + 64) /* some buffer for metadata */
 #define LARGE_DATA_SLOT_TIMEOUT_MS              (30 * 1000)  /* free slot if idle this long */
-#define PACKET_LARGE_DATA_TIMEOUT_MS            (100) /* 100ms timeout for waiting ACKs before retrying */
+#define PACKET_LARGE_DATA_TIMEOUT_MS            (70) /* 70ms timeout for waiting ACKs before retrying */
 #define LD_SENDER_TIMEOUT_MS                    (3 * 60 * 1000) /* 3 minutes timeout for sender to wait for transfer completion before giving up */
 
 #define LD_CRC_VERIFY_STAGE_SIZE                1024  /* Read and process data in 1KB stages for CRC verification */

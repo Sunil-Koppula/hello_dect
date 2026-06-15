@@ -243,6 +243,55 @@ static void default_button1_handler(void)
 	}
 }
 
+static void create_ld(uint32_t size, uint16_t data_id, int *idx_out)
+{
+	int idx = alloc_large_data_slot(size);
+	if (idx < 0) {
+		LOG_WRN("No free large data slot available");
+		*idx_out = -1;
+		return;
+	}
+
+	ld_slot[idx].active = true;
+	ld_slot[idx].upstream_ready = false;
+	ld_slot[idx].is_sent = false;
+	ld_slot[idx].is_transfered = false;
+	ld_slot[idx].priority = PACKET_PRIORITY_HIGH;
+	ld_slot[idx].gen_device_id = get_device_id();
+	ld_slot[idx].data_id = data_id; // For testing, use the provided data_id
+	ld_slot[idx].total_size = size;
+	ld_slot[idx].page_count = (size + SEND_DATA_MAX * 20 - 1) / (SEND_DATA_MAX * 20); // Each page has 20 chunks
+	ld_slot[idx].last_chunk_size = size % SEND_DATA_MAX == 0 ? SEND_DATA_MAX : size % SEND_DATA_MAX;
+	ld_slot[idx].total_chunks = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
+	ld_slot[idx].crc32 = 0; // Will be calculated in the button handler for testing
+	ld_slot[idx].received_count = 0;
+
+	uint8_t chunk[1024];
+	uint32_t written = 0;
+
+	while (written < size) {
+		uint32_t n = MIN((uint32_t)sizeof(chunk), size - written);
+		for (uint32_t i = 0; i < n; i++) {
+			chunk[i] = (uint8_t)((written + i) & 0xFF);
+		}
+		if (written == 0) {
+			ld_slot[idx].crc32 = crc32_ieee((const uint8_t *)chunk, n);
+		} else {
+			ld_slot[idx].crc32 = crc32_ieee_update(ld_slot[idx].crc32, (const uint8_t *)chunk, n);
+		}
+		int err = psram_write(ld_slot[idx].base_addr + written, chunk, n);
+		if (err) {
+			LOG_ERR("psram_write @0x%06x failed (%d)", ld_slot[idx].base_addr + written, err);
+			ld_slot[idx].active = false;
+			*idx_out = -1;
+			return;
+		}
+		written += n;
+	}
+	*idx_out = idx;
+	LOG_INF("Large data of size %u bytes written to PSRAM at 0x%06x for slot %d, CRC32=0x%08x", size, ld_slot[idx].base_addr, idx, ld_slot[idx].crc32);
+}
+
 static void default_button2_handler(void)
 {
 	LOG_WRN("Config Button pressed");
@@ -341,49 +390,22 @@ static void default_button2_handler(void)
 		LOG_WRN("Large Data Button pressed");
 		// For testing, always use slot 0 and send large data to gateway
 		uint32_t size = 100 * 1024;
-		int idx = alloc_large_data_slot(size);
-		if (idx < 0) {
-			LOG_WRN("No free large data slot available");
+		int idx_1, idx_2;
+
+		create_ld(size, 0x01, &idx_1);
+		if (idx_1 < 0) {
+			LOG_WRN("Failed to create large data");
 			return;
 		}
 
-		ld_slot[idx].active = true;
-		ld_slot[idx].upstream_ready = false;
-    	ld_slot[idx].is_sent = false;
-    	ld_slot[idx].is_transfered = false;
-		ld_slot[idx].priority = PACKET_PRIORITY_HIGH;
-		ld_slot[idx].gen_device_id = get_device_id();
-		ld_slot[idx].data_id = 1; // For testing, use data_id 1
-		ld_slot[idx].total_size = size;
-		ld_slot[idx].page_count = (size + SEND_DATA_MAX * 20 - 1) / (SEND_DATA_MAX * 20); // Each page has 20 chunks
-		ld_slot[idx].last_chunk_size = size % SEND_DATA_MAX == 0 ? SEND_DATA_MAX : size % SEND_DATA_MAX;
-		ld_slot[idx].total_chunks = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
-		ld_slot[idx].crc32 = 0; // Will be calculated in the button handler for testing
-		ld_slot[idx].received_count = 0;
-
-		uint8_t chunk[1024];
-		uint32_t written = 0;
-
-		while (written < size) {
-			uint32_t n = MIN((uint32_t)sizeof(chunk), size - written);
-			for (uint32_t i = 0; i < n; i++) {
-				chunk[i] = (uint8_t)((written + i) & 0xFF);
-			}
-			if (written == 0) {
-				ld_slot[idx].crc32 = crc32_ieee((const uint8_t *)chunk, n);
-			} else {
-				ld_slot[idx].crc32 = crc32_ieee_update(ld_slot[idx].crc32, (const uint8_t *)chunk, n);
-			}
-			int err = psram_write(ld_slot[idx].base_addr + written, chunk, n);
-			if (err) {
-				LOG_ERR("psram_write @0x%06x failed (%d)", ld_slot[idx].base_addr + written, err);
-				ld_slot[idx].active = false;
-				return;
-			}
-			written += n;
+		create_ld(size, 0x02, &idx_2);
+		if (idx_2 < 0) {
+			LOG_WRN("Failed to create large data");
+			return;
 		}
-		LOG_INF("Large data of size %u bytes written to PSRAM at 0x%06x for slot %d, CRC32=0x%08x", size, ld_slot[idx].base_addr, idx, ld_slot[idx].crc32);
-		ld_slot[idx].upstream_ready = true;
+
+		ld_slot[idx_1].upstream_ready = true;
+		ld_slot[idx_2].upstream_ready = true;
 	}
 }
 
