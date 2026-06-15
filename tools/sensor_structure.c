@@ -92,6 +92,78 @@ typedef enum
     SENSOR_CONFIG_CMD_OTA = (1 << 7)
 } sensor_config_cmd_t;
 
+#pragma pack(push, 1)
+
+typedef struct
+{
+    int16_t temperature1; // Minimum value: -32,768 / 100 = -327.68 degrees - Maximum value: 32,767 / 100 = 327.67 degrees
+    uint16_t humidity1;   // Minimum value: 0 / 100 = 0% - Maximum value: 65,535 / 100 = 655.35%
+    uint16_t vibration_level;
+    uint8_t vibration_frequency;
+} sensor_report_info_3100_t;
+
+typedef struct
+{
+    int16_t temperature1;
+    uint16_t humidity1;
+    int16_t temperature2;
+    uint16_t humidity2;
+    uint16_t vibration_level;
+    uint8_t vibration_frequency;
+} sensor_report_info_3101_t;
+
+typedef struct
+{
+    int16_t temperature1;
+    uint16_t humidity1;
+    uint16_t gas1;
+    uint16_t gas2;
+    uint16_t gas3;
+    uint16_t vibration_level;
+    uint8_t vibration_frequency;
+} sensor_report_info_3102_t;
+
+typedef struct
+{
+    int16_t temperature1;
+    uint16_t humidity1;
+    int16_t temperature2;
+    uint16_t humidity2;
+    uint16_t vibration_level;
+    uint8_t vibration_frequency;
+} sensor_report_info_3103_t;
+
+typedef struct
+{
+    int16_t temperature1;
+    uint16_t humidity1;
+    int16_t temperature2;
+    uint16_t humidity2;
+    uint16_t current;           // Minimum value: 0 A - Maximum value: 65535 A
+    uint16_t vibration_level;
+    uint8_t vibration_frequency;
+} sensor_report_info_3104_t;
+
+typedef struct
+{
+    int16_t temperature1;
+    uint16_t humidity1;
+    int16_t temperature2;
+    uint16_t humidity2;
+    uint16_t ultrasound_level;
+    uint8_t ultrasound_frequency;
+    uint16_t vibration_level;
+    uint8_t vibration_frequency;
+} sensor_report_info_3105_t;
+
+typedef struct
+{
+    int16_t temperature1;
+    uint16_t humidity1;
+    uint16_t ultrasound_level;
+    uint8_t ultrasound_frequency;
+} sensor_report_info_3200_t;
+
 typedef struct
 {
     int16_t temperature1;
@@ -103,6 +175,100 @@ typedef struct
     uint16_t vibration_level;
     uint8_t vibration_frequency;
 } sensor_report_info_3300_t;
+
+typedef struct
+{
+    int8_t temperature_max1;
+    int8_t temperature_min1;
+    uint8_t humidity_max1;
+    uint8_t humidity_min1;
+    uint16_t vibration_level_max;
+    uint8_t  random_number;
+} sensor_config_info_3100_t;
+
+typedef struct
+{
+    int8_t temperature_max1;
+    int8_t temperature_min1;
+    uint8_t humidity_max1;
+    uint8_t humidity_min1;
+    int8_t temperature_max2;
+    int8_t temperature_min2;
+    uint8_t humidity_max2;
+    uint8_t humidity_min2;
+    uint16_t vibration_level_max;
+    uint8_t  random_number;
+} sensor_config_info_3101_t;
+
+typedef struct
+{
+    int8_t temperature_max1;
+    int8_t temperature_min1;
+    uint8_t humidity_max1;
+    uint8_t humidity_min1;
+    uint16_t gas1_max;
+    uint16_t gas2_max;
+    uint16_t gas3_max;
+    uint16_t vibration_level_max;
+    uint8_t  random_number;
+} sensor_config_info_3102_t;
+
+typedef struct
+{
+    int8_t temperature_max1;
+    int8_t temperature_min1;
+    uint8_t humidity_max1;
+    uint8_t humidity_min1;
+    int8_t temperature_max2;
+    int8_t temperature_min2;
+    uint8_t humidity_max2;
+    uint8_t humidity_min2;
+    uint16_t vibration_level_max;
+    uint8_t  random_number;
+} sensor_config_info_3103_t;
+
+typedef struct
+{
+    int8_t temperature_max1;
+    int8_t temperature_min1;
+    uint8_t humidity_max1;
+    uint8_t humidity_min1;
+    int8_t temperature_max2;
+    int8_t temperature_min2;
+    uint8_t humidity_max2;
+    uint8_t humidity_min2;
+    uint16_t current_max;
+    uint16_t current_min;
+    uint16_t vibration_level_max;
+    uint8_t  random_number;
+} sensor_config_info_3104_t;
+
+typedef struct
+{
+    int8_t temperature_max1;
+    int8_t temperature_min1;
+    uint8_t humidity_max1;
+    uint8_t humidity_min1;
+    int8_t temperature_max2;
+    int8_t temperature_min2;
+    uint8_t humidity_max2;
+    uint8_t humidity_min2;
+    uint16_t ultrasound_level_max;
+    uint8_t  ultrasound_center_frequency;
+    uint16_t vibration_level_max;
+    uint8_t  random_number;
+} sensor_config_info_3105_t;
+
+typedef struct
+{
+    int8_t temperature_max1;
+    int8_t temperature_min1;
+    uint8_t humidity_max1;
+    uint8_t humidity_min1;
+    uint16_t ultrasound_level_max;
+    uint8_t  ultrasound_center_frequency;
+    uint8_t  random_number;
+} sensor_config_info_3200_t;
 
 typedef struct
 {
@@ -132,10 +298,17 @@ typedef struct
     uint16_t report_crc16;            // covers the fixed header above
     union
     {   uint8_t  report_info[SENSOR_REPORT_INFO_MAX];    // Maximum bytes in reported data = 16
+        sensor_report_info_3100_t report_info_3100;
+        sensor_report_info_3101_t report_info_3101;
+        sensor_report_info_3102_t report_info_3102;
+        sensor_report_info_3103_t report_info_3103;
+        sensor_report_info_3104_t report_info_3104;
+        sensor_report_info_3105_t report_info_3105;
+        sensor_report_info_3200_t report_info_3200;
         sensor_report_info_3300_t report_info_3300;
     };
 
-} __attribute__((packed)) sensor_data_structure_t;
+} sensor_data_structure_t;
 
 typedef struct
 {
@@ -149,10 +322,17 @@ typedef struct
     uint16_t config_crc16;            // covers the fixed header above
     union
     {   uint8_t  config_info[SENSOR_CONFIG_INFO_MAX];
+        sensor_report_info_3100_t report_info_3100;
+        sensor_report_info_3101_t report_info_3101;
+        sensor_report_info_3102_t report_info_3102;
+        sensor_report_info_3103_t report_info_3103;
+        sensor_report_info_3104_t report_info_3104;
+        sensor_report_info_3105_t report_info_3105;
+        sensor_report_info_3200_t report_info_3200;
         sensor_config_info_3300_t config_info_3300;
     };
 
-} __attribute__((packed)) sensor_config_structure_t;
+} sensor_config_structure_t;
 
 typedef struct
 {
@@ -168,7 +348,9 @@ typedef struct
         uint8_t  data_info[SENSOR_LARGE_DATA_INFO_MAX + SENSOR_REPORT_INFO_MAX];    // Maximum bytes in reported data = 16
         sensor_large_data_info_3300_t data_info_3300;
     };
-} __attribute__((packed)) sensor_large_data_structure_t;
+} sensor_large_data_structure_t;
+
+#pragma pack(pop)
 
 /*
  * Layout guards — lock the on-wire size of each structure. The fixed-header

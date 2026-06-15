@@ -162,6 +162,39 @@ int button_register_handler(int idx, button_handler_t handler)
 	return 0;
 }
 
+static int alloc_large_data_slot(uint32_t size)
+{
+    int idx;
+    for (idx = 0; idx < LARGE_DATA_RECEIVER_SLOT_COUNT; idx++) {
+        if (!ld_slot[idx].active) {
+            break;
+        }
+    }
+    if (idx >= LARGE_DATA_RECEIVER_SLOT_COUNT) {
+        LOG_WRN("alloc_large_data_slot: no free receiver slot");
+        return -1;
+    }
+    uint16_t available_slots = 0;
+    for (int i = 0; i < LARGE_DATA_SLOT_COUNT; i++) {
+        if (is_ld_slot_empty[i]) {
+            available_slots++;
+            if (available_slots * SEND_DATA_MAX >= size) {
+                // Mark these slots as used
+                for (int j = i - available_slots + 1; j <= i; j++) {
+                    is_ld_slot_empty[j] = false;
+                }
+                ld_slot[idx].active = true;
+                ld_slot[idx].base_addr = LARGE_DATA_PSRAM_BASE + (i - available_slots + 1) * SEND_DATA_MAX;
+                LOG_INF("Allocated large data slot %d (PSRAM 0x%06x-0x%06x) for size %u bytes", idx, ld_slot[idx].base_addr, ld_slot[idx].base_addr + available_slots * SEND_DATA_MAX - 1, size);
+                return idx;
+            }
+        } else {
+            available_slots = 0;
+        }
+    }
+    return -1;
+}
+
 static void default_button0_handler(void)
 {
 	LOG_WRN("Factory Reset Button pressed");
@@ -307,6 +340,50 @@ static void default_button2_handler(void)
 	} else if (get_device_type() == DEVICE_TYPE_SENSOR) {
 		LOG_WRN("Large Data Button pressed");
 		// For testing, always use slot 0 and send large data to gateway
+		uint32_t size = 100 * 1024;
+		int idx = alloc_large_data_slot(size);
+		if (idx < 0) {
+			LOG_WRN("No free large data slot available");
+			return;
+		}
+
+		ld_slot[idx].active = true;
+		ld_slot[idx].upstream_ready = false;
+    	ld_slot[idx].is_sent = false;
+    	ld_slot[idx].is_transfered = false;
+		ld_slot[idx].priority = PACKET_PRIORITY_HIGH;
+		ld_slot[idx].gen_device_id = get_device_id();
+		ld_slot[idx].data_id = 1; // For testing, use data_id 1
+		ld_slot[idx].total_size = size;
+		ld_slot[idx].page_count = (size + SEND_DATA_MAX * 20 - 1) / (SEND_DATA_MAX * 20); // Each page has 20 chunks
+		ld_slot[idx].last_chunk_size = size % SEND_DATA_MAX == 0 ? SEND_DATA_MAX : size % SEND_DATA_MAX;
+		ld_slot[idx].total_chunks = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
+		ld_slot[idx].crc32 = 0; // Will be calculated in the button handler for testing
+		ld_slot[idx].received_count = 0;
+
+		uint8_t chunk[1024];
+		uint32_t written = 0;
+
+		while (written < size) {
+			uint32_t n = MIN((uint32_t)sizeof(chunk), size - written);
+			for (uint32_t i = 0; i < n; i++) {
+				chunk[i] = (uint8_t)((written + i) & 0xFF);
+			}
+			if (written == 0) {
+				ld_slot[idx].crc32 = crc32_ieee((const uint8_t *)chunk, n);
+			} else {
+				ld_slot[idx].crc32 = crc32_ieee_update(ld_slot[idx].crc32, (const uint8_t *)chunk, n);
+			}
+			int err = psram_write(ld_slot[idx].base_addr + written, chunk, n);
+			if (err) {
+				LOG_ERR("psram_write @0x%06x failed (%d)", ld_slot[idx].base_addr + written, err);
+				ld_slot[idx].active = false;
+				return;
+			}
+			written += n;
+		}
+		LOG_INF("Large data of size %u bytes written to PSRAM at 0x%06x for slot %d, CRC32=0x%08x", size, ld_slot[idx].base_addr, idx, ld_slot[idx].crc32);
+		ld_slot[idx].upstream_ready = true;
 	}
 }
 

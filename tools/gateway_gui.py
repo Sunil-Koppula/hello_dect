@@ -370,10 +370,9 @@ def main(argv: list[str]) -> int:
                    "startup via AT#SN?/AT#SN= before the GUI opens")
     p.add_argument("--skip-sn-check", action="store_true",
                    help="skip the gateway SN provisioning handshake")
-    p.add_argument("--packed", action="store_true")
+    p.add_argument("--packed", action="store_true",
+                   help="deprecated/no-op: the wire layout is now fixed (packed)")
     args = p.parse_args(argv)
-
-    sim.PACKED = args.packed
 
     port = args.port or sim.autodetect_port()
     if not port:

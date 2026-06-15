@@ -19,7 +19,6 @@
 LOG_MODULE_REGISTER(large_data, CONFIG_LARGE_DATA_LOG_LEVEL);
 
 static uint8_t crc_stage[LD_CRC_VERIFY_STAGE_SIZE];
-#define CRC_VERIFY_STAGE_SIZE 256
 
 struct large_data_sender ld_sender[4]; // support up to 4 concurrent sending transfers
 bool is_ld_slot_empty[LARGE_DATA_SLOT_COUNT];    /* Track empty slots */
@@ -178,6 +177,7 @@ static int large_data_verify_crc32(int idx)
     uint32_t bytes_remaining = ld_slot[idx].total_size;
     uint32_t offset = 0;
     bool first_stage = true;
+    LOG_INF("Starting CRC verification for gen %d data_id %d, total_size %u bytes", ld_slot[idx].gen_device_id, ld_slot[idx].data_id, ld_slot[idx].total_size);
 
     while (bytes_remaining > 0) {
         uint16_t n = (bytes_remaining > LD_CRC_VERIFY_STAGE_SIZE) ? LD_CRC_VERIFY_STAGE_SIZE : bytes_remaining;
@@ -234,32 +234,9 @@ static uint8_t validate_large_data_chunk(const large_data_chunk_t *pkt)
 
     // Validate CRC and check all chunks received when received_count matches total_chunks, to handle out-of-order chunk reception
     if (ld_slot[idx].received_count >= ld_slot[idx].total_chunks) {
-        // All chunks received, verify CRC
-        uint32_t crc = 0;
-        uint32_t bytes_remaining = ld_slot[idx].total_size;
-        uint16_t offset = 0;
-        bool first_stage = true;
-
-        while (bytes_remaining > 0) {
-            uint16_t n = (bytes_remaining > CRC_VERIFY_STAGE_SIZE) ? CRC_VERIFY_STAGE_SIZE : bytes_remaining;
-            int err = psram_read(ld_slot[idx].base_addr + offset, crc_stage, n);
-            if (err) {
-                LOG_ERR("Transfer complete but psram_read @0x%06x failed (%d), freeing slot", ld_slot[idx].base_addr + offset, err);
-                free_large_data_slot(idx, -1);
-                return STATUS_CRC_FAIL;
-            }
-            crc = first_stage ? crc32_ieee(crc_stage, n) : crc32_ieee_update(crc, crc_stage, n);
-            first_stage = false;
-            offset += n;
-            bytes_remaining -= n;
-        }
-
-        if (crc == ld_slot[idx].crc32) {
-            LOG_INF("CRC match for gen %d data_id %d, transfer complete", pkt->gen_device_id, pkt->data_id);
-            ld_slot[idx].upstream_ready = true;
-            nbtimeout_stop(&ld_slot[idx].idle_timeout);
-        } else {
-            LOG_ERR("CRC mismatch for gen %d data_id %d: expected 0x%08x computed 0x%08x, freeing slot", pkt->gen_device_id, pkt->data_id, ld_slot[idx].crc32, crc);
+        int err = large_data_verify_crc32(idx);
+        if (err != 0) {
+            LOG_ERR("CRC verification failed for gen %d data_id %d after receiving all chunks, aborting transfer", ld_slot[idx].gen_device_id, ld_slot[idx].data_id);
             free_large_data_slot(idx, -1);
             return STATUS_CRC_FAIL;
         }
@@ -342,6 +319,7 @@ static void anchor_large_data_tick(void)
         ld_sender[sender_idx].total_chunks = ld_slot[idx].total_chunks;
         ld_sender[sender_idx].next_chunk = 0;
         ld_sender[sender_idx].crc32 = ld_slot[idx].crc32;
+        ld_sender[sender_idx].base_addr = ld_slot[idx].base_addr;
 
         large_data_init_t init_pkt = {
             .gen_device_id = ld_sender[sender_idx].gen_device_id,
@@ -419,6 +397,7 @@ static void sensor_large_data_tick(void)
         ld_sender[sender_idx].total_chunks = ld_slot[idx].total_chunks;
         ld_sender[sender_idx].next_chunk = 0;
         ld_sender[sender_idx].crc32 = ld_slot[idx].crc32;
+        ld_sender[sender_idx].base_addr = ld_slot[idx].base_addr;
 
         large_data_init_t init_pkt = {
             .gen_device_id = ld_sender[sender_idx].gen_device_id,
@@ -1004,10 +983,10 @@ void cmd_ld_init(const char *args)
     nbtimeout_init(&ld_slot[idx].idle_timeout, LARGE_DATA_SLOT_TIMEOUT_MS, 0);
     nbtimeout_start(&ld_slot[idx].idle_timeout);
 
-    LOG_INF("AT#LDINIT accepted: sn=0x%016llx id=%u total=%u chunks=%u last=%u crc32=0x%08x (PSRAM 0x%06x)",
+    LOG_INF("AT#LDINIT accepted: sn=0x%016llx id=%u total=%u chunks=%u last=%u crc32=0x%08x (PSRAM 0x%06x and slot %d)",
             (unsigned long long)v_sn, ld_slot[idx].data_id, ld_slot[idx].total_size,
             ld_slot[idx].total_chunks, ld_slot[idx].last_chunk_size, ld_slot[idx].crc32,
-            ld_slot[idx].base_addr);
+            ld_slot[idx].base_addr, idx);
 
     char resp[96];
     snprintf(resp, sizeof(resp), "#LDINIT:\"0x%016llx\",\"%u\",\"%u\",\"%u\"",

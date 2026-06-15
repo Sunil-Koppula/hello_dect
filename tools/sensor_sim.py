@@ -198,39 +198,95 @@ def _config_fmt() -> str:
             f"{SENSOR_CONFIG_INFO_MAX}s")  # config_info union
 
 
-def _report_info_3300_fmt(packed: bool) -> str:
-    """struct format for sensor_report_info_3300_t inside the report_info union.
+# ---------------------------------------------------------------------------
+# Per-type report_info / config_info layouts (sensor_report_info_<type>_t and
+# sensor_config_info_<type>_t in sensor_structure.c). Every struct sits inside
+# a #pragma pack(push, 1) block, so the layout is fully packed (no internal
+# padding) and simply zero-filled out to the 16-byte union.
+#
+# Each field is (name, struct_code, scale): scale 100 means the raw integer is
+# hundredths (temperatures °C / humidities %RH); scale 1 is a raw count.
+# ---------------------------------------------------------------------------
 
-    Layout: temperature1(i16), humidity1(u16), temperature2(i16), humidity2(u16),
-    ultrasound_level(u16), ultrasound_frequency(u8), vibration_level(u16),
-    vibration_frequency(u8). Under natural alignment a pad byte precedes
-    vibration_level (u16 alignment) and one trails the struct -> 16 bytes; packed
-    is 14 bytes. Either way it sits in the 16-byte report_info union."""
-    fmt = "<hHhHHB"                   # temp1, hum1, temp2, hum2, us_level, us_freq
-    if not packed:
-        fmt += "x"                    # align vibration_level (u16)
-    fmt += "HB"                       # vibration_level, vibration_freq
-    if not packed:
-        fmt += "x"                    # trailing struct pad -> 16 bytes
-    return fmt
+# Reusable report_info fields.
+_R_T1 = ("temperature1", "h", 100)
+_R_H1 = ("humidity1", "H", 100)
+_R_T2 = ("temperature2", "h", 100)
+_R_H2 = ("humidity2", "H", 100)
+_R_UL = ("ultrasound_level", "H", 1)
+_R_UF = ("ultrasound_frequency", "B", 1)
+_R_VL = ("vibration_level", "H", 1)
+_R_VF = ("vibration_frequency", "B", 1)
+
+REPORT_INFO_LAYOUT = {
+    0x3100: [_R_T1, _R_H1, _R_VL, _R_VF],
+    0x3101: [_R_T1, _R_H1, _R_T2, _R_H2, _R_VL, _R_VF],
+    0x3102: [_R_T1, _R_H1, ("gas1", "H", 1), ("gas2", "H", 1), ("gas3", "H", 1),
+             _R_VL, _R_VF],
+    0x3103: [_R_T1, _R_H1, _R_T2, _R_H2, _R_VL, _R_VF],
+    0x3104: [_R_T1, _R_H1, _R_T2, _R_H2, ("current", "H", 1), _R_VL, _R_VF],
+    0x3105: [_R_T1, _R_H1, _R_T2, _R_H2, _R_UL, _R_UF, _R_VL, _R_VF],
+    0x3200: [_R_T1, _R_H1, _R_UL, _R_UF],
+    0x3300: [_R_T1, _R_H1, _R_T2, _R_H2, _R_UL, _R_UF, _R_VL, _R_VF],
+}
+
+# Reusable config_info fields.
+_C_TMX1 = ("temperature_max1", "b", 1)
+_C_TMN1 = ("temperature_min1", "b", 1)
+_C_HMX1 = ("humidity_max1", "B", 1)
+_C_HMN1 = ("humidity_min1", "B", 1)
+_C_TMX2 = ("temperature_max2", "b", 1)
+_C_TMN2 = ("temperature_min2", "b", 1)
+_C_HMX2 = ("humidity_max2", "B", 1)
+_C_HMN2 = ("humidity_min2", "B", 1)
+_C_ULMX = ("ultrasound_level_max", "H", 1)
+_C_UCF = ("ultrasound_center_frequency", "B", 1)
+_C_VMX = ("vibration_level_max", "H", 1)
+_C_RND = ("random_number", "B", 1)
+
+CONFIG_INFO_LAYOUT = {
+    0x3100: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_VMX, _C_RND],
+    0x3101: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             _C_VMX, _C_RND],
+    0x3102: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, ("gas1_max", "H", 1),
+             ("gas2_max", "H", 1), ("gas3_max", "H", 1), _C_VMX, _C_RND],
+    0x3103: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             _C_VMX, _C_RND],
+    0x3104: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             ("current_max", "H", 1), ("current_min", "H", 1), _C_VMX, _C_RND],
+    0x3105: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             _C_ULMX, _C_UCF, _C_VMX, _C_RND],
+    0x3200: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_ULMX, _C_UCF, _C_RND],
+    0x3300: [_C_TMX1, _C_TMN1, _C_HMX1, _C_HMN1, _C_TMX2, _C_TMN2, _C_HMX2, _C_HMN2,
+             _C_ULMX, _C_UCF, _C_VMX, _C_RND],
+}
 
 
-def _config_info_3300_fmt(packed: bool) -> str:
-    """struct format for sensor_config_info_3300_t inside the config_info union.
+def _info_fmt(layout) -> str:
+    """Little-endian, fully packed struct format for an info layout."""
+    return "<" + "".join(code for _, code, _ in layout)
 
-    Layout: temperature_max1/min1(i8), humidity_max1/min1(u8),
-    temperature_max2/min2(i8), humidity_max2/min2(u8), ultrasound_level_max(u16),
-    ultrasound_center_frequency(u8), vibration_level_max(u16), random_number(u8).
-    Under natural alignment a pad byte precedes vibration_level_max and one
-    trails the struct -> 16 bytes; packed is 14 bytes."""
-    fmt = "<bbBBbbBB"                 # t/h max/min for channels 1 and 2 (8 bytes)
-    fmt += "HB"                       # ultrasound_level_max, ultrasound_center_freq
-    if not packed:
-        fmt += "x"                    # align vibration_level_max (u16)
-    fmt += "HB"                       # vibration_level_max, random_number
-    if not packed:
-        fmt += "x"                    # trailing struct pad -> 16 bytes
-    return fmt
+
+def _decode_info(layout, data: bytes) -> dict:
+    """Unpack the leading bytes of an info union per `layout`, applying scales."""
+    fmt = _info_fmt(layout)
+    vals = struct.unpack(fmt, data[:struct.calcsize(fmt)])
+    out = {}
+    for (name, _code, scale), v in zip(layout, vals):
+        out[name] = (v / 100.0) if scale == 100 else v
+    return out
+
+
+def _report_info_3300_fmt() -> str:
+    """Packed struct format for sensor_report_info_3300_t (the 14-byte 3300
+    report_info; zero-padded out to the 16-byte report_info union)."""
+    return _info_fmt(REPORT_INFO_LAYOUT[0x3300])
+
+
+def _config_info_3300_fmt() -> str:
+    """Packed struct format for sensor_config_info_3300_t (14 bytes, zero-padded
+    out to the 16-byte config_info union)."""
+    return _info_fmt(CONFIG_INFO_LAYOUT[0x3300])
 
 
 def _crc16_ccitt(data: bytes, init: int = 0xFFFF) -> int:
@@ -265,7 +321,7 @@ def build_report_info_3300(*, temperature1: float, humidity1: float,
     vibration levels are raw uint16 and their frequencies raw uint8. Zero-padded
     out to SENSOR_REPORT_INFO_MAX."""
     info = struct.pack(
-        _report_info_3300_fmt(PACKED),
+        _report_info_3300_fmt(),
         _temp_x100(temperature1), _hum_x100(humidity1),
         _temp_x100(temperature2), _hum_x100(humidity2),
         ultrasound_level & 0xFFFF, ultrasound_frequency & 0xFF,
@@ -305,14 +361,19 @@ def decode_report_payload(payload: bytes) -> Optional[dict]:
                 "note": f"len {len(payload)} != expected {want}"}
     (name, sn, rtype, fw, battery, alarm_flags,
      report_flags, report_crc16, report_info) = struct.unpack(fmt, payload)
-    # report_info union as sensor_report_info_3300_t.
-    info_fmt = _report_info_3300_fmt(PACKED)
-    (t1, h1, t2, h2, us_lvl, us_freq,
-     vib_lvl, vib_freq) = struct.unpack(info_fmt, report_info[:struct.calcsize(info_fmt)])
-    return {
+    # Decode the report_info union per the report_type (see REPORT_INFO_LAYOUT).
+    layout = REPORT_INFO_LAYOUT.get(rtype)
+    info = {}
+    if layout is not None:
+        try:
+            info = _decode_info(layout, report_info)
+        except struct.error:
+            info = {}
+    result = {
         "name": name.split(b"\x00", 1)[0].decode("ascii", "replace"),
         "sn": sn.split(b"\x00", 1)[0].decode("ascii", "replace"),
         "report_type": rtype,
+        "report_type_known": layout is not None,
         "firmware_version": fw,
         "battery_level": battery,
         "alarm_flags_raw": alarm_flags,
@@ -320,23 +381,38 @@ def decode_report_payload(payload: bytes) -> Optional[dict]:
         "report_flags_raw": report_flags,
         "report_flags": f"0x{report_flags:02X}",
         "report_crc16": f"0x{report_crc16:04X}",
-        # channel-1 temp/hum kept as "temperature"/"humidity" for back-compat.
-        "temperature": t1 / 100.0,
-        "humidity": h1 / 100.0,
-        "temperature1": t1 / 100.0,
-        "humidity1": h1 / 100.0,
-        "temperature2": t2 / 100.0,
-        "humidity2": h2 / 100.0,
-        "ultrasound_level": us_lvl,
-        "ultrasound_frequency": us_freq,
-        "vibration_level": vib_lvl,
-        "vibration_frequency": vib_freq,
+        # All decoded type-specific fields (e.g. gas1/gas2/gas3, current).
+        "report_info": info,
+        "report_info_hex": report_info.hex().upper(),
+        # Canonical columns default to 0 so consumers always have the keys,
+        # regardless of which fields this report_type actually carries.
+        "temperature1": info.get("temperature1", 0.0),
+        "humidity1": info.get("humidity1", 0.0),
+        "temperature2": info.get("temperature2", 0.0),
+        "humidity2": info.get("humidity2", 0.0),
+        "ultrasound_level": info.get("ultrasound_level", 0),
+        "ultrasound_frequency": info.get("ultrasound_frequency", 0),
+        "vibration_level": info.get("vibration_level", 0),
+        "vibration_frequency": info.get("vibration_frequency", 0),
     }
+    # channel-1 temp/hum kept as "temperature"/"humidity" for back-compat.
+    result["temperature"] = result["temperature1"]
+    result["humidity"] = result["humidity1"]
+    # Surface type-specific extras at the top level for convenience.
+    for k in ("gas1", "gas2", "gas3", "current"):
+        if k in info:
+            result[k] = info[k]
+    return result
 
 
-def decode_config_payload(payload: bytes) -> Optional[dict]:
-    """Decode a sensor_config_structure_t from AT#CONFIG <DATA>. Returns None
-    (with a 'raw' marker) on length mismatch so the caller can still show it."""
+def decode_config_payload(payload: bytes,
+                          sensor_type: int = 0x3300) -> Optional[dict]:
+    """Decode a sensor_config_structure_t from AT#CONFIG <DATA>. Returns a dict
+    with a 'raw' marker on length mismatch so the caller can still show it.
+
+    The config header carries no sensor type, so `sensor_type` selects which
+    sensor_config_info_<type>_t layout to apply to the config_info union
+    (defaults to 0x3300). See CONFIG_INFO_LAYOUT."""
     fmt = _config_fmt()
     want = struct.calcsize(fmt)
     if len(payload) != want:
@@ -345,11 +421,14 @@ def decode_config_payload(payload: bytes) -> Optional[dict]:
     (name, dest_id, command, new_fw, bat_min, sleep_s,
      config_flags, config_crc16, config_info) = struct.unpack(fmt, payload)
     cmds = [k for k, v in CONFIG_CMD_FLAGS.items() if command & v]
-    # config_info union as sensor_config_info_3300_t.
-    info_fmt = _config_info_3300_fmt(PACKED)
-    (t_max1, t_min1, h_max1, h_min1, t_max2, t_min2, h_max2, h_min2,
-     us_lvl_max, us_center_freq, vib_lvl_max, rnd) = struct.unpack(
-        info_fmt, config_info[:struct.calcsize(info_fmt)])
+    # Decode the config_info union per the assumed sensor_type.
+    layout = CONFIG_INFO_LAYOUT.get(sensor_type)
+    info = {}
+    if layout is not None:
+        try:
+            info = _decode_info(layout, config_info)
+        except struct.error:
+            info = {}
     return {
         "name": name.split(b"\x00", 1)[0].decode("ascii", "replace"),
         "dest_id": dest_id.hex().upper(),
@@ -362,16 +441,12 @@ def decode_config_payload(payload: bytes) -> Optional[dict]:
         "config_flags": f"0x{config_flags:02X}",
         "config_crc16": f"0x{config_crc16:04X}",
         "config_info": config_info.hex().upper(),
-        "config_info_3300": {
-            "temperature_max1": t_max1, "temperature_min1": t_min1,
-            "humidity_max1": h_max1, "humidity_min1": h_min1,
-            "temperature_max2": t_max2, "temperature_min2": t_min2,
-            "humidity_max2": h_max2, "humidity_min2": h_min2,
-            "ultrasound_level_max": us_lvl_max,
-            "ultrasound_center_frequency": us_center_freq,
-            "vibration_level_max": vib_lvl_max,
-            "random_number": rnd,
-        },
+        "sensor_type": sensor_type,
+        "sensor_type_known": layout is not None,
+        # Decoded config_info fields for this sensor_type.
+        "config_info_decoded": info,
+        # Back-compat alias kept for 3300 consumers (apply_config et al.).
+        "config_info_3300": info,
     }
 
 
@@ -394,7 +469,7 @@ def build_config_payload(*, dest_sn_hex: str, command: int, new_fw_version: int,
     The channel-1 args keep their original names for back-compat."""
     dest = int(dest_sn_hex, 16).to_bytes(8, "big")[-6:]   # low 6 bytes of SN
     info = struct.pack(
-        _config_info_3300_fmt(PACKED),
+        _config_info_3300_fmt(),
         temp_max, temp_min, hum_max & 0xFF, hum_min & 0xFF,
         temp_max2, temp_min2, hum_max2 & 0xFF, hum_min2 & 0xFF,
         ultrasound_level_max & 0xFFFF, ultrasound_center_frequency & 0xFF,
@@ -726,19 +801,19 @@ class SensorState:
                 notes.append("command NO (no-op)")
             if "config_flags_raw" in decoded:
                 self.config_flags = decoded["config_flags_raw"]
-            info = decoded.get("config_info_3300")
-            if info is not None:
-                self.temp_max = info["temperature_max1"]
-                self.temp_min = info["temperature_min1"]
-                self.hum_max = info["humidity_max1"]
-                self.hum_min = info["humidity_min1"]
-                self.temp_max2 = info["temperature_max2"]
-                self.temp_min2 = info["temperature_min2"]
-                self.hum_max2 = info["humidity_max2"]
-                self.hum_min2 = info["humidity_min2"]
-                self.ultrasound_level_max = info["ultrasound_level_max"]
-                self.ultrasound_center_frequency = info["ultrasound_center_frequency"]
-                self.vibration_level_max = info["vibration_level_max"]
+            info = decoded.get("config_info_decoded") or decoded.get("config_info_3300")
+            if info:
+                self.temp_max = info.get("temperature_max1", self.temp_max)
+                self.temp_min = info.get("temperature_min1", self.temp_min)
+                self.hum_max = info.get("humidity_max1", self.hum_max)
+                self.hum_min = info.get("humidity_min1", self.hum_min)
+                self.temp_max2 = info.get("temperature_max2", self.temp_max2)
+                self.temp_min2 = info.get("temperature_min2", self.temp_min2)
+                self.hum_max2 = info.get("humidity_max2", self.hum_max2)
+                self.hum_min2 = info.get("humidity_min2", self.hum_min2)
+                self.ultrasound_level_max = info.get("ultrasound_level_max", self.ultrasound_level_max)
+                self.ultrasound_center_frequency = info.get("ultrasound_center_frequency", self.ultrasound_center_frequency)
+                self.vibration_level_max = info.get("vibration_level_max", self.vibration_level_max)
                 notes.append(f"thresholds T1[{self.temp_min}..{self.temp_max}]°C "
                              f"H1[{self.hum_min}..{self.hum_max}]% "
                              f"T2[{self.temp_min2}..{self.temp_max2}]°C "

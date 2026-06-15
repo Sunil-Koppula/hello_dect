@@ -56,6 +56,14 @@ class SensorWorker:
         self.args = args
         self.stop_evt = threading.Event()
         self.events: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        # Serializes everything we transmit on the shared serial port: an
+        # AT#REPORT send (report_loop) and a large-data transfer (_ld_worker)
+        # must never overlap. Writing an AT#REPORT into the middle of the
+        # flow-controlled AT#LD stream breaks the one-line-in-flight contract
+        # (wedges the firmware RX) and its OK gets mis-consumed as a chunk ack.
+        # Force-alarm / stop-alarm / interval / manual sends all go through
+        # _send, so this lock covers the whole "report vs large-data" overlap.
+        self.tx_lock = threading.Lock()
 
         # Manual overrides set from the GUI. When *_override is not None the
         # report loop uses it instead of the random/drained value, and reading
@@ -106,30 +114,37 @@ class SensorWorker:
             n = len(chunks)
             last = len(chunks[-1][2])
             data_crc32 = zlib.crc32(blob) & 0xFFFFFFFF
-            sim._drain_resp_q(self.io)
 
-            # Announce, then wait for the device to consume it.
-            init = sim.build_at_ldinit(self.state.sn, data_id, len(blob), n, last,
-                                       data_crc32)
-            self.io.write(init.encode("ascii", errors="replace"))
-            self.log(f">>> AT#LDINIT id={data_id} total={len(blob)} "
-                     f"chunks={n} last={last}")
-            sim._await_ack(self.io, sim.LD_ACK_TIMEOUT_S)
+            # Own the serial link for the WHOLE transfer. While we hold tx_lock,
+            # report_loop's _send blocks, so no AT#REPORT (force-alarm / stop /
+            # interval / manual) can be injected into this flow-controlled
+            # AT#LD stream and no report OK can steal a chunk ack from resp_q.
+            with self.tx_lock:
+                sim._drain_resp_q(self.io)
 
-            # Flow-controlled: one line in flight, wait for OK/ERROR per chunk.
-            for i, (page, chunk, payload) in enumerate(chunks):
-                if self.stop_evt.is_set():
-                    self.log("LD: aborted (shutting down)")
-                    return
-                line = sim.build_at_ld(self.state.sn, data_id, page, chunk, payload)
-                self.io.write(line.encode("ascii", errors="replace"))
-                ack = sim._await_ack(self.io, sim.LD_ACK_TIMEOUT_S)
-                if (i + 1) % 50 == 0 or (i + 1) == n:
-                    self.log(f">>> AT#LD {i + 1}/{n} (p{page:02X} c{chunk:02X}) "
-                             f"[{ack or 'timeout'}]")
+                # Announce, then wait for the device to consume it.
+                init = sim.build_at_ldinit(self.state.sn, data_id, len(blob), n,
+                                           last, data_crc32)
+                self.io.write(init.encode("ascii", errors="replace"))
+                self.log(f">>> AT#LDINIT id={data_id} total={len(blob)} "
+                         f"chunks={n} last={last}")
+                sim._await_ack(self.io, sim.LD_ACK_TIMEOUT_S)
 
-            self.log(f">>> LD done: {len(blob)} B in {n} chunks (id={data_id})")
-            self.ld_data_id = sim.next_data_id(self.ld_data_id)
+                # Flow-controlled: one line in flight, wait for OK/ERROR per chunk.
+                for i, (page, chunk, payload) in enumerate(chunks):
+                    if self.stop_evt.is_set():
+                        self.log("LD: aborted (shutting down)")
+                        return
+                    line = sim.build_at_ld(self.state.sn, data_id, page, chunk,
+                                           payload)
+                    self.io.write(line.encode("ascii", errors="replace"))
+                    ack = sim._await_ack(self.io, sim.LD_ACK_TIMEOUT_S)
+                    if (i + 1) % 50 == 0 or (i + 1) == n:
+                        self.log(f">>> AT#LD {i + 1}/{n} (p{page:02X} c{chunk:02X}) "
+                                 f"[{ack or 'timeout'}]")
+
+                self.log(f">>> LD done: {len(blob)} B in {n} chunks (id={data_id})")
+                self.ld_data_id = sim.next_data_id(self.ld_data_id)
         except Exception as e:
             self.log(f"LD error: {e!r}")
         finally:
@@ -152,7 +167,11 @@ class SensorWorker:
         data_id = self.data_id
         line = sim.build_at_report(st.sn, data_id, payload, priority)
         try:
-            self.io.write(line.encode("ascii", errors="replace"))
+            # Block if a large-data transfer owns the link, so this report is
+            # never written into the middle of its AT#LD stream. The send waits
+            # until the transfer completes rather than corrupting it.
+            with self.tx_lock:
+                self.io.write(line.encode("ascii", errors="replace"))
         except Exception as e:
             self.log(f"serial write failed: {e!r}")
             return
@@ -174,6 +193,20 @@ class SensorWorker:
         next_report = now
         while not self.stop_evt.is_set():
             now = time.monotonic()
+
+            # While a large-data transfer owns the serial link, transmit NOTHING
+            # else. Interleaving an AT#REPORT into the flow-controlled AT#LD
+            # stream overruns the firmware's AT RX buffer ("Rx buffer doesn't
+            # have enough space"). _ld_busy is set before the LD worker thread
+            # starts, so this also closes the gap before it takes tx_lock. Hold
+            # the cadence timers at "now" so reports resume cleanly afterwards
+            # instead of firing a backlog all at once.
+            if self._ld_busy:
+                next_battery = max(next_battery, now)
+                next_check = max(next_check, now)
+                next_report = max(next_report, now)
+                self.stop_evt.wait(0.2)
+                continue
 
             if self.battery_override is None and now >= next_battery:
                 self.state.drain_battery()
@@ -242,7 +275,8 @@ class SensorWorker:
                 self.io.write(f'\r\n#CONFIG: "{parsed["sn"]:016X}",'
                               f'"{parsed["data_id"]:04X}"\r\n'.encode("ascii"))
                 self.io.write(b"\r\nOK\r\n")
-                decoded = sim.decode_config_payload(parsed["payload"])
+                decoded = sim.decode_config_payload(parsed["payload"],
+                                                    self.state.last_report_type)
                 notes = (self.state.apply_config(decoded)
                          if decoded and "raw" not in decoded else [])
                 with self.state.lock:
@@ -378,14 +412,14 @@ class SensorGUI(tk.Tk):
                         command=self._toggle_stop).grid(row=3, column=0, columnspan=3, sticky="w", pady=4)
         ttk.Button(f, text="Send report now", command=self.worker.request_send).grid(row=2, column=4, columnspan=2, sticky="e")
 
-        # Large-data (sound record) test transfers.
-        ttk.Label(f, text="Large data:").grid(row=3, column=0, sticky="w", pady=4)
+        # Large-data (sound record) test transfers — own row, below Stop alarm.
+        ttk.Label(f, text="Large data:").grid(row=4, column=0, sticky="w", pady=4)
         ttk.Button(f, text="Send LD 100KB",
                    command=lambda: self.worker.send_large_data(100 * 1024)
-                   ).grid(row=3, column=1, columnspan=2, padx=4, sticky="w")
+                   ).grid(row=4, column=1, columnspan=2, padx=4, sticky="w")
         ttk.Button(f, text="Send LD 200KB",
                    command=lambda: self.worker.send_large_data(200 * 1024)
-                   ).grid(row=3, column=3, columnspan=2, padx=4, sticky="w")
+                   ).grid(row=4, column=3, columnspan=2, padx=4, sticky="w")
 
     def _build_at_panel(self):
         f = self._section("Last AT Command / Response")
@@ -538,7 +572,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--default-interval", type=float, default=sim.DEFAULT_INTERVAL_S)
     p.add_argument("--battery-period", type=float, default=sim.BATTERY_PERIOD_S)
     p.add_argument("--gen-period", type=float, default=sim.GEN_PERIOD_S)
-    p.add_argument("--packed", action="store_true")
+    p.add_argument("--packed", action="store_true",
+                   help="deprecated/no-op: the wire layout is now fixed (packed)")
     p.add_argument("--skip-sn-check", action="store_true")
     args = p.parse_args(argv)
 
@@ -547,7 +582,6 @@ def main(argv: list[str]) -> int:
     except ValueError:
         sys.stderr.write(f"error: --sn not valid hex: {args.sn!r}\n")
         return 2
-    sim.PACKED = args.packed
 
     port = args.port or sim.autodetect_port()
     if not port:
