@@ -142,10 +142,14 @@ SENSOR_DATA_STR_SN_MAX = 12
 SENSOR_REPORT_CONFIG_NAME_MAX = 6   # "ESC33"/"ESC21" fit (5 chars + NUL)
 
 # sensor_alarm_flags_t bits.
-ALARM_NONE        = 0x0000
-ALARM_BATTERY     = 1 << 0
+ALARM_NONE         = 0x0000
+ALARM_BATTERY      = 1 << 0
 ALARM_TEMPERATURE1 = 1 << 1
-ALARM_HUMIDITY1   = 1 << 3
+ALARM_TEMPERATURE2 = 1 << 2
+ALARM_HUMIDITY1    = 1 << 3
+ALARM_HUMIDITY2    = 1 << 4
+ALARM_ULTRASOUND   = 1 << 9
+ALARM_VIBRATION    = 1 << 10
 
 # sensor_config_cmd_t bits.
 CONFIG_CMD_FLAGS = {
@@ -194,6 +198,41 @@ def _config_fmt() -> str:
             f"{SENSOR_CONFIG_INFO_MAX}s")  # config_info union
 
 
+def _report_info_3300_fmt(packed: bool) -> str:
+    """struct format for sensor_report_info_3300_t inside the report_info union.
+
+    Layout: temperature1(i16), humidity1(u16), temperature2(i16), humidity2(u16),
+    ultrasound_level(u16), ultrasound_frequency(u8), vibration_level(u16),
+    vibration_frequency(u8). Under natural alignment a pad byte precedes
+    vibration_level (u16 alignment) and one trails the struct -> 16 bytes; packed
+    is 14 bytes. Either way it sits in the 16-byte report_info union."""
+    fmt = "<hHhHHB"                   # temp1, hum1, temp2, hum2, us_level, us_freq
+    if not packed:
+        fmt += "x"                    # align vibration_level (u16)
+    fmt += "HB"                       # vibration_level, vibration_freq
+    if not packed:
+        fmt += "x"                    # trailing struct pad -> 16 bytes
+    return fmt
+
+
+def _config_info_3300_fmt(packed: bool) -> str:
+    """struct format for sensor_config_info_3300_t inside the config_info union.
+
+    Layout: temperature_max1/min1(i8), humidity_max1/min1(u8),
+    temperature_max2/min2(i8), humidity_max2/min2(u8), ultrasound_level_max(u16),
+    ultrasound_center_frequency(u8), vibration_level_max(u16), random_number(u8).
+    Under natural alignment a pad byte precedes vibration_level_max and one
+    trails the struct -> 16 bytes; packed is 14 bytes."""
+    fmt = "<bbBBbbBB"                 # t/h max/min for channels 1 and 2 (8 bytes)
+    fmt += "HB"                       # ultrasound_level_max, ultrasound_center_freq
+    if not packed:
+        fmt += "x"                    # align vibration_level_max (u16)
+    fmt += "HB"                       # vibration_level_max, random_number
+    if not packed:
+        fmt += "x"                    # trailing struct pad -> 16 bytes
+    return fmt
+
+
 def _crc16_ccitt(data: bytes, init: int = 0xFFFF) -> int:
     """CRC16/CCITT-FALSE — fills the in-struct report_crc16/config_crc16 field
     so the structure is self-consistent. The AT framing's CRC32 is what the
@@ -206,12 +245,32 @@ def _crc16_ccitt(data: bytes, init: int = 0xFFFF) -> int:
     return crc
 
 
-def build_report_info_3300(temperature_c: float, humidity_pct: float) -> bytes:
-    """Pack sensor_report_info_3300_t (int16 temp ×100, uint16 humidity ×100)
-    into the 16-byte report_info union, zero-padded."""
-    t = max(-32768, min(32767, int(round(temperature_c * 100))))
-    h = max(0, min(65535, int(round(humidity_pct * 100))))
-    info = struct.pack("<hH", t, h)
+def _temp_x100(c: float) -> int:
+    """°C -> int16 hundredths of a degree, clamped."""
+    return max(-32768, min(32767, int(round(c * 100))))
+
+
+def _hum_x100(p: float) -> int:
+    """%RH -> uint16 hundredths of a percent, clamped."""
+    return max(0, min(65535, int(round(p * 100))))
+
+
+def build_report_info_3300(*, temperature1: float, humidity1: float,
+                           temperature2: float = 0.0, humidity2: float = 0.0,
+                           ultrasound_level: int = 0, ultrasound_frequency: int = 0,
+                           vibration_level: int = 0, vibration_frequency: int = 0) -> bytes:
+    """Pack sensor_report_info_3300_t into the 16-byte report_info union.
+
+    Temperatures are int16 ×100 °C, humidities uint16 ×100 %; ultrasound /
+    vibration levels are raw uint16 and their frequencies raw uint8. Zero-padded
+    out to SENSOR_REPORT_INFO_MAX."""
+    info = struct.pack(
+        _report_info_3300_fmt(PACKED),
+        _temp_x100(temperature1), _hum_x100(humidity1),
+        _temp_x100(temperature2), _hum_x100(humidity2),
+        ultrasound_level & 0xFFFF, ultrasound_frequency & 0xFF,
+        vibration_level & 0xFFFF, vibration_frequency & 0xFF,
+    )
     return info + b"\x00" * (SENSOR_REPORT_INFO_MAX - len(info))
 
 
@@ -246,8 +305,10 @@ def decode_report_payload(payload: bytes) -> Optional[dict]:
                 "note": f"len {len(payload)} != expected {want}"}
     (name, sn, rtype, fw, battery, alarm_flags,
      report_flags, report_crc16, report_info) = struct.unpack(fmt, payload)
-    # report_info union as sensor_report_info_3300_t (int16 temp ×100, uint16 hum ×100).
-    t_raw, h_raw = struct.unpack("<hH", report_info[:4])
+    # report_info union as sensor_report_info_3300_t.
+    info_fmt = _report_info_3300_fmt(PACKED)
+    (t1, h1, t2, h2, us_lvl, us_freq,
+     vib_lvl, vib_freq) = struct.unpack(info_fmt, report_info[:struct.calcsize(info_fmt)])
     return {
         "name": name.split(b"\x00", 1)[0].decode("ascii", "replace"),
         "sn": sn.split(b"\x00", 1)[0].decode("ascii", "replace"),
@@ -259,8 +320,17 @@ def decode_report_payload(payload: bytes) -> Optional[dict]:
         "report_flags_raw": report_flags,
         "report_flags": f"0x{report_flags:02X}",
         "report_crc16": f"0x{report_crc16:04X}",
-        "temperature": t_raw / 100.0,
-        "humidity": h_raw / 100.0,
+        # channel-1 temp/hum kept as "temperature"/"humidity" for back-compat.
+        "temperature": t1 / 100.0,
+        "humidity": h1 / 100.0,
+        "temperature1": t1 / 100.0,
+        "humidity1": h1 / 100.0,
+        "temperature2": t2 / 100.0,
+        "humidity2": h2 / 100.0,
+        "ultrasound_level": us_lvl,
+        "ultrasound_frequency": us_freq,
+        "vibration_level": vib_lvl,
+        "vibration_frequency": vib_freq,
     }
 
 
@@ -275,9 +345,11 @@ def decode_config_payload(payload: bytes) -> Optional[dict]:
     (name, dest_id, command, new_fw, bat_min, sleep_s,
      config_flags, config_crc16, config_info) = struct.unpack(fmt, payload)
     cmds = [k for k, v in CONFIG_CMD_FLAGS.items() if command & v]
-    # config_info union as sensor_config_info_3300_t (int8 t_max, int8 t_min,
-    # uint8 h_max, uint8 h_min, uint8 random).
-    t_max, t_min, h_max, h_min, rnd = struct.unpack("<bbBBB", config_info[:5])
+    # config_info union as sensor_config_info_3300_t.
+    info_fmt = _config_info_3300_fmt(PACKED)
+    (t_max1, t_min1, h_max1, h_min1, t_max2, t_min2, h_max2, h_min2,
+     us_lvl_max, us_center_freq, vib_lvl_max, rnd) = struct.unpack(
+        info_fmt, config_info[:struct.calcsize(info_fmt)])
     return {
         "name": name.split(b"\x00", 1)[0].decode("ascii", "replace"),
         "dest_id": dest_id.hex().upper(),
@@ -291,8 +363,13 @@ def decode_config_payload(payload: bytes) -> Optional[dict]:
         "config_crc16": f"0x{config_crc16:04X}",
         "config_info": config_info.hex().upper(),
         "config_info_3300": {
-            "temperature_max1": t_max, "temperature_min1": t_min,
-            "humidity_max1": h_max, "humidity_min1": h_min,
+            "temperature_max1": t_max1, "temperature_min1": t_min1,
+            "humidity_max1": h_max1, "humidity_min1": h_min1,
+            "temperature_max2": t_max2, "temperature_min2": t_min2,
+            "humidity_max2": h_max2, "humidity_min2": h_min2,
+            "ultrasound_level_max": us_lvl_max,
+            "ultrasound_center_frequency": us_center_freq,
+            "vibration_level_max": vib_lvl_max,
             "random_number": rnd,
         },
     }
@@ -301,16 +378,28 @@ def decode_config_payload(payload: bytes) -> Optional[dict]:
 def build_config_payload(*, dest_sn_hex: str, command: int, new_fw_version: int,
                          battery_level_min: int, sleep_time_sec: int,
                          temp_max: int, temp_min: int, hum_max: int, hum_min: int,
+                         temp_max2: int = 0, temp_min2: int = 0,
+                         hum_max2: int = 0, hum_min2: int = 0,
+                         ultrasound_level_max: int = 0,
+                         ultrasound_center_frequency: int = 0,
+                         vibration_level_max: int = 0,
                          random_number: int = 0,
                          config_flags: int = FLAG_NOT_ENCRYPTED) -> bytes:
     """Pack a sensor_config_structure_t (name "ESC21") for an AT#CONFIG push.
 
     dest_sn_hex is the destination sensor SN as hex; it fills dest_id[6] as raw
-    bytes (big-endian, last 6 bytes of the SN). config_info holds a packed
-    sensor_config_info_3300_t (temp/hum max/min + random)."""
+    bytes (big-endian, last 6 bytes of the SN). config_info holds a
+    sensor_config_info_3300_t: temp/hum max/min for channels 1 and 2 (temp_max..
+    /temp_max2..), ultrasound + vibration level maxima, and a random byte.
+    The channel-1 args keep their original names for back-compat."""
     dest = int(dest_sn_hex, 16).to_bytes(8, "big")[-6:]   # low 6 bytes of SN
-    info = struct.pack("<bbBBB", temp_max, temp_min, hum_max & 0xFF,
-                       hum_min & 0xFF, random_number & 0xFF)
+    info = struct.pack(
+        _config_info_3300_fmt(PACKED),
+        temp_max, temp_min, hum_max & 0xFF, hum_min & 0xFF,
+        temp_max2, temp_min2, hum_max2 & 0xFF, hum_min2 & 0xFF,
+        ultrasound_level_max & 0xFFFF, ultrasound_center_frequency & 0xFF,
+        vibration_level_max & 0xFFFF, random_number & 0xFF,
+    )
     info += b"\x00" * (SENSOR_CONFIG_INFO_MAX - len(info))
     config_crc16 = _crc16_ccitt(info)
     return struct.pack(
@@ -522,15 +611,31 @@ class SensorState:
         self.battery_level_min = battery_level_min
         self.demo_mode = False
         # config_info_3300 thresholds (None until a 3300 config arrives).
-        self.temp_max = None                    # int8 °C
+        # Channel 1 keeps the original temp_max/.. names; channel 2 + ultrasound /
+        # vibration maxima are the new sensor_config_info_3300_t fields.
+        self.temp_max = None                    # int8 °C  (channel 1)
         self.temp_min = None
-        self.hum_max = None                     # uint8 %
+        self.hum_max = None                     # uint8 %  (channel 1)
         self.hum_min = None
+        self.temp_max2 = None                   # int8 °C  (channel 2)
+        self.temp_min2 = None
+        self.hum_max2 = None                    # uint8 %  (channel 2)
+        self.hum_min2 = None
+        self.ultrasound_level_max = None        # uint16 raw
+        self.ultrasound_center_frequency = None  # uint8 raw
+        self.vibration_level_max = None         # uint16 raw
         self.config_flags = FLAG_NOT_ENCRYPTED
         self.last_config_ts = None              # wall-clock str of last config
         # Buffered readings (regenerated every GEN_PERIOD_S, sent on report tick).
+        # temperature/humidity are channel 1; the rest are the new 3300 fields.
         self.temperature = 22.0
         self.humidity = 45.0
+        self.temperature2 = 22.0
+        self.humidity2 = 45.0
+        self.ultrasound_level = 0
+        self.ultrasound_frequency = 0
+        self.vibration_level = 0
+        self.vibration_frequency = 0
         # Dashboard: last emitted AT#REPORT line and the device's last response.
         self.last_report_type = REPORT_TYPE_3300
         self.last_at_command = "(none yet)"
@@ -547,10 +652,17 @@ class SensorState:
         with self.lock:
             self.temperature = round(random.uniform(-100.0, 100.0), 2)
             self.humidity = round(random.uniform(0.0, 100.0), 2)
+            self.temperature2 = round(random.uniform(-100.0, 100.0), 2)
+            self.humidity2 = round(random.uniform(0.0, 100.0), 2)
+            self.ultrasound_level = random.randint(0, 100)
+            self.ultrasound_frequency = random.randint(0, 255)
+            self.vibration_level = random.randint(0, 500)
+            self.vibration_frequency = random.randint(0, 255)
 
     def compute_alarm_flags(self) -> int:
-        """Current alarm bitmask: battery-low, plus temp/humidity out of the
-        configured 3300 bounds (only checked once a config sets them)."""
+        """Current alarm bitmask: battery-low, plus temp/humidity (both channels)
+        and ultrasound/vibration out of the configured 3300 bounds (only checked
+        once a config sets them)."""
         flags = ALARM_NONE
         with self.lock:
             if self.battery <= self.battery_level_min:
@@ -561,11 +673,30 @@ class SensorState:
             if self.hum_max is not None and self.hum_min is not None:
                 if self.humidity > self.hum_max or self.humidity < self.hum_min:
                     flags |= ALARM_HUMIDITY1
+            if self.temp_max2 is not None and self.temp_min2 is not None:
+                if self.temperature2 > self.temp_max2 or self.temperature2 < self.temp_min2:
+                    flags |= ALARM_TEMPERATURE2
+            if self.hum_max2 is not None and self.hum_min2 is not None:
+                if self.humidity2 > self.hum_max2 or self.humidity2 < self.hum_min2:
+                    flags |= ALARM_HUMIDITY2
+            if self.ultrasound_level_max is not None and self.ultrasound_level_max:
+                if self.ultrasound_level > self.ultrasound_level_max:
+                    flags |= ALARM_ULTRASOUND
+            if self.vibration_level_max is not None and self.vibration_level_max:
+                if self.vibration_level > self.vibration_level_max:
+                    flags |= ALARM_VIBRATION
         return flags
 
     def snapshot_payload(self, alarm_flags: int) -> bytes:
         with self.lock:
-            info = build_report_info_3300(self.temperature, self.humidity)
+            info = build_report_info_3300(
+                temperature1=self.temperature, humidity1=self.humidity,
+                temperature2=self.temperature2, humidity2=self.humidity2,
+                ultrasound_level=self.ultrasound_level,
+                ultrasound_frequency=self.ultrasound_frequency,
+                vibration_level=self.vibration_level,
+                vibration_frequency=self.vibration_frequency,
+            )
             return build_report_payload(
                 sn_hex=f"{self.sn:012X}", battery_level=self.battery,
                 alarm_flags=alarm_flags, report_info=info,
@@ -601,8 +732,19 @@ class SensorState:
                 self.temp_min = info["temperature_min1"]
                 self.hum_max = info["humidity_max1"]
                 self.hum_min = info["humidity_min1"]
-                notes.append(f"thresholds T[{self.temp_min}..{self.temp_max}]°C "
-                             f"H[{self.hum_min}..{self.hum_max}]%")
+                self.temp_max2 = info["temperature_max2"]
+                self.temp_min2 = info["temperature_min2"]
+                self.hum_max2 = info["humidity_max2"]
+                self.hum_min2 = info["humidity_min2"]
+                self.ultrasound_level_max = info["ultrasound_level_max"]
+                self.ultrasound_center_frequency = info["ultrasound_center_frequency"]
+                self.vibration_level_max = info["vibration_level_max"]
+                notes.append(f"thresholds T1[{self.temp_min}..{self.temp_max}]°C "
+                             f"H1[{self.hum_min}..{self.hum_max}]% "
+                             f"T2[{self.temp_min2}..{self.temp_max2}]°C "
+                             f"H2[{self.hum_min2}..{self.hum_max2}]% "
+                             f"US<={self.ultrasound_level_max} "
+                             f"VIB<={self.vibration_level_max}")
             self.last_config_ts = time.strftime("%H:%M:%S")
         return notes
 
@@ -802,10 +944,16 @@ def render_dashboard(state: SensorState) -> None:
         bat_min = state.battery_level_min
         t_max, t_min = state.temp_max, state.temp_min
         h_max, h_min = state.hum_max, state.hum_min
+        t_max2, t_min2 = state.temp_max2, state.temp_min2
+        h_max2, h_min2 = state.hum_max2, state.hum_min2
+        us_max, vib_max = state.ultrasound_level_max, state.vibration_level_max
         cfg_flags = state.config_flags
         cfg_ts = state.last_config_ts
         battery = state.battery
         temp, hum = state.temperature, state.humidity
+        temp2, hum2 = state.temperature2, state.humidity2
+        us_lvl, us_freq = state.ultrasound_level, state.ultrasound_frequency
+        vib_lvl, vib_freq = state.vibration_level, state.vibration_frequency
         alarm = state.last_alarm_flags
         at_cmd = state.last_at_command
         resp = state.last_response
@@ -819,14 +967,20 @@ def render_dashboard(state: SensorState) -> None:
     lines.append("Current Config" + (f"   (updated {cfg_ts})" if cfg_ts else "   (defaults — no config yet)"))
     lines.append("-" * 100)
     lines.append(f"Report time: {sleep_s}s".ljust(36) + f"Min Battery Level: {bat_min}%")
-    lines.append(f"Temp Max: {_fmt(t_max,'C')}".ljust(36) + f"Hum Max: {_fmt(h_max,'%')}")
-    lines.append(f"Temp Min: {_fmt(t_min,'C')}".ljust(36) + f"Hum Min: {_fmt(h_min,'%')}")
+    lines.append(f"Temp1 Max: {_fmt(t_max,'C')}".ljust(36) + f"Hum1 Max: {_fmt(h_max,'%')}")
+    lines.append(f"Temp1 Min: {_fmt(t_min,'C')}".ljust(36) + f"Hum1 Min: {_fmt(h_min,'%')}")
+    lines.append(f"Temp2 Max: {_fmt(t_max2,'C')}".ljust(36) + f"Hum2 Max: {_fmt(h_max2,'%')}")
+    lines.append(f"Temp2 Min: {_fmt(t_min2,'C')}".ljust(36) + f"Hum2 Min: {_fmt(h_min2,'%')}")
+    lines.append(f"Ultrasound level max: {_fmt(us_max)}".ljust(36) + f"Vibration level max: {_fmt(vib_max)}")
     lines.append(f"Config Flags: 0x{cfg_flags:02X} ({enc})")
     lines.append("-" * 100)
     lines.append("Report / Current Parameters")
     lines.append("-" * 100)
     lines.append(f"Current time: {time.strftime('%H:%M:%S')}".ljust(40) + f"Current Battery level: {battery}%")
-    lines.append(f"Temp: {temp}C".ljust(40) + f"Hum: {hum}%")
+    lines.append(f"Temp1: {temp}C".ljust(40) + f"Hum1: {hum}%")
+    lines.append(f"Temp2: {temp2}C".ljust(40) + f"Hum2: {hum2}%")
+    lines.append(f"Ultrasound: lvl={us_lvl} freq={us_freq}".ljust(40)
+                 + f"Vibration: lvl={vib_lvl} freq={vib_freq}")
     lines.append(f"Alarm Flags: 0x{alarm:04X} ({alarm_text(alarm)})")
     lines.append("-" * 100)
     lines.append("AT Command")

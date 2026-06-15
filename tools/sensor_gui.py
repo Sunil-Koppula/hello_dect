@@ -64,6 +64,7 @@ class SensorWorker:
         self.temp_override = None
         self.hum_override = None
         self.force_alarm = 0            # extra alarm bits OR-ed in
+        self.stop_alarm = False         # when True, alarm flags are forced to 0
         self._send_now = threading.Event()
         # data_id auto-increments per report, wrapping at DATA_ID_MAX -> 1.
         self.data_id = max(1, min(sim.DATA_ID_MAX, args.data_id))
@@ -77,6 +78,14 @@ class SensorWorker:
 
     def request_send(self) -> None:
         self._send_now.set()
+
+    def current_alarm(self) -> int:
+        """Effective alarm bitmask. 'Stop alarm' forces 0 regardless of config
+        thresholds or a forced alarm; otherwise it's the computed flags OR the
+        manually forced bits."""
+        if self.stop_alarm:
+            return 0
+        return self.state.compute_alarm_flags() | self.force_alarm
 
     # -- large-data (AT#LDINIT + AT#LD) ----------------------------------
     def send_large_data(self, total_bytes: int) -> None:
@@ -137,7 +146,7 @@ class SensorWorker:
                 st.temperature = self.temp_override
             if self.hum_override is not None:
                 st.humidity = self.hum_override
-        alarm = st.compute_alarm_flags() | self.force_alarm
+        alarm = self.current_alarm()
         priority = sim.PRIO_ALARM if alarm else sim.PRIO_NORMAL
         payload = st.snapshot_payload(alarm)
         data_id = self.data_id
@@ -176,7 +185,7 @@ class SensorWorker:
                 if self.temp_override is None and self.hum_override is None:
                     self.state.regen_readings()
                 next_check += self.args.gen_period
-                alarm = self.state.compute_alarm_flags() | self.force_alarm
+                alarm = self.current_alarm()
                 if alarm:
                     self._send("alarm-check")
                     next_report = now + self.state.sleep_time_sec
@@ -293,35 +302,53 @@ class SensorGUI(tk.Tk):
     def _build_config_panel(self):
         f = self._section("Current Config")
         self.v_cfg = {k: tk.StringVar() for k in
-                      ("report_time", "bat_min", "tmax", "tmin", "hmax", "hmin", "flags", "ts")}
+                      ("report_time", "bat_min", "tmax", "tmin", "hmax", "hmin",
+                       "tmax2", "tmin2", "hmax2", "hmin2", "us_max", "vib_max",
+                       "flags", "ts")}
         rows = [
             ("Report time:", "report_time", "Min Battery Level:", "bat_min"),
-            ("Temp Max:", "tmax", "Hum Max:", "hmax"),
-            ("Temp Min:", "tmin", "Hum Min:", "hmin"),
+            ("Temp1 Max:", "tmax", "Hum1 Max:", "hmax"),
+            ("Temp1 Min:", "tmin", "Hum1 Min:", "hmin"),
+            ("Temp2 Max:", "tmax2", "Hum2 Max:", "hmax2"),
+            ("Temp2 Min:", "tmin2", "Hum2 Min:", "hmin2"),
+            ("Ultrasound lvl max:", "us_max", "Vibration lvl max:", "vib_max"),
         ]
         for r, (l1, k1, l2, k2) in enumerate(rows):
-            ttk.Label(f, text=l1, width=16).grid(row=r, column=0, sticky="w")
+            ttk.Label(f, text=l1, width=18).grid(row=r, column=0, sticky="w")
             ttk.Label(f, textvariable=self.v_cfg[k1], width=12).grid(row=r, column=1, sticky="w")
             ttk.Label(f, text=l2, width=18).grid(row=r, column=2, sticky="w")
             ttk.Label(f, textvariable=self.v_cfg[k2], width=12).grid(row=r, column=3, sticky="w")
-        ttk.Label(f, text="Config Flags:", width=16).grid(row=3, column=0, sticky="w")
-        ttk.Label(f, textvariable=self.v_cfg["flags"]).grid(row=3, column=1, columnspan=3, sticky="w")
-        ttk.Label(f, textvariable=self.v_cfg["ts"], foreground="gray").grid(row=4, column=0, columnspan=4, sticky="w")
+        last = len(rows)
+        ttk.Label(f, text="Config Flags:", width=18).grid(row=last, column=0, sticky="w")
+        ttk.Label(f, textvariable=self.v_cfg["flags"]).grid(row=last, column=1, columnspan=3, sticky="w")
+        ttk.Label(f, textvariable=self.v_cfg["ts"], foreground="gray").grid(row=last + 1, column=0, columnspan=4, sticky="w")
 
     def _build_params_panel(self):
         f = self._section("Current Parameters")
         self.v_batt = tk.StringVar()
         self.v_temp = tk.StringVar()
         self.v_hum = tk.StringVar()
+        self.v_temp2 = tk.StringVar()
+        self.v_hum2 = tk.StringVar()
+        self.v_us = tk.StringVar()
+        self.v_vib = tk.StringVar()
         self.v_alarm = tk.StringVar()
         ttk.Label(f, text="Battery:", width=12).grid(row=0, column=0, sticky="w")
         ttk.Label(f, textvariable=self.v_batt, width=14).grid(row=0, column=1, sticky="w")
-        ttk.Label(f, text="Temp:", width=10).grid(row=0, column=2, sticky="w")
+        ttk.Label(f, text="Temp1:", width=10).grid(row=0, column=2, sticky="w")
         ttk.Label(f, textvariable=self.v_temp, width=12).grid(row=0, column=3, sticky="w")
-        ttk.Label(f, text="Hum:", width=8).grid(row=0, column=4, sticky="w")
+        ttk.Label(f, text="Hum1:", width=8).grid(row=0, column=4, sticky="w")
         ttk.Label(f, textvariable=self.v_hum, width=12).grid(row=0, column=5, sticky="w")
+        ttk.Label(f, text="Temp2:", width=10).grid(row=1, column=2, sticky="w")
+        ttk.Label(f, textvariable=self.v_temp2, width=12).grid(row=1, column=3, sticky="w")
+        ttk.Label(f, text="Hum2:", width=8).grid(row=1, column=4, sticky="w")
+        ttk.Label(f, textvariable=self.v_hum2, width=12).grid(row=1, column=5, sticky="w")
+        ttk.Label(f, text="Ultrasound:", width=12).grid(row=2, column=0, sticky="w")
+        ttk.Label(f, textvariable=self.v_us, width=20).grid(row=2, column=1, columnspan=2, sticky="w")
+        ttk.Label(f, text="Vibration:", width=10).grid(row=2, column=3, sticky="w")
+        ttk.Label(f, textvariable=self.v_vib, width=20).grid(row=2, column=4, columnspan=2, sticky="w")
         self.l_alarm = ttk.Label(f, textvariable=self.v_alarm, font=("Consolas", 10, "bold"))
-        self.l_alarm.grid(row=1, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        self.l_alarm.grid(row=3, column=0, columnspan=6, sticky="w", pady=(6, 0))
 
     def _build_controls(self):
         f = self._section("Manual Controls")
@@ -346,6 +373,9 @@ class SensorGUI(tk.Tk):
         self.v_force = tk.BooleanVar(value=False)
         ttk.Checkbutton(f, text="Force alarm (TEMP1)", variable=self.v_force,
                         command=self._toggle_force).grid(row=2, column=0, columnspan=2, sticky="w", pady=4)
+        self.v_stop = tk.BooleanVar(value=False)
+        ttk.Checkbutton(f, text="Stop alarm (force flags=0)", variable=self.v_stop,
+                        command=self._toggle_stop).grid(row=3, column=0, columnspan=3, sticky="w", pady=4)
         ttk.Button(f, text="Send report now", command=self.worker.request_send).grid(row=2, column=4, columnspan=2, sticky="e")
 
         # Large-data (sound record) test transfers.
@@ -407,6 +437,10 @@ class SensorGUI(tk.Tk):
         self.worker.force_alarm = sim.ALARM_TEMPERATURE1 if self.v_force.get() else 0
         self.worker.log(f"force alarm = {'on' if self.v_force.get() else 'off'}")
 
+    def _toggle_stop(self):
+        self.worker.stop_alarm = self.v_stop.get()
+        self.worker.log(f"stop alarm = {'on (flags forced to 0)' if self.v_stop.get() else 'off'}")
+
     # -- periodic refresh ------------------------------------------------
     def _refresh(self):
         st = self.state_
@@ -414,8 +448,13 @@ class SensorGUI(tk.Tk):
             sn, rtype = st.sn, st.last_report_type
             sleep_s, bat_min = st.sleep_time_sec, st.battery_level_min
             tmax, tmin, hmax, hmin = st.temp_max, st.temp_min, st.hum_max, st.hum_min
+            tmax2, tmin2, hmax2, hmin2 = st.temp_max2, st.temp_min2, st.hum_max2, st.hum_min2
+            us_max, vib_max = st.ultrasound_level_max, st.vibration_level_max
             cfg_flags, cfg_ts = st.config_flags, st.last_config_ts
             battery, temp, hum = st.battery, st.temperature, st.humidity
+            temp2, hum2 = st.temperature2, st.humidity2
+            us_lvl, us_freq = st.ultrasound_level, st.ultrasound_frequency
+            vib_lvl, vib_freq = st.vibration_level, st.vibration_frequency
             alarm = st.last_alarm_flags
             at_cmd, resp = st.last_at_command, st.last_response
 
@@ -430,6 +469,12 @@ class SensorGUI(tk.Tk):
         self.v_cfg["tmin"].set(dash(tmin, "C"))
         self.v_cfg["hmax"].set(dash(hmax, "%"))
         self.v_cfg["hmin"].set(dash(hmin, "%"))
+        self.v_cfg["tmax2"].set(dash(tmax2, "C"))
+        self.v_cfg["tmin2"].set(dash(tmin2, "C"))
+        self.v_cfg["hmax2"].set(dash(hmax2, "%"))
+        self.v_cfg["hmin2"].set(dash(hmin2, "%"))
+        self.v_cfg["us_max"].set(dash(us_max))
+        self.v_cfg["vib_max"].set(dash(vib_max))
         enc = "NOT_ENCRYPTED" if (cfg_flags & sim.FLAG_NOT_ENCRYPTED) else "ENCRYPTED"
         self.v_cfg["flags"].set(f"0x{cfg_flags:02X} ({enc})")
         self.v_cfg["ts"].set(f"updated {cfg_ts}" if cfg_ts else "defaults — no config yet")
@@ -442,6 +487,10 @@ class SensorGUI(tk.Tk):
         self.v_batt.set(f"{battery}%{ovr_s if 'B' in ovr else ''}")
         self.v_temp.set(f"{temp}C")
         self.v_hum.set(f"{hum}%")
+        self.v_temp2.set(f"{temp2}C")
+        self.v_hum2.set(f"{hum2}%")
+        self.v_us.set(f"lvl={us_lvl} freq={us_freq}")
+        self.v_vib.set(f"lvl={vib_lvl} freq={vib_freq}")
         self.v_alarm.set(f"Alarm: 0x{alarm:04X} ({sim.alarm_text(alarm)})")
         self.l_alarm.configure(foreground="red" if alarm else "green")
 

@@ -96,13 +96,13 @@ typedef struct
 {
     int16_t temperature1;
     uint16_t humidity1;
-} __attribute__((packed)) sensor_report_info_3300_t;
-
-typedef struct
-{
-    sensor_report_info_3300_t report_info;
-    uint8_t  sound_record[SENSOR_LARGE_DATA_INFO_MAX];
-} __attribute__((packed)) sensor_large_data_info_3300_t;
+    int16_t temperature2;
+    uint16_t humidity2;
+    uint16_t ultrasound_level;
+    uint8_t ultrasound_frequency;
+    uint16_t vibration_level;
+    uint8_t vibration_frequency;
+} sensor_report_info_3300_t;
 
 typedef struct
 {
@@ -110,6 +110,13 @@ typedef struct
     int8_t temperature_min1;
     uint8_t humidity_max1;
     uint8_t humidity_min1;
+    int8_t temperature_max2;
+    int8_t temperature_min2;
+    uint8_t humidity_max2;
+    uint8_t humidity_min2;
+    uint16_t ultrasound_level_max;
+    uint8_t  ultrasound_center_frequency;
+    uint16_t vibration_level_max;
     uint8_t  random_number;
 } __attribute__((packed)) sensor_config_info_3300_t;
 

@@ -93,6 +93,8 @@ static uint8_t validate_config(const config_t *pkt, int *idx_out)
 	}
 
 	config_slot[*idx_out].active = true;
+	config_slot[*idx_out].is_sent = false;
+	config_slot[*idx_out].is_applied = false;
 	config_slot[*idx_out].dst_device_id = pkt->dst_device_id;
 	config_slot[*idx_out].dst_device_type = pkt->dst_device_type;
 	config_slot[*idx_out].config_id = pkt->data_id;
@@ -383,7 +385,7 @@ int send_config(config_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priori
     // Add tracker entry for retries
 	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_CONFIG, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
-	LOG_INF_GRN("----> Sending CONFIG to device %s ID:%d", device_type_str(dst_type), dst_id);
+	LOG_INF_GRN("----> Sending CONFIG to device %s ID:%d (status: %d)", device_type_str(dst_type), dst_id, pkt->hdr.status);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -395,7 +397,7 @@ int send_config_ack(config_ack_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
 
-	LOG_INF_GRN("----> Sending CONFIG_ACK to device %s ID:%d", device_type_str(dst_type), dst_id);
+	LOG_INF_GRN("----> Sending CONFIG_ACK to device %s ID:%d (status: %d)", device_type_str(dst_type), dst_id, pkt->hdr.status);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -410,7 +412,7 @@ int send_config_received(config_received_t *pkt, uint16_t dst_id, uint8_t dst_ty
 	// Add tracker entry for retries
 	tracker_add(dst_id, get_device_id(), pkt->hdr.tracking_id, PACKET_CONFIG_RECEIVED, PACKET_TIMEOUT_MS, PACKET_MAX_RETRIES, pkt, sizeof(*pkt));
 
-	LOG_INF_GRN("----> Sending CONFIG_RECEIVED to device %s ID:%d", device_type_str(dst_type), dst_id);
+	LOG_INF_GRN("----> Sending CONFIG_RECEIVED to device %s ID:%d (status: %d)", device_type_str(dst_type), dst_id, pkt->hdr.status);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 
@@ -422,7 +424,7 @@ int send_config_received_ack(config_received_ack_t *pkt, uint16_t dst_id, uint8_
 	pkt->hdr.tracking_id = tracking_id;
 	pkt->hdr.device_id = dst_id;
 
-	LOG_INF_GRN("----> Sending CONFIG_RECEIVED_ACK to device %s ID:%d", device_type_str(dst_type), dst_id);
+	LOG_INF_GRN("----> Sending CONFIG_RECEIVED_ACK to device %s ID:%d (status: %d)", device_type_str(dst_type), dst_id, pkt->hdr.status);
 	return tx_queue_put(pkt, sizeof(*pkt), pkt->hdr.priority);
 }
 

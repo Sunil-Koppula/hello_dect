@@ -142,7 +142,7 @@ class GatewayGUI(tk.Tk):
         super().__init__()
         self.worker = worker
         self.title("hello_dect gateway host — config push / report view")
-        self.geometry("860x720")
+        self.geometry("1080x720")
         self.configure(padx=10, pady=10)
 
         self._build_config_form(default_sn)
@@ -159,7 +159,7 @@ class GatewayGUI(tk.Tk):
         ttk.Label(f, text="Auto-config is ON: these values are pushed back to "
                   "every reporting sensor's SN. 'Dest SN' is used only for the "
                   "manual Send button.", foreground="gray", wraplength=820,
-                  justify="left").grid(row=7, column=0, columnspan=4, sticky="w", pady=(6, 0))
+                  justify="left").grid(row=11, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         self.e = {}
 
@@ -187,37 +187,62 @@ class GatewayGUI(tk.Tk):
         field(2, 1, "Battery min %:", "bat_min", "30", width=8)
         field(3, 0, "Sleep time s:", "sleep", "600", width=8)
         field(3, 1, "Random:", "rand", "0", width=8)
-        field(4, 0, "Temp Max C:", "tmax", "40")
-        field(4, 1, "Temp Min C:", "tmin", "-10")
-        field(5, 0, "Hum Max %:", "hmax", "80")
-        field(5, 1, "Hum Min %:", "hmin", "20")
+        field(4, 0, "Temp1 Max C:", "tmax", "40")
+        field(4, 1, "Temp1 Min C:", "tmin", "-10")
+        field(5, 0, "Hum1 Max %:", "hmax", "80")
+        field(5, 1, "Hum1 Min %:", "hmin", "20")
+        field(6, 0, "Temp2 Max C:", "tmax2", "40")
+        field(6, 1, "Temp2 Min C:", "tmin2", "-10")
+        field(7, 0, "Hum2 Max %:", "hmax2", "80")
+        field(7, 1, "Hum2 Min %:", "hmin2", "20")
+        field(8, 0, "Ultrasound lvl max:", "us_max", "100")
+        field(8, 1, "Ultrasound ctr freq:", "us_freq", "0")
+        field(9, 0, "Vibration lvl max:", "vib_max", "500")
 
         self.v_notenc = tk.BooleanVar(value=True)
         ttk.Checkbutton(f, text="NOT_ENCRYPTED (0x01)", variable=self.v_notenc).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=4)
+            row=10, column=0, columnspan=2, sticky="w", pady=4)
         ttk.Button(f, text="Send AT#CONFIG", command=self._send_config).grid(
-            row=6, column=3, sticky="e")
+            row=10, column=3, sticky="e")
 
     def _build_config_from_form(self, dest_sn_hex: str):
         """Build (sn, data_id, payload) from the current form fields, targeting
         dest_sn_hex. Returns None on a parse error (logged). Must be called on
-        the Tk thread (reads widget values)."""
+        the Tk thread (reads widget values). Blank numeric fields fall back to
+        the given default rather than raising."""
+        def num(key, base=10, default=0):
+            s = self.e[key].get().strip()
+            if not s:
+                return default
+            return int(s, base)
+
+        dest_sn_hex = (dest_sn_hex or "").strip()
+        if not dest_sn_hex:
+            self.worker.log("config form error: Dest SN (hex) is empty")
+            return None
         try:
             sn = int(dest_sn_hex, 16)
-            data_id = int(self.e["data_id"].get(), 0)
+            data_id = num("data_id", base=0, default=1)
             command = (sim.CMD_DEMO_MODE if self.v_demo.get() else 0) | \
                       (sim.CMD_RESET if self.v_reset.get() else 0)
             payload = sim.build_config_payload(
                 dest_sn_hex=dest_sn_hex,
                 command=command,
-                new_fw_version=int(self.e["fw"].get(), 0),
-                battery_level_min=int(self.e["bat_min"].get()),
-                sleep_time_sec=int(self.e["sleep"].get()),
-                temp_max=int(self.e["tmax"].get()),
-                temp_min=int(self.e["tmin"].get()),
-                hum_max=int(self.e["hmax"].get()),
-                hum_min=int(self.e["hmin"].get()),
-                random_number=int(self.e["rand"].get()),
+                new_fw_version=num("fw", base=0, default=1),
+                battery_level_min=num("bat_min", default=30),
+                sleep_time_sec=num("sleep", default=600),
+                temp_max=num("tmax", default=40),
+                temp_min=num("tmin", default=-10),
+                hum_max=num("hmax", default=80),
+                hum_min=num("hmin", default=20),
+                temp_max2=num("tmax2", default=40),
+                temp_min2=num("tmin2", default=-10),
+                hum_max2=num("hmax2", default=80),
+                hum_min2=num("hmin2", default=20),
+                ultrasound_level_max=num("us_max", default=100),
+                ultrasound_center_frequency=num("us_freq", default=0),
+                vibration_level_max=num("vib_max", default=500),
+                random_number=num("rand", default=0),
                 config_flags=sim.FLAG_NOT_ENCRYPTED if self.v_notenc.get() else 0,
             )
         except ValueError as e:
@@ -236,13 +261,16 @@ class GatewayGUI(tk.Tk):
     def _build_report_table(self):
         f = ttk.LabelFrame(self, text="Incoming Reports (AT#REPORT)", padding=8)
         f.pack(fill="both", expand=True, pady=4)
-        cols = ("time", "uptime", "sn", "type", "batt", "temp", "hum", "alarm", "prio", "fw")
+        cols = ("time", "uptime", "sn", "type", "batt", "t1", "h1", "t2", "h2",
+                "us", "vib", "alarm", "prio", "fw")
         self.tree = ttk.Treeview(f, columns=cols, show="headings", height=10)
         widths = {"time": 70, "uptime": 95, "sn": 130, "type": 60, "batt": 50,
-                  "temp": 70, "hum": 70, "alarm": 150, "prio": 45, "fw": 40}
+                  "t1": 65, "h1": 65, "t2": 65, "h2": 65, "us": 80, "vib": 80,
+                  "alarm": 150, "prio": 45, "fw": 40}
         heads = {"time": "Recv Time", "uptime": "Dev Uptime", "sn": "SN", "type": "Type",
-                 "batt": "Batt%", "temp": "Temp C", "hum": "Hum %", "alarm": "Alarm",
-                 "prio": "Prio", "fw": "FW"}
+                 "batt": "Batt%", "t1": "Temp1 C", "h1": "Hum1 %", "t2": "Temp2 C",
+                 "h2": "Hum2 %", "us": "US lvl/frq", "vib": "Vib lvl/frq",
+                 "alarm": "Alarm", "prio": "Prio", "fw": "FW"}
         for c in cols:
             self.tree.heading(c, text=heads[c])
             self.tree.column(c, width=widths[c], anchor="w")
@@ -267,12 +295,15 @@ class GatewayGUI(tk.Tk):
         prio = "—" if rep["priority"] is None else rep["priority"]
         uptime = self._fmt_uptime(rep.get("timestamp"))
         if "raw" in d:
-            vals = (rep["ts"], uptime, rep["sn"], "?", "?", "?", "?",
+            vals = (rep["ts"], uptime, rep["sn"], "?", "?", "?", "?", "?", "?", "?", "?",
                     f"decode err ({d.get('note','')})", prio, "?")
             alarmed = False
         else:
             vals = (rep["ts"], uptime, d["sn"] or rep["sn"], f"0x{d['report_type']:04X}",
-                    d["battery_level"], d["temperature"], d["humidity"],
+                    d["battery_level"], d["temperature1"], d["humidity1"],
+                    d["temperature2"], d["humidity2"],
+                    f"{d['ultrasound_level']}/{d['ultrasound_frequency']}",
+                    f"{d['vibration_level']}/{d['vibration_frequency']}",
                     d["alarm_flags"], prio, d["firmware_version"])
             alarmed = d["alarm_flags_raw"] != 0
         item = self.tree.insert("", "end", values=vals, tags=("alarm",) if alarmed else ())
