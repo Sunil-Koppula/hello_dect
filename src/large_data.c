@@ -70,7 +70,8 @@ static int alloc_large_data_slot(uint32_t size)
     for (int i = 0; i < LARGE_DATA_SLOT_COUNT; i++) {
         if (is_ld_slot_empty[i]) {
             available_slots++;
-            if (available_slots * SEND_LARGE_DATA_MAX >= size) {
+            if (available_slots * LARGE_DATA_SLOT_SIZE >= size) {
+                LOG_INF("Found %d contiguous slots from %d - %d for size %u bytes", available_slots, i - available_slots + 1, i, size);
                 // Mark these slots as used
                 for (int j = i - available_slots + 1; j <= i; j++) {
                     is_ld_slot_empty[j] = false;
