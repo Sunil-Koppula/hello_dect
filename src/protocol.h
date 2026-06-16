@@ -354,6 +354,8 @@ typedef struct {
 
 #define REPORT_RECEIVED_ACK_PACKET_SIZE sizeof(report_received_ack_t)
 
+#define SEND_LARGE_DATA_MAX 160
+
 /* LARGE DATA INIT Packet */
 typedef struct {
 	packet_header_t hdr;
@@ -378,11 +380,11 @@ typedef struct {
 /* LARGE DATA CHUNK Packet */
 typedef struct {
 	packet_header_t hdr;
-	uint16_t gen_device_id;			/* short device ID of the device that generated this data (e.g. a sensor) */
-	uint8_t data_id;				/* ID of the data being sent (for the sender's reference, e.g. to match with ACKs) */
-	uint8_t page_index;				/* index of this page (starting from 0) */
-	uint8_t chunk_index;			/* index of this chunk within the page (starting from 0) */
-	uint8_t data[SEND_DATA_MAX];	/* chunk data */
+	uint16_t gen_device_id;				/* short device ID of the device that generated this data (e.g. a sensor) */
+	uint8_t data_id;					/* ID of the data being sent (for the sender's reference, e.g. to match with ACKs) */
+	uint8_t page_index;					/* index of this page (starting from 0) */
+	uint8_t chunk_index;				/* index of this chunk within the page (starting from 0) */
+	uint8_t data[SEND_LARGE_DATA_MAX];	/* chunk data */
 } __attribute__((packed)) large_data_chunk_t;
 
 #define LARGE_DATA_CHUNK_PACKET_SIZE sizeof(large_data_chunk_t)

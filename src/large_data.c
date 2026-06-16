@@ -20,7 +20,7 @@ LOG_MODULE_REGISTER(large_data, CONFIG_LARGE_DATA_LOG_LEVEL);
 
 static uint8_t crc_stage[LD_CRC_VERIFY_STAGE_SIZE];
 
-struct large_data_sender ld_sender[4]; // support up to 4 concurrent sending transfers
+struct large_data_sender ld_sender[LD_MAX_SENDER_PROCESS]; // support up to 4 concurrent sending transfers
 bool is_ld_slot_empty[LARGE_DATA_SLOT_COUNT];    /* Track empty slots */
 struct large_data_slot ld_slot[LARGE_DATA_RECEIVER_SLOT_COUNT];
 
@@ -28,7 +28,7 @@ struct large_data_slot ld_slot[LARGE_DATA_RECEIVER_SLOT_COUNT];
 /* ----------------------------------------------------------------------------**** Large Data Sender ****--------------------------------------------------------------------------- */
 static int find_sender_slot(uint16_t dst_id, uint8_t data_id)
 {
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < LD_MAX_SENDER_PROCESS; i++) {
 		if (ld_sender[i].active && ld_sender[i].gen_device_id == dst_id && ld_sender[i].data_id == data_id) {
 			return i;
 		}
@@ -70,14 +70,14 @@ static int alloc_large_data_slot(uint32_t size)
     for (int i = 0; i < LARGE_DATA_SLOT_COUNT; i++) {
         if (is_ld_slot_empty[i]) {
             available_slots++;
-            if (available_slots * SEND_DATA_MAX >= size) {
+            if (available_slots * SEND_LARGE_DATA_MAX >= size) {
                 // Mark these slots as used
                 for (int j = i - available_slots + 1; j <= i; j++) {
                     is_ld_slot_empty[j] = false;
                 }
                 ld_slot[idx].active = true;
-                ld_slot[idx].base_addr = LARGE_DATA_PSRAM_BASE + (i - available_slots + 1) * SEND_DATA_MAX;
-                LOG_INF("Allocated large data slot %d (PSRAM 0x%06x-0x%06x) for size %u bytes", idx, ld_slot[idx].base_addr, ld_slot[idx].base_addr + available_slots * SEND_DATA_MAX - 1, size);
+                ld_slot[idx].base_addr = LARGE_DATA_PSRAM_BASE + (i - available_slots + 1) * SEND_LARGE_DATA_MAX;
+                LOG_INF("Allocated large data slot %d (PSRAM 0x%06x-0x%06x) for size %u bytes", idx, ld_slot[idx].base_addr, ld_slot[idx].base_addr + available_slots * SEND_LARGE_DATA_MAX - 1, size);
                 return idx;
             }
         } else {
@@ -92,8 +92,8 @@ static void free_large_data_slot(int idx, uint8_t sender_idx)
     ld_slot[idx].active = false;
     nbtimeout_stop(&ld_slot[idx].idle_timeout);
     // Mark the corresponding PSRAM slots as empty
-    uint16_t start_slot = (ld_slot[idx].base_addr - LARGE_DATA_PSRAM_BASE) / SEND_DATA_MAX;
-    uint16_t slot_count = (ld_slot[idx].total_size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
+    uint16_t start_slot = (ld_slot[idx].base_addr - LARGE_DATA_PSRAM_BASE) / SEND_LARGE_DATA_MAX;
+    uint16_t slot_count = (ld_slot[idx].total_size + SEND_LARGE_DATA_MAX - 1) / SEND_LARGE_DATA_MAX;
     for (int i = start_slot; i < start_slot + slot_count; i++) {
         is_ld_slot_empty[i] = true;
     }
@@ -109,13 +109,13 @@ static uint16_t chunk_size_for_large_data(uint16_t chunk_idx, uint8_t sender_idx
     if (chunk_idx == last_chunk_index) {
         return ld_sender[sender_idx].last_chunk_size;
     }
-    return SEND_DATA_MAX;
+    return SEND_LARGE_DATA_MAX;
 }
 
 static int send_next_large_data_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t sender_idx)
 {
-    uint16_t page_idx = ld_sender[sender_idx].next_chunk / 20;
-    uint8_t chunk_idx = ld_sender[sender_idx].next_chunk % 20;
+    uint16_t page_idx = ld_sender[sender_idx].next_chunk / LARGE_DATA_CHUNKS_PER_SIZE;
+    uint8_t chunk_idx = ld_sender[sender_idx].next_chunk % LARGE_DATA_CHUNKS_PER_SIZE;
     uint16_t csz = chunk_size_for_large_data(ld_sender[sender_idx].next_chunk, sender_idx);
 
     large_data_chunk_t chunk_pkt;
@@ -125,7 +125,7 @@ static int send_next_large_data_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t
     chunk_pkt.page_index = page_idx;
     chunk_pkt.chunk_index = chunk_idx;
 
-    uint32_t addr = ld_sender[sender_idx].base_addr + (uint32_t)ld_sender[sender_idx].next_chunk * SEND_DATA_MAX;
+    uint32_t addr = ld_sender[sender_idx].base_addr + (uint32_t)ld_sender[sender_idx].next_chunk * SEND_LARGE_DATA_MAX;
     int err = psram_read(addr, chunk_pkt.data, csz);
     if (err) {
         LOG_ERR("psram_read @0x%06x failed (%d), aborting transfer", addr, err);
@@ -158,7 +158,7 @@ static uint8_t validate_large_data_slot(const large_data_init_t *pkt)
         ld_slot[idx].last_chunk_size = pkt->last_chunk_size;
         ld_slot[idx].crc32 = pkt->crc32;
         ld_slot[idx].received_count = 0;
-        ld_slot[idx].total_chunks = (pkt->total_size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
+        ld_slot[idx].total_chunks = (pkt->total_size + SEND_LARGE_DATA_MAX - 1) / SEND_LARGE_DATA_MAX;
         nbtimeout_init(&ld_slot[idx].idle_timeout, LARGE_DATA_SLOT_TIMEOUT_MS, 0);
     } else if (ld_slot[idx].active && ld_slot[idx].upstream_ready) {
         return STATUS_COMPLETE;
@@ -213,14 +213,14 @@ static uint8_t validate_large_data_chunk(const large_data_chunk_t *pkt)
         return STATUS_INVALID_PARAMETER;
     }
 
-    if (ld_slot[idx].received_count > (pkt->page_index * 20 + pkt->chunk_index)) {
+    if (ld_slot[idx].received_count > (pkt->page_index * LARGE_DATA_CHUNKS_PER_SIZE + pkt->chunk_index)) {
         LOG_WRN("LARGE_DATA_CHUNK rejected: Page: %d Chunk: %d already received for gen %d data_id %d", pkt->page_index, pkt->chunk_index, pkt->gen_device_id, pkt->data_id);
         return STATUS_ALREADY_EXISTS;
     }
 
-    uint16_t linear = pkt->page_index * 20 + pkt->chunk_index;
-    uint32_t addr = ld_slot[idx].base_addr + (uint32_t)linear * SEND_DATA_MAX;
-    uint16_t csz = (linear == ld_slot[idx].total_chunks - 1) ? ld_slot[idx].last_chunk_size : SEND_DATA_MAX;
+    uint16_t linear = pkt->page_index * LARGE_DATA_CHUNKS_PER_SIZE + pkt->chunk_index;
+    uint32_t addr = ld_slot[idx].base_addr + (uint32_t)linear * SEND_LARGE_DATA_MAX;
+    uint16_t csz = (linear == ld_slot[idx].total_chunks - 1) ? ld_slot[idx].last_chunk_size : SEND_LARGE_DATA_MAX;
 
     int err = psram_write(addr, pkt->data, csz);
     LOG_INF("Addr: 0x%06x", addr);
@@ -271,7 +271,7 @@ static void anchor_large_data_tick(void)
         return;
     }
 
-    for (int sender_idx = 0; sender_idx < 4; sender_idx++) {
+    for (int sender_idx = 0; sender_idx < LD_MAX_SENDER_PROCESS; sender_idx++) {
         int idx = 0;
 
         if (ld_sender[sender_idx].active) {
@@ -349,7 +349,7 @@ static void sensor_large_data_tick(void)
         return;
     }
 
-    for (int sender_idx = 0; sender_idx < 4; sender_idx++) {
+    for (int sender_idx = 0; sender_idx < LD_MAX_SENDER_PROCESS; sender_idx++) {
         int idx = 0;
 
         if (ld_sender[sender_idx].active) {
@@ -722,7 +722,7 @@ void handle_large_data_chunk_ack(const large_data_chunk_ack_t *pkt, uint16_t dst
         return;
     }
 
-    if ((pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) && pkt->page_index == (ld_sender[sender_idx].page_count - 1) && pkt->chunk_index == (ld_sender[sender_idx].total_chunks - 1) % 20) {
+    if ((pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) && pkt->page_index == (ld_sender[sender_idx].page_count - 1) && pkt->chunk_index == (ld_sender[sender_idx].total_chunks - 1) % LARGE_DATA_CHUNKS_PER_SIZE) {
         LOG_INF("Large data transfer complete for gen %d data_id %d (status 0x%02x last_chunk_size %d page_count %d/%d chunk_index %d)", pkt->gen_device_id, pkt->data_id, pkt->hdr.status, ld_sender[sender_idx].last_chunk_size, ld_sender[sender_idx].page_count, pkt->page_index, pkt->chunk_index);
         free_sender_slot(sender_idx);
         int idx = find_large_data_slot(ld_sender[sender_idx].gen_device_id, ld_sender[sender_idx].data_id);
@@ -979,7 +979,7 @@ void cmd_ld_init(const char *args)
     ld_slot[idx].total_size = (uint32_t)v_total;
     ld_slot[idx].total_chunks = v_chunks;
     ld_slot[idx].last_chunk_size = (uint16_t)v_last;
-    ld_slot[idx].page_count = (v_chunks + LARGE_DATA_CHUNKS_PER_SIZE - 1) / LARGE_DATA_CHUNKS_PER_SIZE; // 20 chunks per page
+    ld_slot[idx].page_count = (v_chunks + LARGE_DATA_CHUNKS_PER_SIZE - 1) / LARGE_DATA_CHUNKS_PER_SIZE; // 32 chunks per page
     ld_slot[idx].crc32 = (uint32_t)v_crc32;
     ld_slot[idx].received_count = 0;
     nbtimeout_init(&ld_slot[idx].idle_timeout, LARGE_DATA_SLOT_TIMEOUT_MS, 0);
@@ -1113,8 +1113,8 @@ void cmd_ld_chunk(const char *args)
             at_error();
             return;
         }
-        ld_slot[idx].total_chunks = (ld_slot[idx].total_size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
-        ld_slot[idx].last_chunk_size = (uint16_t)(ld_slot[idx].total_size - (ld_slot[idx].total_chunks - 1) * SEND_DATA_MAX);
+        ld_slot[idx].total_chunks = (ld_slot[idx].total_size + SEND_LARGE_DATA_MAX - 1) / SEND_LARGE_DATA_MAX;
+        ld_slot[idx].last_chunk_size = (uint16_t)(ld_slot[idx].total_size - (ld_slot[idx].total_chunks - 1) * SEND_LARGE_DATA_MAX);
         ld_slot[idx].page_count = (ld_slot[idx].total_chunks + LARGE_DATA_CHUNKS_PER_SIZE - 1) / LARGE_DATA_CHUNKS_PER_SIZE;
         ld_slot[idx].received_count = ld_slot[idx].total_chunks;
         ld_slot[idx].upstream_ready = true;

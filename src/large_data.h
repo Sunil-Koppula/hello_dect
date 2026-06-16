@@ -8,20 +8,22 @@
 #include "psram.h"
 #include "timeout.h"
 
-#define LARGE_DATA_CHUNKS_PER_SIZE              20
-#define LARGE_DATA_SLOT_SIZE                    (LARGE_DATA_CHUNKS_PER_SIZE * SEND_DATA_MAX)
+#define LARGE_DATA_CHUNKS_PER_SIZE              32
+#define LARGE_DATA_SLOT_SIZE                    (LARGE_DATA_CHUNKS_PER_SIZE * SEND_LARGE_DATA_MAX)
 #define LARGE_DATA_SLOT_COUNT                   (PSRAM_LARGE_DATA_SIZE / LARGE_DATA_SLOT_SIZE)
 #define LARGE_DATA_PSRAM_SIZE                   (LARGE_DATA_SLOT_COUNT * LARGE_DATA_SLOT_SIZE)
 
 #define LARGE_DATA_PSRAM_BASE                   PSRAM_LARGE_DATA_BASE
-#define LARGE_DATA_RECEIVER_SLOT_COUNT          64
+#define LARGE_DATA_RECEIVER_SLOT_COUNT          16
 #define SOUND_RECORD_DATA_MAX_SIZE              (200 * 1024)  /* 200KB max sound record size */
 #define LARGE_DATA_MAX_TRANSFER_SIZE            (SOUND_RECORD_DATA_MAX_SIZE + 64) /* some buffer for metadata */
 #define LARGE_DATA_SLOT_TIMEOUT_MS              (30 * 1000)  /* free slot if idle this long */
-#define PACKET_LARGE_DATA_TIMEOUT_MS            (70) /* 70ms timeout for waiting ACKs before retrying */
+#define PACKET_LARGE_DATA_TIMEOUT_MS            (100) /* 100ms timeout for waiting ACKs before retrying */
 #define LD_SENDER_TIMEOUT_MS                    (3 * 60 * 1000) /* 3 minutes timeout for sender to wait for transfer completion before giving up */
 
 #define LD_CRC_VERIFY_STAGE_SIZE                1024  /* Read and process data in 1KB stages for CRC verification */
+#define LD_MAX_SENDER_PROCESS                   1     /* Max concurrent sending transfers tracked */
+#define LD_MAX_RECEIVER_PROCESS                 LARGE_DATA_RECEIVER_SLOT_COUNT /* Max concurrent receiving transfers tracked, aligned with receiver slot count */
 
 struct large_data_sender {
     bool        active;
@@ -57,7 +59,7 @@ struct large_data_slot {
     struct nbtimeout idle_timeout;    
 };
 
-extern struct large_data_sender ld_sender[4]; // support up to 4 concurrent sending transfers
+extern struct large_data_sender ld_sender[LD_MAX_SENDER_PROCESS];
 extern bool is_ld_slot_empty[LARGE_DATA_SLOT_COUNT];    /* Track empty slots */
 extern struct large_data_slot ld_slot[LARGE_DATA_RECEIVER_SLOT_COUNT];
 
