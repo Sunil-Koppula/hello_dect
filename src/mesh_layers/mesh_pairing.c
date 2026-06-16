@@ -317,7 +317,7 @@ void handle_pair_request(const pair_request_t *pkt, uint16_t dst_id, int16_t rss
         return;
     }
 
-    if (status == STATUS_ALREADY_EXISTS) {
+    if (status == STATUS_ALREADY_EXISTS && pkt->hdr.device_type == DEVICE_TYPE_ANCHOR) {
         return;
     }
 
@@ -394,8 +394,8 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
     /* Remove tracker entry for the pair request. */
     tracker_remove_by_tracking_id(pkt->hdr.tracking_id);
 
-    // Process only packets with status_success
-    if (pkt->hdr.status != STATUS_SUCCESS) {
+    // Process only packets with status_success or status_already_exists
+    if (pkt->hdr.status != STATUS_SUCCESS && pkt->hdr.status != STATUS_ALREADY_EXISTS) {
         return;
     }
 
@@ -436,6 +436,10 @@ void handle_pair_response(const pair_response_t *pkt, uint16_t dst_id, int16_t r
                 // Check if device is already paired with this gateway/anchor
                 if (check_infra_storage(dst_id, pkt->hdr.device_type, true) == STATUS_ALREADY_EXISTS) {
                     // send repair request
+                    send_repair_request(dst_id, pkt->hdr.device_type);
+                    return;
+                }
+                if (pkt->hdr.status == STATUS_ALREADY_EXISTS) {
                     send_repair_request(dst_id, pkt->hdr.device_type);
                     return;
                 }
