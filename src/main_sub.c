@@ -58,6 +58,7 @@ static int main_sub_init(void)
                     LOG_INF("Already paired with %s ID: %d", device_type_str(infra_devices[i].entry.device_type), infra_devices[i].entry.device_id);
                 }
                 if (infra_count >= MAX_ANCHORS) {
+                    main_sub_initialized = true;
                     return 0;
                 }
             }
@@ -71,6 +72,7 @@ static int main_sub_init(void)
             if (infra_count > 0) {
                 LOG_INF("Already paired with %s ID: %d", device_type_str(infra_devices[0].entry.device_type), infra_devices[0].entry.device_id);
                 set_connected_device_id(infra_devices[0].entry.device_id);
+                main_sub_initialized = true;
                 return 0;
             }
             /* Not paired — start pairing. */
@@ -251,6 +253,41 @@ static void process_rx(const uint8_t *data, uint16_t sender_id, int16_t rssi_2)
 	}
 }
 
+static int main_sub_rx_process(void) {
+    struct rx_data_item rx_item;
+    int rx_count = 0;
+
+    while (rx_count < MAX_RX_QUEUE_PROCESS_PER_CYCLE && rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
+        process_rx(rx_item.data, rx_item.sender_id, rx_item.rssi_2);
+        rx_count++;
+    }
+    return rx_count;
+}
+
+static void main_sub_tick(void)
+{
+    // Mesh Processor
+    mesh_tick();
+
+    // PIng known devices
+    known_devices_tick();
+
+    // Tracker Processor
+    tracker_tick(tracker_default_expired_cb);
+
+    // Config Processor
+    config_tick();
+
+    // Report/Data Processor
+    report_tick();
+
+    // Large Data Processor
+    large_data_tick();
+
+    // Implement OTA later
+    // ota_tick();
+}
+
 void main_sub_run(void)
 {
     int rc = 0;
@@ -287,20 +324,18 @@ void main_sub_run(void)
                 main_sub_state = MAIN_SUB_ERROR;
                 break;
             }
-            k_sem_take(&operation_sem, K_FOREVER);
-            main_sub_state = MAIN_SUB_RX_PROCESS;
-        }
-        break;
 
-        case MAIN_SUB_RX_PROCESS:
-        {
-            struct rx_data_item rx_item;
-            int rx_count = 0;
-
-            while (rx_count < MAX_RX_QUEUE_PROCESS_PER_CYCLE && rx_queue_get(&rx_item, K_NO_WAIT) == 0) {
-                process_rx(rx_item.data, rx_item.sender_id, rx_item.rssi_2);
-                rx_count++;
+            while (k_sem_take(&operation_sem, K_NO_WAIT) != 0) {
+                if (main_sub_rx_process() == 0) {
+                    k_msleep(1);
+                }
             }
+
+            main_sub_rx_process();
+
+            // Tick for other modules
+            main_sub_tick();
+
             main_sub_state = MAIN_SUB_TX_PROCESS;
         }
         break;
@@ -320,7 +355,9 @@ void main_sub_run(void)
                 k_sem_take(&operation_sem, K_FOREVER);
                 tx_count++;
             }
-            main_sub_state = MAIN_SUB_RX_WINDOW;
+            if (main_sub_state != MAIN_SUB_ERROR) {
+                main_sub_state = MAIN_SUB_RX_WINDOW;
+            }
         }
         break;
 

@@ -14,11 +14,10 @@
 #define LARGE_DATA_PSRAM_SIZE                   (LARGE_DATA_SLOT_COUNT * LARGE_DATA_SLOT_SIZE)
 
 #define LARGE_DATA_PSRAM_BASE                   PSRAM_LARGE_DATA_BASE
-#define LARGE_DATA_RECEIVER_SLOT_COUNT          16
-#define SOUND_RECORD_DATA_MAX_SIZE              (200 * 1024)  /* 200KB max sound record size */
-#define LARGE_DATA_MAX_TRANSFER_SIZE            (SOUND_RECORD_DATA_MAX_SIZE + 64) /* some buffer for metadata */
+#define LARGE_DATA_RECEIVER_SLOT_COUNT          64
+#define LARGE_DATA_MAX_TRANSFER_SIZE            (200 * 1024) /* some buffer for metadata */
 #define LARGE_DATA_SLOT_TIMEOUT_MS              (30 * 1000)  /* free slot if idle this long */
-#define PACKET_LARGE_DATA_TIMEOUT_MS            (100) /* 100ms timeout for waiting ACKs before retrying */
+#define PACKET_LARGE_DATA_TIMEOUT_MS            (70) /* 100ms timeout for waiting ACKs before retrying */
 #define LD_SENDER_TIMEOUT_MS                    (3 * 60 * 1000) /* 3 minutes timeout for sender to wait for transfer completion before giving up */
 
 #define LD_CRC_VERIFY_STAGE_SIZE                1024  /* Read and process data in 1KB stages for CRC verification */
@@ -55,6 +54,7 @@ struct large_data_slot {
     uint16_t    total_chunks;
     uint32_t    crc32;
     uint16_t    received_count;
+    uint8_t     received_chunks_bitmap[((LARGE_DATA_MAX_TRANSFER_SIZE / SEND_LARGE_DATA_MAX) + 7) / 8];
     uint32_t    base_addr;
     struct nbtimeout idle_timeout;    
 };

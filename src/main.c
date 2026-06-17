@@ -114,20 +114,6 @@ int main(void)
 		main_sub_run();
 		// SLM AT Command Processor
 		slm_at_run_cycle();
-		// Mesh Processor
-		mesh_tick();
-		// Tracker Processor
-		tracker_tick(tracker_default_expired_cb);
-		// Config Processor
-		config_tick();
-		// Report/Data Processor
-		report_tick();
-		// Large Data Processor
-		large_data_tick();
-		// Implement OTA later
-		// ota_tick();
-		// PIng known devices
-		known_devices_tick();
 	}
 
 	return 0;

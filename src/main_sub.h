@@ -11,7 +11,6 @@ typedef enum
 {
     MAIN_SUB_INIT = 0,
     MAIN_SUB_RX_WINDOW,
-    MAIN_SUB_RX_PROCESS,
     MAIN_SUB_TX_PROCESS,
     MAIN_SUB_ERROR
 } main_sub_state_t;
