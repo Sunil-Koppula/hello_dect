@@ -22,7 +22,6 @@
 LOG_MODULE_REGISTER(main_sub, CONFIG_MAIN_SUB_LOG_LEVEL);
 
 static bool main_sub_initialized = false;
-static uint32_t rx_window_ms = 0;
 
 static int main_sub_init(void)
 {
@@ -44,7 +43,6 @@ static int main_sub_init(void)
     switch (get_device_type()) {
         case DEVICE_TYPE_GATEWAY:
         {
-            rx_window_ms = GATEWAY_RX_WINDOW_MS;
             // Ping known devices
             ping_known_devices(0, STATUS_SUCCESS);
         }
@@ -52,7 +50,6 @@ static int main_sub_init(void)
 
         case DEVICE_TYPE_ANCHOR:
         {
-            rx_window_ms = ANCHOR_RX_WINDOW_MS;
             if (infra_count > 0) {
                 for (int i = 0; i < infra_count; i++) {
                     LOG_INF("Already paired with %s ID: %d", device_type_str(infra_devices[i].entry.device_type), infra_devices[i].entry.device_id);
@@ -68,7 +65,6 @@ static int main_sub_init(void)
 
         case DEVICE_TYPE_SENSOR:
         {
-            rx_window_ms = SENSOR_RX_WINDOW_MS;
             if (infra_count > 0) {
                 LOG_INF("Already paired with %s ID: %d", device_type_str(infra_devices[0].entry.device_type), infra_devices[0].entry.device_id);
                 set_connected_device_id(infra_devices[0].entry.device_id);
@@ -318,7 +314,7 @@ void main_sub_run(void)
 
         case MAIN_SUB_RX_WINDOW:
         {
-            rc = receive(1, rx_window_ms);
+            rc = receive(1, 100);
             if (rc) {
                 LOG_ERR("Reception failed, err %d", rc);
                 main_sub_state = MAIN_SUB_ERROR;

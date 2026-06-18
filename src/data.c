@@ -148,19 +148,47 @@ static uint8_t chunk_size_for(uint8_t chunk_idx, uint8_t sender_idx)
 
 static int send_next_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t sender_idx)
 {
-	uint8_t idx = report_sender[sender_idx].next_chunk;
-	if (idx >= report_sender[sender_idx].chunk_count) {
-		LOG_ERR("send_next_chunk called but all chunks already sent");
+	for (int i = 0; i < (report_sender[sender_idx].total_size + SEND_DATA_MAX - 1) / SEND_DATA_MAX; i++) {
+		uint8_t idx = report_sender[sender_idx].next_chunk;
+		if (idx >= report_sender[sender_idx].chunk_count) {
+			LOG_ERR("send_next_chunk called but all chunks already sent");
+			return -EINVAL;
+		}
+		uint8_t csz = chunk_size_for(idx, sender_idx);
+
+		memset(&chunk_pkt, 0, sizeof(chunk_pkt));
+		chunk_pkt.gen_device_id = report_sender[sender_idx].gen_device_id;
+		chunk_pkt.data_id = report_sender[sender_idx].data_id;
+		chunk_pkt.chunk_index = idx;
+
+		uint32_t addr = slot_psram_addr(0) + (uint32_t)idx * SEND_DATA_MAX;
+		int err = psram_read(addr, chunk_pkt.data, csz);
+		if (err) {
+			LOG_ERR("psram_read @0x%06x failed (%d), aborting transfer", addr, err);
+			report_sender[sender_idx].active = false;
+			return err;
+		}
+
+		send_report_chunk(&chunk_pkt, dst_id, dst_type, report_sender[sender_idx].priority, sender_idx);
+		report_sender[sender_idx].next_chunk = idx + 1;
+	}
+	return 0;
+}
+
+static int resend_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t sender_idx, uint8_t chunk_idx)
+{
+	if (chunk_idx >= report_sender[sender_idx].chunk_count) {
+		LOG_ERR("resend_chunk called with invalid chunk_idx %d", chunk_idx);
 		return -EINVAL;
 	}
-	uint8_t csz = chunk_size_for(idx, sender_idx);
+	uint8_t csz = chunk_size_for(chunk_idx, sender_idx);
 
 	memset(&chunk_pkt, 0, sizeof(chunk_pkt));
 	chunk_pkt.gen_device_id = report_sender[sender_idx].gen_device_id;
 	chunk_pkt.data_id = report_sender[sender_idx].data_id;
-	chunk_pkt.chunk_index = idx;
+	chunk_pkt.chunk_index = chunk_idx;
 
-	uint32_t addr = slot_psram_addr(0) + (uint32_t)idx * SEND_DATA_MAX;
+	uint32_t addr = slot_psram_addr(0) + (uint32_t)chunk_idx * SEND_DATA_MAX;
 	int err = psram_read(addr, chunk_pkt.data, csz);
 	if (err) {
 		LOG_ERR("psram_read @0x%06x failed (%d), aborting transfer", addr, err);
@@ -169,7 +197,6 @@ static int send_next_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t sender_idx
 	}
 
 	send_report_chunk(&chunk_pkt, dst_id, dst_type, report_sender[sender_idx].priority, sender_idx);
-	report_sender[sender_idx].next_chunk = idx + 1;
 	return 0;
 }
 
@@ -886,17 +913,11 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 					return;
 				} else if (pkt->hdr.status == STATUS_FAILURE || pkt->hdr.status == STATUS_INVALID_PARAMETER) {
 					// Rebuild same chunk and resend
-					report_sender[sender_idx].next_chunk--;
-				}
-				// Send next chunk if status is success
-				if (send_next_chunk(dst_id, pkt->hdr.device_type, sender_idx) != 0) {
-					report_sender[sender_idx].active = false;
-					int idx = find_slot(report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
-					if (idx < 0) {
-						LOG_ERR("No active slot found for gen %d data_id %d on chunk ack error, this should not happen", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+					if (resend_chunk(dst_id, pkt->hdr.device_type, sender_idx, pkt->chunk_index) != 0) {
+						LOG_ERR("Failed to resend chunk %d for gen %d data_id %d after receiving failure ack, marking sender inactive to retry", pkt->chunk_index, report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+						report_sender[sender_idx].active = false;
 						return;
 					}
-					report_slot[idx].is_sent = false;
 				}
 			} else {
 				// Reject report chunk ack except from gateway and anchor

@@ -3,10 +3,6 @@
 
 #include <stdint.h>
 
-#define GATEWAY_RX_WINDOW_MS    25
-#define ANCHOR_RX_WINDOW_MS		20
-#define SENSOR_RX_WINDOW_MS		20
-
 typedef enum
 {
     MAIN_SUB_INIT = 0,
