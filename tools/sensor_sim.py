@@ -31,8 +31,12 @@ All header fields are uppercase hex; CRC32 is zlib.crc32 (== Zephyr crc32_ieee)
 over the raw payload bytes.
 
 Payloads are packed C structs from tools/sensor_structure.c:
-    report  -> sensor_data_structure_t   (name "ESC33", report_type 0x3300)
-    config  -> sensor_config_structure_t (name "ESC21")
+    report     -> sensor_data_structure_t       (name "ESC33", report_type 0x3300)
+    config     -> sensor_config_structure_t     (name "ESC21")
+    large data -> sensor_large_data_structure_t (name "ESC33", data_type 0x3300)
+The AT#LD large-data blob is a serialized sensor_large_data_structure_t: a
+29-byte fixed header followed by data_info_3300 (a 14-byte sensor_report_info_
+3300_t plus the raw sound_record samples).
 
 Examples:
     # Run as a live 3300 sensor: drains battery, generates readings, reports
@@ -78,7 +82,7 @@ MAX_CONFIG_SIZE = 128           # src/config.h MAX_CONFIG_SIZE
 # (src/slm_at_main.c) -> ~955-char line, safely under the firmware's
 # SLM_UART_AT_COMMAND_LEN (1024, minus 1 for the NUL = 1023 usable).
 AT_LD_PAYLOAD_MAX = 450         # bytes of binary payload per AT#LD chunk
-LD_CHUNKS_PER_PAGE = 20         # chunk index rolls to next page after 20, matching
+LD_CHUNKS_PER_PAGE = 32         # chunk index rolls to next page after 32, matching
                                 # LARGE_DATA_CHUNKS_PER_SIZE in src/large_data.h
 LARGE_DATA_MAX_TRANSFER = 200 * 1024  # src/large_data.h LARGE_DATA_MAX_TRANSFER_SIZE
 # Flow control: the firmware AT RX buffer cannot absorb back-to-back lines (it
@@ -97,6 +101,10 @@ DEFAULT_BATTERY_MIN = 30        # battery_level_min alarm threshold before confi
 REPORT_NAME = "ESC33"
 CONFIG_NAME = "ESC21"
 REPORT_TYPE_3300 = 0x3300
+
+# Large-data structure identity (sensor_large_data_structure_t).
+LARGE_DATA_NAME = "ESC33"       # name[6], same convention as the report
+LARGE_DATA_TYPE_3300 = 0x3300   # sensor_large_data_type_t
 
 # report_flags / config_flags: 0x01 = NOT_ENCRYPTED (see sensor_structure.c).
 FLAG_NOT_ENCRYPTED = 0x01
@@ -138,6 +146,7 @@ def alarm_text(flags: int) -> str:
 
 SENSOR_REPORT_INFO_MAX = 16
 SENSOR_CONFIG_INFO_MAX = 16
+SENSOR_LARGE_DATA_INFO_MAX = 200 * 1024   # whole sensor_large_data_structure_t budget (200 KB)
 SENSOR_DATA_STR_SN_MAX = 12
 SENSOR_REPORT_CONFIG_NAME_MAX = 6   # "ESC33"/"ESC21" fit (5 chars + NUL)
 
@@ -492,6 +501,140 @@ def build_config_payload(*, dest_sn_hex: str, command: int, new_fw_version: int,
 
 
 # ---------------------------------------------------------------------------
+# sensor_large_data_structure_t (name "ESC33", data_type 0x3300)
+#
+# Mirrors sensor_structure.c: a 29-byte fixed header followed by the data_info
+# union. For data_type 0x3300 the union is a sensor_large_data_info_3300_t — a
+# 14-byte sensor_report_info_3300_t header immediately followed by the raw
+# sound_record samples. The WHOLE structure is bounded by
+# SENSOR_LARGE_DATA_INFO_MAX (200 KB): header(29) + union(SENSOR_LARGE_DATA_INFO_MAX
+# - 29) == 200 KB. In firmware it's staged in PSRAM; on the wire we serialize
+# only the populated data_info bytes, so the transferred blob is header + data_info.
+# ---------------------------------------------------------------------------
+
+def _large_data_fmt() -> str:
+    """struct format for the 29-byte fixed header of
+    sensor_large_data_structure_t (packed, fixed-width)."""
+    return ("<"
+            "6s"   # name[6]
+            "12s"  # sn[12]
+            "H"    # data_type        (sensor_large_data_type_t)
+            "H"    # firmware_version
+            "B"    # battery_level
+            "I"    # total_size       (size of the populated data_info)
+            "H")   # large_data_crc16
+
+
+LARGE_DATA_HEADER_SIZE = struct.calcsize(_large_data_fmt())        # 29
+REPORT_INFO_3300_SIZE = struct.calcsize(_report_info_3300_fmt())   # 14
+
+# Largest sound_record, derived so the WHOLE structure stays <= 200 KB:
+# header(29) + report_info_3300(14) + sound_record <= SENSOR_LARGE_DATA_INFO_MAX.
+# This matches the C sound_record[SENSOR_LARGE_DATA_INFO_MAX - 14 - 29] array.
+LARGE_DATA_SOUND_RECORD_MAX = (SENSOR_LARGE_DATA_INFO_MAX
+                               - LARGE_DATA_HEADER_SIZE - REPORT_INFO_3300_SIZE)
+# A single mesh transfer is also capped at LARGE_DATA_MAX_TRANSFER; the 200 KB
+# structure fits because both budgets are 200 KB.
+assert SENSOR_LARGE_DATA_INFO_MAX <= LARGE_DATA_MAX_TRANSFER, \
+    "large-data structure budget exceeds the mesh transfer cap"
+
+
+def build_large_data_info_3300(sound_record: bytes, *, temperature1: float,
+                               humidity1: float, temperature2: float = 0.0,
+                               humidity2: float = 0.0, ultrasound_level: int = 0,
+                               ultrasound_frequency: int = 0,
+                               vibration_level: int = 0,
+                               vibration_frequency: int = 0) -> bytes:
+    """Pack a sensor_large_data_info_3300_t: the 14-byte sensor_report_info_3300_t
+    header (same field layout as the 3300 report_info) followed by the raw
+    sound_record samples. Unlike build_report_info_3300() this is NOT padded out
+    to a fixed union — only the populated data_info bytes are serialized, and the
+    sound_record is capped (LARGE_DATA_SOUND_RECORD_MAX) so the whole wrapped
+    structure stays <= SENSOR_LARGE_DATA_INFO_MAX (200 KB)."""
+    info = struct.pack(
+        _report_info_3300_fmt(),
+        _temp_x100(temperature1), _hum_x100(humidity1),
+        _temp_x100(temperature2), _hum_x100(humidity2),
+        ultrasound_level & 0xFFFF, ultrasound_frequency & 0xFF,
+        vibration_level & 0xFFFF, vibration_frequency & 0xFF,
+    )
+    return info + bytes(sound_record)
+
+
+def build_large_data_payload(*, sn_hex: str, firmware_version: int,
+                             battery_level: int, data_info: bytes,
+                             data_type: int = LARGE_DATA_TYPE_3300) -> bytes:
+    """Pack a sensor_large_data_structure_t into its on-wire bytes: the 29-byte
+    header (name "ESC33", SN, data_type, firmware, battery, total_size, crc16)
+    followed by data_info. total_size records the populated data_info length;
+    large_data_crc16 is CCITT-FALSE over data_info, matching the report/config
+    convention in this file."""
+    total_size = len(data_info)
+    large_data_crc16 = _crc16_ccitt(data_info)
+    header = struct.pack(
+        _large_data_fmt(),
+        _name_bytes(LARGE_DATA_NAME, SENSOR_REPORT_CONFIG_NAME_MAX),
+        _name_bytes(sn_hex.upper(), SENSOR_DATA_STR_SN_MAX),
+        data_type & 0xFFFF,
+        firmware_version & 0xFFFF,
+        battery_level & 0xFF,
+        total_size & 0xFFFFFFFF,
+        large_data_crc16 & 0xFFFF,
+    )
+    return header + data_info
+
+
+def decode_large_data_payload(payload: bytes) -> Optional[dict]:
+    """Decode a reassembled sensor_large_data_structure_t blob (the bytes a
+    large-data transfer carries). Returns a dict with a 'raw' marker if the blob
+    is too short to even hold the 29-byte header. For data_type 0x3300 the
+    data_info_3300 (a 14-byte sensor_report_info_3300_t + sound_record) is
+    decoded; the sound_record length is reported but the samples are not."""
+    hdr_fmt = _large_data_fmt()
+    hdr_size = struct.calcsize(hdr_fmt)
+    if len(payload) < hdr_size:
+        return {"raw": payload.hex().upper(),
+                "note": f"len {len(payload)} < header {hdr_size}"}
+    (name, sn, data_type, fw, battery,
+     total_size, large_data_crc16) = struct.unpack(hdr_fmt, payload[:hdr_size])
+    data_info = payload[hdr_size:]
+    info = {}
+    sound_record_len = 0
+    known = (data_type == LARGE_DATA_TYPE_3300)
+    if known:
+        layout = REPORT_INFO_LAYOUT[0x3300]
+        ri_size = struct.calcsize(_info_fmt(layout))   # 14
+        if len(data_info) >= ri_size:
+            try:
+                info = _decode_info(layout, data_info[:ri_size])
+            except struct.error:
+                info = {}
+            sound_record_len = len(data_info) - ri_size
+    return {
+        "name": name.split(b"\x00", 1)[0].decode("ascii", "replace"),
+        "sn": sn.split(b"\x00", 1)[0].decode("ascii", "replace"),
+        "data_type": data_type,
+        "data_type_known": known,
+        "firmware_version": fw,
+        "battery_level": battery,
+        # total_size is the populated data_info length stored in the header.
+        "total_size": total_size,
+        "large_data_crc16": f"0x{large_data_crc16:04X}",
+        "data_info_len": len(data_info),
+        "sound_record_len": sound_record_len,
+        "report_info": info,
+        "temperature1": info.get("temperature1", 0.0),
+        "humidity1": info.get("humidity1", 0.0),
+        "temperature2": info.get("temperature2", 0.0),
+        "humidity2": info.get("humidity2", 0.0),
+        "ultrasound_level": info.get("ultrasound_level", 0),
+        "ultrasound_frequency": info.get("ultrasound_frequency", 0),
+        "vibration_level": info.get("vibration_level", 0),
+        "vibration_frequency": info.get("vibration_frequency", 0),
+    }
+
+
+# ---------------------------------------------------------------------------
 # AT framing
 # ---------------------------------------------------------------------------
 
@@ -666,6 +809,68 @@ def parse_at_config(line: str) -> tuple[bool, str, Optional[dict]]:
     summary = f"sn=0x{sn:016X} id={data_id} len={data_len} crc=0x{crc32:08X}"
     return True, summary, {"sn": sn, "data_id": data_id, "data_len": data_len,
                            "crc32": crc32, "payload": payload}
+
+
+def parse_at_ldinit(line: str) -> tuple[bool, str, Optional[dict]]:
+    """Parse + CRC16-verify an incoming AT#LDINIT (the 7-field large-data init,
+    same framing build_at_ldinit() emits). Verifies the CCITT-FALSE CRC16 over
+    the init metadata (SN/ID/total_size/total_chunks/last_chunk_size/CRC32),
+    matching cmd_ld_init() in src/large_data.c. Returns (ok, summary, parsed)
+    where parsed carries the whole-blob CRC32 for end-to-end verification."""
+    fields = _quoted_fields(line)
+    if fields is None or len(fields) < 7:
+        return False, f"malformed: expected 7 quoted fields, got {fields!r}", None
+    sn_hex, id_hex, total_hex, chunks_hex, last_hex, crc32_hex, crc16_hex = fields[:7]
+    try:
+        sn = int(sn_hex, 16); data_id = int(id_hex, 16)
+        total_size = int(total_hex, 16); total_chunks = int(chunks_hex, 16)
+        last_chunk_size = int(last_hex, 16); crc32 = int(crc32_hex, 16)
+        crc16 = int(crc16_hex, 16)
+    except ValueError as e:
+        return False, f"bad hex in header: {e}", None
+    meta = struct.pack(">QHIHHI", sn & 0xFFFFFFFFFFFFFFFF, data_id & 0xFFFF,
+                       total_size & 0xFFFFFFFF, total_chunks & 0xFFFF,
+                       last_chunk_size & 0xFFFF, crc32 & 0xFFFFFFFF)
+    calc = _crc16_ccitt(meta)
+    if calc != crc16:
+        return False, f"CRC16 mismatch: header 0x{crc16:04X}, calc 0x{calc:04X}", None
+    summary = (f"sn=0x{sn:016X} id={data_id} total={total_size} "
+               f"chunks={total_chunks} last={last_chunk_size} crc32=0x{crc32:08X}")
+    return True, summary, {"sn": sn, "data_id": data_id, "total_size": total_size,
+                           "total_chunks": total_chunks,
+                           "last_chunk_size": last_chunk_size,
+                           "crc32": crc32, "crc16": crc16}
+
+
+def parse_at_ld(line: str) -> tuple[bool, str, Optional[dict]]:
+    """Parse + CRC16-verify one incoming AT#LD chunk (the 6-field framing
+    build_at_ld() emits). Verifies the CCITT-FALSE CRC16 over the chunk payload.
+    Returns (ok, summary, parsed) with the decoded page/chunk indices and the
+    raw payload bytes."""
+    fields = _quoted_fields(line)
+    if fields is None or len(fields) < 6:
+        return False, f"malformed: expected 6 quoted fields, got {fields!r}", None
+    sn_hex, id_hex, page_hex, chunk_hex, crc16_hex, data_hex = fields[:6]
+    try:
+        sn = int(sn_hex, 16); data_id = int(id_hex, 16)
+        page = int(page_hex, 16); chunk = int(chunk_hex, 16)
+        crc16 = int(crc16_hex, 16)
+    except ValueError as e:
+        return False, f"bad hex in header: {e}", None
+    try:
+        payload = bytes.fromhex(data_hex)
+    except ValueError as e:
+        return False, f"bad hex in payload: {e}", None
+    calc = _crc16_ccitt(payload)
+    if calc != crc16:
+        return False, f"CRC16 mismatch: header 0x{crc16:04X}, calc 0x{calc:04X}", None
+    # Linear chunk index, matching iter_ld_chunks()'s page/chunk pagination.
+    linear = page * LD_CHUNKS_PER_PAGE + chunk
+    summary = (f"sn=0x{sn:016X} id={data_id} page={page} chunk={chunk} "
+               f"linear={linear} len={len(payload)}")
+    return True, summary, {"sn": sn, "data_id": data_id, "page": page,
+                           "chunk": chunk, "linear": linear,
+                           "crc16": crc16, "payload": payload}
 
 
 # ---------------------------------------------------------------------------
@@ -1149,27 +1354,74 @@ def config_reader(io: SerialIO, state: SensorState, stop_evt: threading.Event) -
 
 def make_dummy_sound_record(n: int) -> bytes:
     """Generate an n-byte dummy 'sound record' payload — a 0..255 ramp, matching
-    the firmware's large-data test pattern (byte i = i & 0xFF)."""
+    the firmware's large-data test pattern (byte i = i & 0xFF). This is the
+    sound_record inside data_info_3300, NOT the whole transfer, so it is capped
+    so the wrapped sensor_large_data_structure_t blob still fits one transfer."""
     if n <= 0:
         return b""
-    if n > LARGE_DATA_MAX_TRANSFER:
-        raise ValueError(f"size {n} B exceeds max {LARGE_DATA_MAX_TRANSFER} B")
+    if n > LARGE_DATA_SOUND_RECORD_MAX:
+        raise ValueError(f"sound_record {n} B exceeds max "
+                         f"{LARGE_DATA_SOUND_RECORD_MAX} B")
     return bytes(i & 0xFF for i in range(n))
 
 
-def _ld_blob_from_args(args) -> bytes:
-    """Build the one-shot large-data blob from --send-ld FILE or --ld-bytes N.
-    Returns b'' if neither was given."""
+def ld_sound_record_len_for_total(total_size: int) -> int:
+    """sound_record length so the WHOLE serialized sensor_large_data_structure_t
+    (header + report_info_3300 + sound_record) is exactly total_size bytes. Lets
+    test tools target a round whole-structure size — e.g. a "100 KB" transfer is
+    100 KB total, header and report_info included, not 100 KB of sound on top."""
+    sound_len = total_size - LARGE_DATA_HEADER_SIZE - REPORT_INFO_3300_SIZE
+    if sound_len < 0:
+        raise ValueError(f"total_size {total_size} B too small; minimum is "
+                         f"{LARGE_DATA_HEADER_SIZE + REPORT_INFO_3300_SIZE} B "
+                         f"(header + report_info_3300)")
+    if total_size > SENSOR_LARGE_DATA_INFO_MAX:
+        raise ValueError(f"total_size {total_size} B exceeds max "
+                         f"{SENSOR_LARGE_DATA_INFO_MAX} B (200 KB whole structure)")
+    return sound_len
+
+
+def build_large_data_blob(state: "SensorState", sound_record: bytes,
+                          data_type: int = LARGE_DATA_TYPE_3300) -> bytes:
+    """Wrap raw sound_record samples into a serialized
+    sensor_large_data_structure_t blob, taking the SN / firmware / battery and
+    the current 3300 readings from `state` for the header and data_info_3300.
+    This is what gets streamed over AT#LDINIT + AT#LD."""
+    with state.lock:
+        info = build_large_data_info_3300(
+            sound_record,
+            temperature1=state.temperature, humidity1=state.humidity,
+            temperature2=state.temperature2, humidity2=state.humidity2,
+            ultrasound_level=state.ultrasound_level,
+            ultrasound_frequency=state.ultrasound_frequency,
+            vibration_level=state.vibration_level,
+            vibration_frequency=state.vibration_frequency,
+        )
+        return build_large_data_payload(
+            sn_hex=f"{state.sn:012X}", firmware_version=state.fw_version,
+            battery_level=state.battery, data_info=info, data_type=data_type,
+        )
+
+
+def _ld_blob_from_args(args, state: "SensorState") -> bytes:
+    """Build the one-shot large-data blob — a serialized
+    sensor_large_data_structure_t — from --send-ld FILE or --ld-bytes N. The
+    file/dummy bytes become the sound_record inside data_info_3300; the struct
+    header (name "ESC33", type 0x3300, SN, firmware, battery, ...) is added on
+    top. Returns b'' if neither option was given."""
     if args.send_ld:
         with open(args.send_ld, "rb") as f:
-            data = f.read()
-        if len(data) > LARGE_DATA_MAX_TRANSFER:
-            raise ValueError(f"large-data blob {len(data)} B exceeds max "
-                             f"{LARGE_DATA_MAX_TRANSFER} B")
-        return data
-    if args.ld_bytes > 0:
-        return make_dummy_sound_record(args.ld_bytes)
-    return b""
+            sound_record = f.read()
+    elif args.ld_bytes > 0:
+        sound_record = make_dummy_sound_record(args.ld_bytes)
+    else:
+        return b""
+
+    if len(sound_record) > LARGE_DATA_SOUND_RECORD_MAX:
+        raise ValueError(f"sound_record {len(sound_record)} B exceeds max "
+                         f"{LARGE_DATA_SOUND_RECORD_MAX} B (the wrapped transfer "
+                         f"must stay <= {LARGE_DATA_MAX_TRANSFER} B incl. header)")
+    return build_large_data_blob(state, sound_record)
 
 
 def _drain_resp_q(io: SerialIO) -> None:
@@ -1260,7 +1512,7 @@ def run(io: SerialIO, state: SensorState, args, stop_evt: threading.Event) -> No
     data_id = max(1, min(DATA_ID_MAX, args.data_id))
 
     # One-shot large-data transfer on startup, if requested.
-    ld_blob = _ld_blob_from_args(args)
+    ld_blob = _ld_blob_from_args(args, state)
     if ld_blob:
         send_large_data(io, state, ld_blob, data_id=args.ld_data_id)
 
@@ -1364,10 +1616,13 @@ def main(argv: list[str]) -> int:
                    help="seconds between reading regeneration (default 120)")
 
     p.add_argument("--send-ld", metavar="FILE",
-                   help="send FILE as a one-shot AT#LD large-data transfer at startup")
+                   help="send FILE's bytes as the sound_record of a one-shot "
+                        "AT#LD large-data transfer at startup (wrapped in a "
+                        "sensor_large_data_structure_t)")
     p.add_argument("--ld-bytes", type=lambda s: int(s, 0), default=0,
-                   help="send N generated dummy bytes as a one-shot AT#LD transfer "
-                        "(0 = off; mutually exclusive with --send-ld)")
+                   help="use N generated dummy bytes as the sound_record of a "
+                        "one-shot AT#LD transfer (0 = off; mutually exclusive "
+                        "with --send-ld)")
     p.add_argument("--ld-data-id", type=lambda s: int(s, 0), default=1,
                    help="data_id for the AT#LDINIT/AT#LD large-data transfer (default 1)")
     p.add_argument("--packed", action="store_true",

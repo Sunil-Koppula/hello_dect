@@ -19,6 +19,7 @@
 LOG_MODULE_REGISTER(large_data, CONFIG_LARGE_DATA_LOG_LEVEL);
 
 static uint8_t crc_stage[LD_CRC_VERIFY_STAGE_SIZE];
+static uint32_t at_cmd_crc = 0;
 static bool ld_busy = false;
 
 struct large_data_sender ld_sender[LD_MAX_SENDER_PROCESS]; // support up to 4 concurrent sending transfers
@@ -1168,6 +1169,21 @@ void cmd_ld_chunk(const char *args)
         at_error();
         return;
     }
+    err = psram_read(ld_slot[idx].base_addr + offset, payload, expected);
+    if (err) {
+        LOG_ERR("AT#LD psram_read @0x%06x failed (%d) for verify, freeing slot",
+                ld_slot[idx].base_addr + offset, err);
+        free_large_data_slot(idx, -1);
+        at_error();
+        return;
+    }
+
+    // Update the CRC32 incrementally for each chunk.
+    if (v_page == 0 && v_chunk == 0) {
+        at_cmd_crc = crc32_ieee(payload, expected);
+    } else {
+        at_cmd_crc = crc32_ieee_update(at_cmd_crc, payload, expected);
+    }
 
     ld_slot[idx].received_count++;
     nbtimeout_start(&ld_slot[idx].idle_timeout);
@@ -1175,11 +1191,32 @@ void cmd_ld_chunk(const char *args)
     /* Last chunk staged — verify the whole-blob CRC32 from AT#LDINIT and hand
      * the slot to sensor_large_data_tick() via upstream_ready to forward it. */
     if (ld_slot[idx].received_count >= ld_slot[idx].total_chunks) {
-        if (large_data_verify_crc32(idx) != 0) {
+        if (at_cmd_crc != ld_slot[idx].crc32) {
+            LOG_WRN("AT#LD CRC32 mismatch for data_id %u: got 0x%08x, expected 0x%08x — freeing slot",
+                    (uint16_t)v_id, at_cmd_crc, ld_slot[idx].crc32);
             free_large_data_slot(idx, -1);
             at_error();
             return;
         }
+        uint32_t crc = 0;
+        uint32_t bytes_remaining = ld_slot[idx].total_size;
+        uint32_t offset = 0;
+        bool first_stage = true;
+        LOG_DBG("Starting CRC verification for gen %d data_id %d, total_size %u bytes", ld_slot[idx].gen_device_id, ld_slot[idx].data_id, ld_slot[idx].total_size);
+
+        while (bytes_remaining > 0) {
+            uint16_t n = (bytes_remaining > LD_CRC_VERIFY_STAGE_SIZE) ? LD_CRC_VERIFY_STAGE_SIZE : bytes_remaining;
+            int err = psram_read(ld_slot[idx].base_addr + offset, crc_stage, n);
+            if (err) {
+                LOG_ERR("CRC verify: psram_read @0x%06x failed (%d)", ld_slot[idx].base_addr + offset, err);
+                return;
+            }
+            crc = first_stage ? crc32_ieee(crc_stage, n) : crc32_ieee_update(crc, crc_stage, n);
+            first_stage = false;
+            offset += n;
+            bytes_remaining -= n;
+        }
+        ld_slot[idx].crc32 = crc;
         ld_slot[idx].total_chunks = (ld_slot[idx].total_size + SEND_LARGE_DATA_MAX - 1) / SEND_LARGE_DATA_MAX;
         ld_slot[idx].last_chunk_size = (uint16_t)(ld_slot[idx].total_size - (ld_slot[idx].total_chunks - 1) * SEND_LARGE_DATA_MAX);
         ld_slot[idx].page_count = (ld_slot[idx].total_chunks + LARGE_DATA_CHUNKS_PER_SIZE - 1) / LARGE_DATA_CHUNKS_PER_SIZE;
