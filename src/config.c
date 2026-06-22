@@ -913,3 +913,136 @@ int validate_at_config(const slm_at_structure_t *config, const uint8_t *data)
 
 	return idx;
 }
+
+void cmd_config(const char *args)
+{
+    if (get_device_type() != DEVICE_TYPE_GATEWAY) {
+        at_error();
+        return;
+    }
+
+    /* Fields 0..3: sn, id, len, crc32 (all quoted hex). */
+    uint64_t v_sn, v_id, v_len, v_crc;
+    if (field_hex_u64(args, 0, &v_sn)  != 0) { at_error(); return; }
+    if (field_hex_u64(args, 1, &v_id)  != 0) { at_error(); return; }
+    if (field_hex_u64(args, 2, &v_len) != 0) { at_error(); return; }
+    if (field_hex_u64(args, 3, &v_crc) != 0) { at_error(); return; }
+
+    if (v_id > 0xFFFF || v_len == 0 || v_len > MAX_CONFIG_SIZE || v_crc > 0xFFFFFFFF) {
+        at_error();
+        return;
+    }
+
+    slm_at_structure_t config = {
+        .data_id = (uint16_t)v_id,
+        .data_len = (uint16_t)v_len,
+        .data_crc32 = (uint32_t)v_crc,
+    };
+
+    uint64_t sn = v_sn;
+
+    /* Field 4: the payload hex. */
+    size_t      hex_len;
+    const char *payload_hex = field_get(args, 4, &hex_len);
+    if (payload_hex == NULL || hex_len != (size_t)config.data_len * 2) {
+        at_error();
+        return;
+    }
+
+    uint8_t payload[MAX_CONFIG_SIZE];
+    int     decoded = hex_decode(payload_hex, hex_len, payload, sizeof(payload));
+    if (decoded < 0 || decoded != config.data_len) {
+        at_error();
+        return;
+    }
+
+    /* CRC32 over the payload must match. */
+    uint32_t calc_crc32 = crc32_ieee(payload, (size_t)decoded);
+    if (calc_crc32 != config.data_crc32) {
+        LOG_WRN("AT#CONFIG sn=0x%016llx id=%u CRC mismatch: got 0x%08x, calc 0x%08x",
+                (unsigned long long)sn, config.data_id, config.data_crc32, calc_crc32);
+        at_error();
+        return;
+    }
+
+    /* SN must be a known mesh device. */
+    uint16_t mesh_idx;
+    uint8_t hop_num;
+    bool     found = false;
+    for (mesh_idx = 0; mesh_idx < mesh_count; mesh_idx++) {
+        if (mesh_devices[mesh_idx].serial_num == sn) {
+            found = true;
+            break;
+        }
+    }
+    if (found) {
+        hop_num = find_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
+        if (hop_num == 0xFF) {
+            found = false;
+            LOG_WRN("AT#CONFIG: SN 0x%016llx in mesh but no route found", (unsigned long long)sn);
+        }
+    }
+    if (!found) {
+        LOG_WRN("AT#CONFIG: SN 0x%016llx not in mesh", (unsigned long long)sn);
+        at_error();
+        return;
+    }
+
+    config.device_id = mesh_devices[mesh_idx].device_id;
+    config.device_type = mesh_devices[mesh_idx].device_type;
+
+    /* Allocate / reuse a slot, persist to PSRAM. */
+    int err = validate_at_config(&config, payload);
+    if (err < 0) {
+        at_error();
+        return;
+    }
+
+    LOG_INF("AT#CONFIG accepted: sn=0x%016llx %s ID:%d cfg_id=%u len=%u (alloc slot %d)",
+            (unsigned long long)sn,
+            device_type_str(config.device_type),
+            config.device_id, config.data_id, config.data_len, err);
+
+    char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
+    snprintf(resp, sizeof(resp),
+        "#CONFIG:\"0x%016llx\",\"%u\",\"%u\",\"0x%08lx\"",
+        (unsigned long long)sn, config.data_id, config.data_len,
+        (unsigned long)config.data_crc32);
+    at_send_line(resp);
+    at_ok();
+}
+
+void cmd_config_ack(const char *args)
+{
+    uint64_t v_sn, v_id;
+    if (field_hex_u64(args, 0, &v_sn) != 0) {
+        LOG_WRN("AT#CONFIG_ACK missing or invalid SN field");
+        return;
+    }
+    if (field_hex_u64(args, 1, &v_id) != 0) {
+        LOG_WRN("AT#CONFIG_ACK missing or invalid ID field");
+        return;
+    }
+
+    if (v_id > 0xFFFF) {
+        LOG_WRN("AT#CONFIG_ACK invalid ID value %lu", (unsigned long)v_id);
+        return;
+    }
+
+    if (v_sn != get_serial_number()) {
+        LOG_WRN("AT#CONFIG_ACK SN mismatch: got 0x%016llx, expected 0x%016llx", (unsigned long long)v_sn, (unsigned long long)get_serial_number());
+        return;
+    }
+
+	at_pending_ack_t ack = {
+		.data_type = DATA_TYPE_CONFIG,
+		.sn = v_sn,
+		.id = (uint16_t)v_id,
+		.page = 0,
+		.chunk = 0,
+	};
+    set_at_pending_ack(ack);
+
+    LOG_INF("Received AT#CONFIG_ACK for SN 0x%016llx ID %u",
+            (unsigned long long)v_sn, (unsigned)v_id);
+}

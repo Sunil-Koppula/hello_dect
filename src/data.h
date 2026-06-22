@@ -65,6 +65,10 @@ void report_tick(void);
 /* Validate an AT report before processing. */
 int validate_at_report(const slm_at_structure_t *report, uint8_t priority, const uint8_t *data);
 
+/* AT command handlers */
+void cmd_report(const char *args);
+void cmd_report_ack(const char *args);
+
 /* Release a report slot by its ID. */
 int report_slot_release_by_id(uint16_t device_id, uint16_t report_id, bool is_success);
 

@@ -40,6 +40,10 @@ void config_tick(void);
 /* Validate an AT config command and its payload. */
 int validate_at_config(const slm_at_structure_t *config, const uint8_t *data);
 
+/* AT command handlers */
+void cmd_config(const char *args);
+void cmd_config_ack(const char *args);
+
 /* Release a config slot by its ID. */
 int config_slot_release_by_id(uint16_t config_id, uint8_t status);
 

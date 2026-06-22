@@ -23,11 +23,11 @@ typedef enum {
 
 /* Data Types */
 typedef enum {
-	DATA_TYPE_UNKNOWN	= 0x00,
-	DATA_TYPE_REPORT	= 0x01,
-	DATA_TYPE_CONFIG	= 0x02,
-	DATA_TYPE_LARGE		= 0x03,
-	DATA_TYPE_OTA		= 0x04,
+	DATA_TYPE_UNKNOWN		= 0x00,
+	DATA_TYPE_REPORT		= 0x01,
+	DATA_TYPE_CONFIG		= 0x02,
+	DATA_TYPE_LARGE_DATA	= 0x03,
+	DATA_TYPE_OTA			= 0x04,
 } data_type_t;
 
 /* Packet Types Identifier */
@@ -354,7 +354,7 @@ typedef struct {
 
 #define REPORT_RECEIVED_ACK_PACKET_SIZE sizeof(report_received_ack_t)
 
-#define SEND_LARGE_DATA_MAX 160
+#define SEND_LARGE_DATA_MAX 128
 
 /* LARGE DATA INIT Packet */
 typedef struct {

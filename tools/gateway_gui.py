@@ -99,11 +99,16 @@ class GatewayWorker:
             if not chunk:
                 continue
             buf.extend(chunk)
-            text = buf.decode("ascii", errors="replace")
-            parts = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-            buf = bytearray(parts[-1], "ascii")
-            for raw in parts[:-1]:
-                line = raw.strip()
+            # Split into complete lines at the BYTE level, keeping any trailing
+            # partial line in buf. Decoding per complete line (rather than the
+            # whole buffer and re-encoding the tail) avoids re-encoding a
+            # replacement char back to ascii, which would raise and silently
+            # kill this thread on stray non-ascii bytes (boot banners, noise).
+            data = bytes(buf).replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            *complete, tail = data.split(b"\n")
+            buf = bytearray(tail)
+            for raw in complete:
+                line = raw.decode("ascii", errors="replace").strip()
                 if not line:
                     continue
                 if line.startswith("AT#REPORT="):
@@ -161,10 +166,14 @@ class GatewayWorker:
             "crc32": parsed["crc32"],
             "chunks": {}, "started": time.strftime("%H:%M:%S"),
         }
+        # The gateway parses this #LDINIT ack with field_hex_u64() (every field is
+        # bare hex, NO "0x" prefix — an 'x' fails hex_nibble). It matches the
+        # transfer by SN + data_id, so both must be hex; total_size/total_chunks
+        # are echoed (hex) for symmetry though the firmware ignores them.
         with self._wlock:
-            self.io.write(f'\r\n#LDINIT: "0x{parsed["sn"]:016X}",'
-                          f'"{parsed["data_id"]}","{parsed["total_size"]}",'
-                          f'"{parsed["total_chunks"]}"\r\n'.encode("ascii"))
+            self.io.write(f'\r\n#LDINIT: "{parsed["sn"]:016X}",'
+                          f'"{parsed["data_id"]:04X}","{parsed["total_size"]:08X}",'
+                          f'"{parsed["total_chunks"]:04X}"\r\n'.encode("ascii"))
             self.io.write(b"\r\nOK\r\n")
         self.log(f"<<< AT#LDINIT — {summary}")
         self.events.put(("ld_init", {
@@ -175,8 +184,8 @@ class GatewayWorker:
         }))
 
     def _handle_ld(self, line: str) -> None:
-        """One AT#LD chunk of an announced transfer. Verify its CRC16, stage it,
-        and ack with OK. When every chunk has arrived, reassemble, verify the
+        """One AT#LD chunk of an announced transfer. Verify it, stage it, and
+        ack with '#LD' + OK. When every chunk has arrived, reassemble, verify the
         whole-transfer CRC32, decode the sensor_large_data_structure_t, and emit
         the completed transfer."""
         ok, summary, parsed = sim.parse_at_ld(line)
@@ -186,20 +195,35 @@ class GatewayWorker:
             self.log(f"<<< AT#LD rejected — {summary}")
             return
 
+        # Per-chunk flow control mirrors AT#LDINIT: write '#LD: "<sn>","<id>",
+        # "<page>","<chunk>"' (arms the device's chunk pending-ack via
+        # cmd_ld_chunk_ack) THEN OK (which advances it to send the next chunk).
+        # Bare hex only — the firmware's field_hex_u64 rejects a '0x' prefix.
+        with self._wlock:
+            self.io.write(f'\r\n#LD: "{parsed["sn"]:016X}","{parsed["data_id"]:04X}",'
+                          f'"{parsed["page"]:04X}","{parsed["chunk"]:04X}"\r\n'
+                          .encode("ascii"))
+            self.io.write(b"\r\nOK\r\n")
+
         key = (parsed["sn"], parsed["data_id"])
         xfer = self._ld_xfers.get(key)
         if xfer is None:
-            # Chunk with no matching AT#LDINIT — ack so the sender isn't wedged,
-            # but we can't place it.
-            with self._wlock:
-                self.io.write(b"\r\nOK\r\n")
+            # The gateway's AT#LD puts the sensor's 16-bit device id in the SN
+            # field, while AT#LDINIT announced the 64-bit serial number — so the
+            # SN won't match. Correlate by data_id instead (one transfer at a
+            # time on the gateway forward path).
+            matches = [(k, x) for k, x in self._ld_xfers.items()
+                       if k[1] == parsed["data_id"]]
+            if len(matches) == 1:
+                key, xfer = matches[0]
+        if xfer is None:
+            # Chunk with no matching AT#LDINIT — already acked above so the
+            # device's sender advances, but we can't place it.
             self.log(f"<<< AT#LD with no active transfer for sn=0x{parsed['sn']:016X} "
                      f"id={parsed['data_id']} — ignored")
             return
 
         xfer["chunks"][parsed["linear"]] = parsed["payload"]
-        with self._wlock:
-            self.io.write(b"\r\nOK\r\n")
 
         received = len(xfer["chunks"])
         total = xfer["total_chunks"]

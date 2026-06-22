@@ -15,22 +15,27 @@
 #include "storage.h"
 #include "main_sub.h"
 #include "slm_at_main.h"
+#include "slm_at_common.h"
+#include "slm_at_uart.h"
 
 LOG_MODULE_REGISTER(large_data, CONFIG_LARGE_DATA_LOG_LEVEL);
 
 static uint8_t crc_stage[LD_CRC_VERIFY_STAGE_SIZE];
-static uint32_t at_cmd_crc = 0;
 static bool ld_busy = false;
 
-struct large_data_sender ld_sender[LD_MAX_SENDER_PROCESS]; // support up to 4 concurrent sending transfers
-bool is_ld_slot_empty[LARGE_DATA_SLOT_COUNT];    /* Track empty slots */
+static const char HEX_LUT[] = "0123456789ABCDEF";
+static uint16_t device_id_cache = 0xFFFF;
+static int sender_idx_cache = -1;
+
+struct large_data_sender ld_sender[LARGE_DATA_SENDER_SLOT_COUNT]; // support up to 4 concurrent sending transfers
+bool is_ld_slot_empty[LARGE_DATA_MAX_PAGE_COUNT];    /* Track empty slots */
 struct large_data_slot ld_slot[LARGE_DATA_RECEIVER_SLOT_COUNT];
 
 /* ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
 /* ----------------------------------------------------------------------------**** Large Data Sender ****--------------------------------------------------------------------------- */
 static int find_sender_slot(uint16_t dst_id, uint8_t data_id)
 {
-	for (int i = 0; i < LD_MAX_SENDER_PROCESS; i++) {
+	for (int i = 0; i < LARGE_DATA_SENDER_SLOT_COUNT; i++) {
 		if (ld_sender[i].active && ld_sender[i].gen_device_id == dst_id && ld_sender[i].data_id == data_id) {
 			return i;
 		}
@@ -69,18 +74,18 @@ static int alloc_large_data_slot(uint32_t size)
         return -1;
     }
     uint16_t available_slots = 0;
-    for (int i = 0; i < LARGE_DATA_SLOT_COUNT; i++) {
+    for (int i = 0; i < LARGE_DATA_MAX_PAGE_COUNT; i++) {
         if (is_ld_slot_empty[i]) {
             available_slots++;
-            if (available_slots * LARGE_DATA_SLOT_SIZE >= size) {
+            if (available_slots * LARGE_DATA_PAGE_SIZE >= size) {
                 LOG_DBG("Found %d contiguous slots from %d - %d for size %u bytes", available_slots, i - available_slots + 1, i, size);
                 // Mark these slots as used
                 for (int j = i - available_slots + 1; j <= i; j++) {
                     is_ld_slot_empty[j] = false;
                 }
                 ld_slot[idx].active = true;
-                ld_slot[idx].base_addr = LARGE_DATA_PSRAM_BASE + (i - available_slots + 1) * SEND_LARGE_DATA_MAX;
-                LOG_DBG("Allocated large data slot %d (PSRAM 0x%06x-0x%06x) for size %u bytes", idx, ld_slot[idx].base_addr, ld_slot[idx].base_addr + available_slots * SEND_LARGE_DATA_MAX - 1, size);
+                ld_slot[idx].base_addr = LARGE_DATA_PSRAM_BASE + (i - available_slots + 1) * LARGE_DATA_PAGE_SIZE;
+                LOG_DBG("Allocated large data slot %d (PSRAM 0x%06x-0x%06x) for size %u bytes", idx, ld_slot[idx].base_addr, ld_slot[idx].base_addr + available_slots * LARGE_DATA_PAGE_SIZE - 1, size);
                 return idx;
             }
         } else {
@@ -95,8 +100,8 @@ static void free_large_data_slot(int idx, uint8_t sender_idx)
     ld_slot[idx].active = false;
     nbtimeout_stop(&ld_slot[idx].idle_timeout);
     // Mark the corresponding PSRAM slots as empty
-    uint16_t start_slot = (ld_slot[idx].base_addr - LARGE_DATA_PSRAM_BASE) / SEND_LARGE_DATA_MAX;
-    uint16_t slot_count = (ld_slot[idx].total_size + SEND_LARGE_DATA_MAX - 1) / SEND_LARGE_DATA_MAX;
+    uint16_t start_slot = (ld_slot[idx].base_addr - LARGE_DATA_PSRAM_BASE) / LARGE_DATA_PAGE_SIZE;
+    uint16_t slot_count = (ld_slot[idx].total_size + LARGE_DATA_PAGE_SIZE - 1) / LARGE_DATA_PAGE_SIZE;
     for (int i = start_slot; i < start_slot + slot_count; i++) {
         is_ld_slot_empty[i] = true;
     }
@@ -112,14 +117,14 @@ static uint16_t chunk_size_for_large_data(uint16_t chunk_idx, uint8_t sender_idx
     if (chunk_idx == last_chunk_index) {
         return ld_sender[sender_idx].last_chunk_size;
     }
-    return SEND_LARGE_DATA_MAX;
+    return LARGE_DATA_CHUNK_SIZE;
 }
 
 static int send_next_large_data_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t sender_idx)
 {
     for (int i = 0; i < MAX_TX_QUEUE_PROCESS_PER_CYCLE/2; i++) {
-        uint16_t page_idx = (ld_sender[sender_idx].next_chunk + i) / LARGE_DATA_CHUNKS_PER_SIZE;
-        uint8_t chunk_idx = (ld_sender[sender_idx].next_chunk + i) % LARGE_DATA_CHUNKS_PER_SIZE;
+        uint16_t page_idx = (ld_sender[sender_idx].next_chunk + i) / LARGE_DATA_CHUNKS_PER_PAGE;
+        uint8_t chunk_idx = (ld_sender[sender_idx].next_chunk + i) % LARGE_DATA_CHUNKS_PER_PAGE;
         uint16_t csz = chunk_size_for_large_data(ld_sender[sender_idx].next_chunk + i, sender_idx);
 
         large_data_chunk_t chunk_pkt;
@@ -129,14 +134,14 @@ static int send_next_large_data_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t
         chunk_pkt.page_index = page_idx;
         chunk_pkt.chunk_index = chunk_idx;
 
-        uint32_t addr = ld_sender[sender_idx].base_addr + (uint32_t)(ld_sender[sender_idx].next_chunk + i)* SEND_LARGE_DATA_MAX;
+        uint32_t addr = ld_sender[sender_idx].base_addr + (uint32_t)(ld_sender[sender_idx].next_chunk + i)* LARGE_DATA_CHUNK_SIZE;
         int err = psram_read(addr, chunk_pkt.data, csz);
         if (err) {
             LOG_ERR("psram_read @0x%06x failed (%d), aborting transfer", addr, err);
             ld_sender[sender_idx].active = false;
             return err;
         }
-
+        nbtimeout_start(&ld_sender[sender_idx].timeout);
         send_large_data_chunk(&chunk_pkt, dst_id, dst_type, ld_sender[sender_idx].priority);
     }
     return 0;
@@ -144,7 +149,7 @@ static int send_next_large_data_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t
 
 static int resend_large_data_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t page_idx, uint8_t chunk_idx, uint8_t sender_idx)
 {
-    uint16_t csz = chunk_size_for_large_data(page_idx * LARGE_DATA_CHUNKS_PER_SIZE + chunk_idx, sender_idx);
+    uint16_t csz = chunk_size_for_large_data(page_idx * LARGE_DATA_CHUNKS_PER_PAGE + chunk_idx, sender_idx);
 
     large_data_chunk_t chunk_pkt;
     memset(&chunk_pkt, 0, sizeof(chunk_pkt));
@@ -153,14 +158,14 @@ static int resend_large_data_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t pa
     chunk_pkt.page_index = page_idx;
     chunk_pkt.chunk_index = chunk_idx;
 
-    uint32_t addr = ld_sender[sender_idx].base_addr + (uint32_t)(page_idx * LARGE_DATA_CHUNKS_PER_SIZE + chunk_idx) * SEND_LARGE_DATA_MAX;
+    uint32_t addr = ld_sender[sender_idx].base_addr + (uint32_t)(page_idx * LARGE_DATA_CHUNKS_PER_PAGE + chunk_idx) * LARGE_DATA_CHUNK_SIZE;
     int err = psram_read(addr, chunk_pkt.data, csz);
     if (err) {
         LOG_ERR("psram_read @0x%06x failed (%d), aborting transfer", addr, err);
         ld_sender[sender_idx].active = false;
         return err;
     }
-
+    nbtimeout_start(&ld_sender[sender_idx].timeout);
     send_large_data_chunk(&chunk_pkt, dst_id, dst_type, ld_sender[sender_idx].priority);
     return 0;
 }
@@ -183,6 +188,7 @@ static uint8_t validate_large_data_slot(const large_data_init_t *pkt)
         ld_slot[idx].active = true;
         ld_slot[idx].upstream_ready = false;
         ld_slot[idx].gen_device_id = pkt->gen_device_id;
+        ld_slot[idx].report_time_ms = pkt->report_time_ms;
         ld_slot[idx].data_id = pkt->data_id;
         ld_slot[idx].priority = pkt->hdr.priority;
         ld_slot[idx].total_size = pkt->total_size;
@@ -190,7 +196,7 @@ static uint8_t validate_large_data_slot(const large_data_init_t *pkt)
         ld_slot[idx].last_chunk_size = pkt->last_chunk_size;
         ld_slot[idx].crc32 = pkt->crc32;
         ld_slot[idx].received_count = 0;
-        ld_slot[idx].total_chunks = (pkt->total_size + SEND_LARGE_DATA_MAX - 1) / SEND_LARGE_DATA_MAX;
+        ld_slot[idx].total_chunks = (pkt->total_size + LARGE_DATA_CHUNK_SIZE - 1) / LARGE_DATA_CHUNK_SIZE;
         memset(ld_slot[idx].bitmap, 0, sizeof(ld_slot[idx].bitmap));
         nbtimeout_init(&ld_slot[idx].idle_timeout, LARGE_DATA_SLOT_TIMEOUT_MS, 0);
     } else if (ld_slot[idx].active && ld_slot[idx].upstream_ready) {
@@ -202,6 +208,58 @@ static uint8_t validate_large_data_slot(const large_data_init_t *pkt)
     nbtimeout_start(&ld_slot[idx].idle_timeout);
     ld_busy = true;
     return STATUS_SUCCESS;
+}
+
+static int  send_at_large_data_init(int sender_idx, int idx) {
+    if (get_device_type() != DEVICE_TYPE_GATEWAY || !ld_sender[sender_idx].active) {
+        return -1;
+    }
+
+    // Find Serial Number first
+    int sn_idx = -1;
+    for (sn_idx = 0; sn_idx < mesh_count; sn_idx++) {
+        if (mesh_devices[sn_idx].device_id == ld_sender[sender_idx].gen_device_id) {
+            break;
+        }
+        if (sn_idx == mesh_count - 1) {
+            LOG_ERR("Failed to find mesh device for gen_device_id %d, cannot process slot", ld_sender[sender_idx].gen_device_id);
+            int idx = find_large_data_slot(ld_sender[sender_idx].gen_device_id, ld_sender[sender_idx].data_id);
+            if (idx >= 0) {
+                free_large_data_slot(idx, sender_idx);
+            }
+            return -1;
+        }
+    }
+    // Calculate crc16
+    uint8_t crc_buf[30];
+    sys_put_be64((uint64_t)mesh_devices[sn_idx].serial_num, &crc_buf[0]);
+    sys_put_be16(ld_sender[sender_idx].data_id, &crc_buf[8]);
+    sys_put_be64(ld_slot[idx].report_time_ms, &crc_buf[10]);
+    sys_put_be32(ld_sender[sender_idx].total_size, &crc_buf[18]);
+    sys_put_be16(ld_sender[sender_idx].total_chunks, &crc_buf[22]);
+    sys_put_be16(ld_sender[sender_idx].last_chunk_size, &crc_buf[24]);
+    sys_put_be32(ld_slot[idx].crc32, &crc_buf[26]);
+    uint16_t cal_crc16 = crc16(0x1021, 0xFFFF, crc_buf, sizeof(crc_buf));
+
+    // AT#LDINIT="<sn>","<data_id>","<timestamp>","<total_size>","<total_chunks>","<last_chunk_size>","<crc32>","<crc16>"
+    char cmd[SLM_UART_AT_COMMAND_LEN];
+    int n = snprintf(cmd, sizeof(cmd), "\r\nAT#LDINIT=\"%016llX\",\"%04X\",\"%016llx\",\"%04X\",\"%04X\",\"%04X\",\"%08lX\",\"%04X\"\r\n",
+					(unsigned long long)mesh_devices[sn_idx].serial_num, ld_sender[sender_idx].data_id, (unsigned long long)ld_slot[idx].report_time_ms,
+                    (unsigned)ld_sender[sender_idx].total_size, (unsigned)ld_sender[sender_idx].total_chunks, (unsigned)ld_sender[sender_idx].last_chunk_size,
+                    (unsigned long)ld_slot[idx].crc32, (unsigned)cal_crc16);
+
+    if (n < 0 || (size_t)n >= sizeof(cmd)) {
+    LOG_ERR("snprintf overflow building AT#REPORT header");
+    return -1;
+    }
+
+    int tx_err = slm_at_tx_write((const uint8_t *)cmd, (size_t)n, false);
+    if (tx_err) {
+        LOG_ERR("slm_at_tx_write failed (%d) for slot %d", tx_err, idx);
+        return -1;
+    }
+
+    return 0;
 }
 
 static int large_data_verify_crc32(int idx)
@@ -241,12 +299,12 @@ static uint8_t validate_large_data_chunk(const large_data_chunk_t *pkt)
         return STATUS_NOT_FOUND;
     }
 
-    if (pkt->page_index >= ld_slot[idx].page_count || pkt->chunk_index >= LARGE_DATA_CHUNKS_PER_SIZE || (pkt->page_index * LARGE_DATA_CHUNKS_PER_SIZE + pkt->chunk_index) >= ld_slot[idx].total_chunks) {
+    if (pkt->page_index >= ld_slot[idx].page_count || pkt->chunk_index >= LARGE_DATA_CHUNKS_PER_PAGE || (pkt->page_index * LARGE_DATA_CHUNKS_PER_PAGE + pkt->chunk_index) >= ld_slot[idx].total_chunks) {
         LOG_WRN("LARGE_DATA_CHUNK rejected: Page: %d Chunk: %d out of bounds for gen %d data_id %d (page_count: %d, total_chunks: %d, last_chunk_size: %d)", pkt->page_index, pkt->chunk_index, pkt->gen_device_id, pkt->data_id, ld_slot[idx].page_count, ld_slot[idx].total_chunks, ld_slot[idx].last_chunk_size);
         return STATUS_INVALID_PARAMETER;
     }
 
-    uint16_t chunk_linear_index = pkt->page_index * LARGE_DATA_CHUNKS_PER_SIZE + pkt->chunk_index;
+    uint16_t chunk_linear_index = pkt->page_index * LARGE_DATA_CHUNKS_PER_PAGE + pkt->chunk_index;
     uint16_t bitmap_byte_index = chunk_linear_index / 8;
     uint8_t bitmap_bit_index = chunk_linear_index % 8;
 
@@ -255,9 +313,9 @@ static uint8_t validate_large_data_chunk(const large_data_chunk_t *pkt)
         return STATUS_ALREADY_EXISTS;
     }
 
-    uint16_t linear = pkt->page_index * LARGE_DATA_CHUNKS_PER_SIZE + pkt->chunk_index;
-    uint32_t addr = ld_slot[idx].base_addr + (uint32_t)linear * SEND_LARGE_DATA_MAX;
-    uint16_t csz = (linear == ld_slot[idx].total_chunks - 1) ? ld_slot[idx].last_chunk_size : SEND_LARGE_DATA_MAX;
+    uint16_t linear = pkt->page_index * LARGE_DATA_CHUNKS_PER_PAGE + pkt->chunk_index;
+    uint32_t addr = ld_slot[idx].base_addr + (uint32_t)linear * LARGE_DATA_CHUNK_SIZE;
+    uint16_t csz = (linear == ld_slot[idx].total_chunks - 1) ? ld_slot[idx].last_chunk_size : LARGE_DATA_CHUNK_SIZE;
 
     int err = psram_write(addr, pkt->data, csz);
     if (err) {
@@ -271,12 +329,12 @@ static uint8_t validate_large_data_chunk(const large_data_chunk_t *pkt)
     // Update bitmap
     ld_slot[idx].bitmap[bitmap_byte_index] |= (1 << bitmap_bit_index);
 
-    if ((pkt->page_index * LARGE_DATA_CHUNKS_PER_SIZE + pkt->chunk_index + 1) == ld_slot[idx].total_chunks && ld_slot[idx].received_count != ld_slot[idx].total_chunks) {
+    if ((pkt->page_index * LARGE_DATA_CHUNKS_PER_PAGE + pkt->chunk_index + 1) == ld_slot[idx].total_chunks && ld_slot[idx].received_count != ld_slot[idx].total_chunks) {
         // Check bit map to find out which chunk is missing
         for (uint16_t i = 0; i < ld_slot[idx].total_chunks; i++) {
             if ((ld_slot[idx].bitmap[i / 8] & (1 << (i % 8))) == 0) {
-                uint16_t page_idx = i / LARGE_DATA_CHUNKS_PER_SIZE;
-                uint8_t chunk_idx = i % LARGE_DATA_CHUNKS_PER_SIZE;
+                uint16_t page_idx = i / LARGE_DATA_CHUNKS_PER_PAGE;
+                uint8_t chunk_idx = i % LARGE_DATA_CHUNKS_PER_PAGE;
                 LOG_WRN("Chunk missing for gen %d data_id %d: Page %d Chunk %d", pkt->gen_device_id, pkt->data_id, page_idx, chunk_idx);
             }
         }
@@ -288,6 +346,7 @@ static uint8_t validate_large_data_chunk(const large_data_chunk_t *pkt)
         if (err != 0) {
             LOG_ERR("CRC verification failed for gen %d data_id %d after receiving all chunks, aborting transfer", ld_slot[idx].gen_device_id, ld_slot[idx].data_id);
             free_large_data_slot(idx, -1);
+            ld_busy = false;
             return STATUS_CRC_FAIL;
         }
         nbtimeout_stop(&ld_slot[idx].idle_timeout);
@@ -304,14 +363,44 @@ static void gateway_large_data_tick(void)
         return;
     }
 
-    for (int i = 0; i < LARGE_DATA_RECEIVER_SLOT_COUNT; i++) {
-        if (ld_slot[i].active && nbtimeout_expired(&ld_slot[i].idle_timeout)) {
-            LOG_WRN("Large data slot for gen %d data_id %d timed out, freeing slot", ld_slot[i].gen_device_id, ld_slot[i].data_id);
-            free_large_data_slot(i, -1);
+    for (int sender_idx = 0; sender_idx < LARGE_DATA_SENDER_SLOT_COUNT; sender_idx++) {
+        if (ld_sender[sender_idx].active) {
+            return;
         }
-    }
 
-    // Implement UART communication later
+        int idx = 0;
+
+        for (idx = 0; idx < LARGE_DATA_RECEIVER_SLOT_COUNT; idx++) {
+            if (ld_slot[idx].active && ld_slot[idx].upstream_ready && !ld_slot[idx].is_sent) {
+                LOG_INF("Gateway starting to send large data for gen %d data_id %d to destination, total_size %u bytes, total_chunks %d", ld_slot[idx].gen_device_id, ld_slot[idx].data_id, ld_slot[idx].total_size, ld_slot[idx].total_chunks);
+                break;
+            }
+        }
+
+        if (idx >= LARGE_DATA_RECEIVER_SLOT_COUNT) {
+            return;
+        }
+
+        // Initialize sender slot
+        ld_sender[sender_idx].active = true;
+        ld_sender[sender_idx].gen_device_id = ld_slot[idx].gen_device_id;
+        ld_sender[sender_idx].data_id = ld_slot[idx].data_id;
+        ld_sender[sender_idx].priority = ld_slot[idx].priority;
+        ld_sender[sender_idx].total_size = ld_slot[idx].total_size;
+        ld_sender[sender_idx].total_chunks = (ld_slot[idx].total_size + AT_DATA_PAYLOAD_MAX - 1) / AT_DATA_PAYLOAD_MAX;
+        ld_sender[sender_idx].page_count = (ld_sender[sender_idx].total_chunks + LARGE_DATA_CHUNKS_PER_PAGE - 1) / LARGE_DATA_CHUNKS_PER_PAGE;
+        ld_sender[sender_idx].last_chunk_size = ld_slot[idx].total_size - (ld_sender[sender_idx].total_chunks - 1) * AT_DATA_PAYLOAD_MAX;
+        ld_sender[sender_idx].next_chunk = 0;
+        ld_sender[sender_idx].crc32 = ld_slot[idx].crc32;
+        ld_sender[sender_idx].base_addr = ld_slot[idx].base_addr;
+        int err = send_at_large_data_init(sender_idx, idx);
+        if (err) {
+            LOG_ERR("Failed to send AT#REPORT for gen %d data_id %d, aborting transfer", ld_slot[idx].gen_device_id, ld_slot[idx].data_id);
+            ld_sender[sender_idx].active = false;
+            return;
+        }
+        ld_slot[idx].is_sent = true;
+    }
 
     return;
 }
@@ -322,7 +411,7 @@ static void anchor_large_data_tick(void)
         return;
     }
 
-    for (int sender_idx = 0; sender_idx < LD_MAX_SENDER_PROCESS; sender_idx++) {
+    for (int sender_idx = 0; sender_idx < LARGE_DATA_SENDER_SLOT_COUNT; sender_idx++) {
         int idx = 0;
 
         if (ld_sender[sender_idx].active) {
@@ -400,7 +489,7 @@ static void sensor_large_data_tick(void)
         return;
     }
 
-    for (int sender_idx = 0; sender_idx < LD_MAX_SENDER_PROCESS; sender_idx++) {
+    for (int sender_idx = 0; sender_idx < LARGE_DATA_SENDER_SLOT_COUNT; sender_idx++) {
         int idx = 0;
 
         if (ld_sender[sender_idx].active) {
@@ -576,7 +665,7 @@ void handle_large_data_init(const large_data_init_t *pkt, uint16_t dst_id, int16
     .data_id = pkt->data_id,
    };
 
-   if (pkt->total_size == 0 || pkt->total_size > LARGE_DATA_MAX_TRANSFER_SIZE || pkt->page_count == 0 || pkt->last_chunk_size == 0 || pkt->last_chunk_size > LARGE_DATA_SLOT_SIZE) {   
+   if (pkt->total_size == 0 || pkt->total_size > LARGE_DATA_MAX_TRANSFER_SIZE || pkt->page_count == 0 || pkt->last_chunk_size == 0 || pkt->last_chunk_size > LARGE_DATA_CHUNK_SIZE) {
     LOG_WRN("DATA_INIT rejected: invalid size or page count for gen %d data_id %d (total_size: %d, page_count: %d, last_chunk_size: %d)", pkt->gen_device_id, pkt->data_id, pkt->total_size, pkt->page_count, pkt->last_chunk_size);
         ack.hdr.status = STATUS_INVALID_PARAMETER;
         send_large_data_init_ack(&ack, dst_id, pkt->hdr.device_type, PACKET_PRIORITY_HIGH, pkt->hdr.tracking_id);
@@ -781,7 +870,7 @@ void handle_large_data_chunk_ack(const large_data_chunk_ack_t *pkt, uint16_t dst
         return;
     }
 
-    if ((pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) && pkt->page_index == (ld_sender[sender_idx].page_count - 1) && pkt->chunk_index == (ld_sender[sender_idx].total_chunks - 1) % LARGE_DATA_CHUNKS_PER_SIZE) {
+    if ((pkt->hdr.status == STATUS_SUCCESS || pkt->hdr.status == STATUS_ALREADY_EXISTS) && pkt->page_index == (ld_sender[sender_idx].page_count - 1) && pkt->chunk_index == (ld_sender[sender_idx].total_chunks - 1) % LARGE_DATA_CHUNKS_PER_PAGE) {
         LOG_INF("Large data transfer complete for gen %d data_id %d (status 0x%02x last_chunk_size %d page_count %d/%d chunk_index %d)", pkt->gen_device_id, pkt->data_id, pkt->hdr.status, ld_sender[sender_idx].last_chunk_size, ld_sender[sender_idx].page_count, pkt->page_index, pkt->chunk_index);
         nbtimeout_init(&ld_sender[sender_idx].timeout, LD_SENDER_TIMEOUT_MS, 0);
         nbtimeout_start(&ld_sender[sender_idx].timeout);
@@ -922,7 +1011,7 @@ int large_data_init(void)
         ld_slot[i].active = false;
     }
 
-    for (int i = 0; i < LARGE_DATA_SLOT_COUNT; i++) {
+    for (int i = 0; i < LARGE_DATA_MAX_PAGE_COUNT; i++) {
         is_ld_slot_empty[i] = true;
     }
 
@@ -951,6 +1040,76 @@ void large_data_tick(void)
     }
 }
 
+static int at_send_next_chunk(int sender_idx, int page_index, int chunk_index)
+{
+    if (sender_idx < 0 || sender_idx >= LARGE_DATA_SENDER_SLOT_COUNT) {
+        LOG_ERR("Invalid sender index %d in at_send_next_chunk", sender_idx);
+        return -1;
+    }
+
+    if (!ld_sender[sender_idx].active) {
+        LOG_ERR("Sender index %d is not active in at_send_next_chunk", sender_idx);
+        return -1;
+    }
+
+    if (page_index < 0 || page_index >= ld_sender[sender_idx].page_count) {
+        LOG_ERR("Invalid page index %d in at_send_next_chunk for sender index %d", page_index, sender_idx);
+        return -1;
+    }
+
+    if (chunk_index < 0 || chunk_index >= LARGE_DATA_CHUNKS_PER_PAGE) {
+        LOG_ERR("Invalid chunk index %d in at_send_next_chunk for sender index %d", chunk_index, sender_idx);
+        return -1;
+    }
+
+    uint16_t linear = page_index * LARGE_DATA_CHUNKS_PER_PAGE + chunk_index;
+    if (linear >= ld_sender[sender_idx].total_chunks || ld_sender[sender_idx].next_chunk >= ld_sender[sender_idx].total_chunks) {
+        LOG_ERR("Page index %d chunk index %d (linear %u) out of chunk bounds in at_send_next_chunk for sender index %d", page_index, chunk_index, linear, sender_idx);
+        return -1;
+    }
+
+    uint8_t payload[AT_DATA_PAYLOAD_MAX];
+    uint16_t csz = (linear == (ld_sender[sender_idx].total_chunks - 1)) ? ld_sender[sender_idx].last_chunk_size : AT_DATA_PAYLOAD_MAX;
+
+    uint32_t addr = ld_sender[sender_idx].base_addr + (uint32_t)linear * AT_DATA_PAYLOAD_MAX;
+    int err = psram_read(addr, payload, csz);
+    if (err) {
+        LOG_ERR("Failed to read PSRAM at address 0x%08X", addr);
+        return -1;
+    }
+
+    char cmd[SLM_UART_AT_COMMAND_LEN];
+    int n = snprintf(cmd, sizeof(cmd), "\r\nAT#LD=\"%016llX\",\"%04X\",\"%04X\",\"%04X\",\"",
+					(unsigned long long)device_id_cache, ld_sender[sender_idx].data_id, (unsigned)page_index, (unsigned)chunk_index);
+
+    if (n < 0 || (size_t)n >= sizeof(cmd)) {
+        LOG_ERR("snprintf overflow building AT#REPORT header");
+        return -1;
+    }
+    
+    size_t need = (size_t)n + (size_t)csz * 2 + 3; // header + hex payload + "\"\r\n"
+    if (need > sizeof(cmd)) {
+        LOG_ERR("AT#REPORT command too long: need %zu bytes, have %zu", need, sizeof(cmd));
+        return -1;
+    }
+
+    for (uint16_t b = 0; b < csz; b++) {
+        cmd[n++] = HEX_LUT[(payload[b] >> 4) & 0x0F];
+        cmd[n++] = HEX_LUT[payload[b] & 0x0F];
+    }
+    cmd[n++] = '"';
+    cmd[n++] = '\r';
+    cmd[n++] = '\n';
+
+    int tx_err = slm_at_tx_write((const uint8_t *)cmd, (size_t)n, false);
+    if (tx_err) {
+        LOG_ERR("slm_at_tx_write failed (%d) for sender index %d", tx_err, sender_idx);
+        return -1;
+    }
+
+    LOG_INF("Sent AT#LD for sender index %d page %d chunk %d (size %d)", sender_idx, page_index, chunk_index, csz);
+    return 0;
+}
 
 void cmd_ld_init(const char *args)
 {
@@ -1047,7 +1206,7 @@ void cmd_ld_init(const char *args)
     ld_slot[idx].total_size = (uint32_t)v_total;
     ld_slot[idx].total_chunks = v_chunks;
     ld_slot[idx].last_chunk_size = (uint16_t)v_last;
-    ld_slot[idx].page_count = (v_chunks + LARGE_DATA_CHUNKS_PER_SIZE - 1) / LARGE_DATA_CHUNKS_PER_SIZE; // 32 chunks per page
+    ld_slot[idx].page_count = (v_chunks + LARGE_DATA_CHUNKS_PER_PAGE - 1) / LARGE_DATA_CHUNKS_PER_PAGE; // 32 chunks per page
     ld_slot[idx].crc32 = (uint32_t)v_crc32;
     ld_slot[idx].received_count = 0;
     nbtimeout_init(&ld_slot[idx].idle_timeout, LARGE_DATA_SLOT_TIMEOUT_MS, 0);
@@ -1064,6 +1223,62 @@ void cmd_ld_init(const char *args)
              ld_slot[idx].total_size, ld_slot[idx].total_chunks);
     at_send_line(resp);
     at_ok();
+}
+
+void cmd_ld_init_ack(const char *args, bool is_ready)
+{
+    at_pending_ack_t ack = {
+        .sn = 0,
+        .data_type = 0,
+        .id = 0,
+        .page = -1,
+        .chunk = -1,
+    };
+
+    if (!is_ready && args != NULL) {
+        uint64_t v_sn, v_id, v_total, v_chunks;
+        if (field_hex_u64(args, 0, &v_sn) != 0) {
+            LOG_WRN("AT#LDINITACK rejected: failed to parse SN");
+            return;
+        } else if (field_hex_u64(args, 1, &v_id) != 0) {
+            LOG_WRN("AT#LDINITACK rejected: failed to parse data_id");
+            return;
+        } else if (field_hex_u64(args, 2, &v_total) != 0) {
+            LOG_WRN("AT#LDINITACK rejected: failed to parse total_size");
+            return;
+        } else if (field_hex_u64(args, 3, &v_chunks) != 0) {
+            LOG_WRN("AT#LDINITACK rejected: failed to parse chunk_count");
+            return;
+        }
+
+        for (int i = 0; i < mesh_count; i++) {
+            if (mesh_devices[i].serial_num == v_sn) {
+                sender_idx_cache = find_sender_slot(mesh_devices[i].device_id, (uint8_t)v_id);
+                if (sender_idx_cache < 0) {
+                    LOG_WRN("AT#LDINITACK rejected: no matching sender slot for SN 0x%016llx data_id %u", (unsigned long long)v_sn, (uint16_t)v_id);
+                    return;
+                }
+                device_id_cache = mesh_devices[i].device_id;
+                break;
+            }
+            if (i == mesh_count - 1) {
+                LOG_WRN("AT#LDINITACK rejected: SN 0x%016llx not found in paired devices", (unsigned long long)v_sn);
+                return;
+            }
+        }
+        ack.sn = v_sn;
+        ack.data_type = DATA_TYPE_LARGE_DATA;
+        ack.id = (uint8_t)v_id;
+        ack.page = -1;
+        ack.chunk = -1;
+        set_at_pending_ack(ack);
+    } else {
+        int err = at_send_next_chunk(sender_idx_cache, 0, 0);
+        if (err) {
+            LOG_ERR("Failed to send first chunk in cmd_ld_init_ack");
+            return;
+        }
+    }
 }
 
 void cmd_ld_chunk(const char *args)
@@ -1115,10 +1330,10 @@ void cmd_ld_chunk(const char *args)
         return;
     }
 
-    if (v_id > 0xFF || v_page > 0xFF || v_chunk >= LARGE_DATA_CHUNKS_PER_SIZE) {
+    if (v_id > 0xFF || v_page > 0xFF || v_chunk >= LARGE_DATA_CHUNKS_PER_PAGE) {
         LOG_WRN("AT#LD rejected: bad id/page/chunk (id=%llu page=%llu chunk=%llu, max %d/page)",
                 (unsigned long long)v_id, (unsigned long long)v_page,
-                (unsigned long long)v_chunk, LARGE_DATA_CHUNKS_PER_SIZE);
+                (unsigned long long)v_chunk, LARGE_DATA_CHUNKS_PER_PAGE);
         at_error();
         return;
     }
@@ -1132,7 +1347,7 @@ void cmd_ld_chunk(const char *args)
     }
 
     /* AT framing: AT_DATA_PAYLOAD_MAX bytes per chunk, indexed page/chunk. */
-    uint16_t linear = (uint16_t)(v_page * LARGE_DATA_CHUNKS_PER_SIZE + v_chunk);
+    uint16_t linear = (uint16_t)(v_page * LARGE_DATA_CHUNKS_PER_PAGE + v_chunk);
     if (linear >= ld_slot[idx].total_chunks) {
         LOG_WRN("AT#LD rejected: page %llu chunk %llu out of range (%u chunks) for data_id %u",
                 (unsigned long long)v_page, (unsigned long long)v_chunk,
@@ -1159,8 +1374,8 @@ void cmd_ld_chunk(const char *args)
         return;
     }
 
-    LOG_DBG("Staging AT#LD chunk %u (page %u chunk %u) for data_id %u at PSRAM offset 0x%06x",
-            linear, (uint16_t)v_page, (uint16_t)v_chunk, (uint16_t)v_id, offset);
+    LOG_DBG("Staging AT#LD chunk %u (page %u chunk %u size %d) for data_id %u at PSRAM offset 0x%06x",
+            linear, (uint16_t)v_page, (uint16_t)v_chunk, expected, (uint16_t)v_id, offset);
     int err = psram_write(ld_slot[idx].base_addr + offset, payload, expected);
     if (err) {
         LOG_ERR("AT#LD psram_write @0x%06x failed (%d), freeing slot",
@@ -1169,21 +1384,6 @@ void cmd_ld_chunk(const char *args)
         at_error();
         return;
     }
-    err = psram_read(ld_slot[idx].base_addr + offset, payload, expected);
-    if (err) {
-        LOG_ERR("AT#LD psram_read @0x%06x failed (%d) for verify, freeing slot",
-                ld_slot[idx].base_addr + offset, err);
-        free_large_data_slot(idx, -1);
-        at_error();
-        return;
-    }
-
-    // Update the CRC32 incrementally for each chunk.
-    if (v_page == 0 && v_chunk == 0) {
-        at_cmd_crc = crc32_ieee(payload, expected);
-    } else {
-        at_cmd_crc = crc32_ieee_update(at_cmd_crc, payload, expected);
-    }
 
     ld_slot[idx].received_count++;
     nbtimeout_start(&ld_slot[idx].idle_timeout);
@@ -1191,35 +1391,15 @@ void cmd_ld_chunk(const char *args)
     /* Last chunk staged — verify the whole-blob CRC32 from AT#LDINIT and hand
      * the slot to sensor_large_data_tick() via upstream_ready to forward it. */
     if (ld_slot[idx].received_count >= ld_slot[idx].total_chunks) {
-        if (at_cmd_crc != ld_slot[idx].crc32) {
-            LOG_WRN("AT#LD CRC32 mismatch for data_id %u: got 0x%08x, expected 0x%08x — freeing slot",
-                    (uint16_t)v_id, at_cmd_crc, ld_slot[idx].crc32);
+        if (large_data_verify_crc32(idx) != 0) {
+            LOG_WRN("AT#LD CRC32 verification failed for data_id %u, freeing slot", (uint16_t)v_id);
             free_large_data_slot(idx, -1);
             at_error();
             return;
         }
-        uint32_t crc = 0;
-        uint32_t bytes_remaining = ld_slot[idx].total_size;
-        uint32_t offset = 0;
-        bool first_stage = true;
-        LOG_DBG("Starting CRC verification for gen %d data_id %d, total_size %u bytes", ld_slot[idx].gen_device_id, ld_slot[idx].data_id, ld_slot[idx].total_size);
-
-        while (bytes_remaining > 0) {
-            uint16_t n = (bytes_remaining > LD_CRC_VERIFY_STAGE_SIZE) ? LD_CRC_VERIFY_STAGE_SIZE : bytes_remaining;
-            int err = psram_read(ld_slot[idx].base_addr + offset, crc_stage, n);
-            if (err) {
-                LOG_ERR("CRC verify: psram_read @0x%06x failed (%d)", ld_slot[idx].base_addr + offset, err);
-                return;
-            }
-            crc = first_stage ? crc32_ieee(crc_stage, n) : crc32_ieee_update(crc, crc_stage, n);
-            first_stage = false;
-            offset += n;
-            bytes_remaining -= n;
-        }
-        ld_slot[idx].crc32 = crc;
-        ld_slot[idx].total_chunks = (ld_slot[idx].total_size + SEND_LARGE_DATA_MAX - 1) / SEND_LARGE_DATA_MAX;
-        ld_slot[idx].last_chunk_size = (uint16_t)(ld_slot[idx].total_size - (ld_slot[idx].total_chunks - 1) * SEND_LARGE_DATA_MAX);
-        ld_slot[idx].page_count = (ld_slot[idx].total_chunks + LARGE_DATA_CHUNKS_PER_SIZE - 1) / LARGE_DATA_CHUNKS_PER_SIZE;
+        ld_slot[idx].total_chunks = (ld_slot[idx].total_size + LARGE_DATA_CHUNK_SIZE - 1) / LARGE_DATA_CHUNK_SIZE;
+        ld_slot[idx].last_chunk_size = (uint16_t)(ld_slot[idx].total_size - (ld_slot[idx].total_chunks - 1) * LARGE_DATA_CHUNK_SIZE);
+        ld_slot[idx].page_count = (ld_slot[idx].total_chunks + LARGE_DATA_CHUNKS_PER_PAGE - 1) / LARGE_DATA_CHUNKS_PER_PAGE;
         ld_slot[idx].received_count = ld_slot[idx].total_chunks;
         ld_slot[idx].upstream_ready = true;
         nbtimeout_stop(&ld_slot[idx].idle_timeout);
@@ -1228,4 +1408,71 @@ void cmd_ld_chunk(const char *args)
     }
 
     at_ok();
+}
+
+void cmd_ld_chunk_ack(const char *args, bool is_ready)
+{
+    at_pending_ack_t ack = {
+        .sn = 0,
+        .data_type = 0,
+        .id = 0,
+        .page = -1,
+        .chunk = -1,
+    };
+
+    if (!is_ready && args != NULL) {
+        uint64_t v_sn, v_id, v_page, v_chunk;
+        if (field_hex_u64(args, 0, &v_sn) != 0) {
+            LOG_WRN("AT#LDACK rejected: failed to parse SN");
+            return;
+        } else if (field_hex_u64(args, 1, &v_id) != 0) {
+            LOG_WRN("AT#LDACK rejected: failed to parse data_id");
+            return;
+        } else if (field_hex_u64(args, 2, &v_page) != 0) {
+            LOG_WRN("AT#LDACK rejected: failed to parse page index");
+            return;
+        } else if (field_hex_u64(args, 3, &v_chunk) != 0) {
+            LOG_WRN("AT#LDACK rejected: failed to parse chunk index");
+            return;
+        }
+
+        if (ld_sender[sender_idx_cache].data_id != (uint8_t)v_id) {
+            LOG_WRN("AT#LDACK rejected: data_id mismatch with sender state (got %u, expected %u)", (uint16_t)v_id, ld_sender[sender_idx_cache].data_id);
+            return;
+        } else if (v_page >= ld_sender[sender_idx_cache].page_count) {
+            LOG_WRN("AT#LDACK rejected: page index %llu out of range for sender state (max %u)", (unsigned long long)v_page, ld_sender[sender_idx_cache].page_count);
+            return;
+        } else if (v_chunk >= LARGE_DATA_CHUNKS_PER_PAGE) {
+            LOG_WRN("AT#LDACK rejected: chunk index %llu out of range (max %d)", (unsigned long long)v_chunk, LARGE_DATA_CHUNKS_PER_PAGE);
+            return;
+        }
+
+        ack.sn = v_sn;
+        ack.data_type = DATA_TYPE_LARGE_DATA;
+        ack.id = (uint8_t)v_id;
+        ack.page = (uint16_t)v_page;
+        ack.chunk = (uint16_t)v_chunk;
+        set_at_pending_ack(ack);
+    } else {
+        if (ld_sender[sender_idx_cache].next_chunk >= (uint16_t)(ld_sender[sender_idx_cache].total_chunks - 1)) {
+            LOG_INF("Transfer complete for sender index %d after final chunk ACKed", sender_idx_cache);
+            ld_sender[sender_idx_cache].active = false;
+            int idx = find_large_data_slot(ld_sender[sender_idx_cache].gen_device_id, ld_sender[sender_idx_cache].data_id);
+            if (idx < 0) {
+                LOG_ERR("Failed to find matching large data slot for gen %d data_id %d to free after transfer complete in cmd_ld_chunk_ack", ld_sender[sender_idx_cache].gen_device_id, ld_sender[sender_idx_cache].data_id);
+                return;
+            }
+            ld_slot[idx].is_transfered = true;
+            return;
+        }
+
+        ld_sender[sender_idx_cache].next_chunk++;
+        uint16_t next_page = ld_sender[sender_idx_cache].next_chunk / LARGE_DATA_CHUNKS_PER_PAGE;
+        uint16_t next_chunk = ld_sender[sender_idx_cache].next_chunk % LARGE_DATA_CHUNKS_PER_PAGE;
+        int err = at_send_next_chunk(sender_idx_cache, next_page, next_chunk);
+        if (err) {
+            LOG_ERR("Failed to send chunk in cmd_ld_chunk_ack for page %u chunk %u", next_page, next_chunk);
+            return;
+        }
+    }
 }

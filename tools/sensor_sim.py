@@ -81,7 +81,7 @@ MAX_CONFIG_SIZE = 128           # src/config.h MAX_CONFIG_SIZE
 # Capped at 450 B/chunk to match the firmware's AT_DATA_PAYLOAD_MAX
 # (src/slm_at_main.c) -> ~955-char line, safely under the firmware's
 # SLM_UART_AT_COMMAND_LEN (1024, minus 1 for the NUL = 1023 usable).
-AT_LD_PAYLOAD_MAX = 450         # bytes of binary payload per AT#LD chunk
+AT_LD_PAYLOAD_MAX = 256         # bytes of binary payload per AT#LD chunk
 LD_CHUNKS_PER_PAGE = 32         # chunk index rolls to next page after 32, matching
                                 # LARGE_DATA_CHUNKS_PER_SIZE in src/large_data.h
 LARGE_DATA_MAX_TRANSFER = 200 * 1024  # src/large_data.h LARGE_DATA_MAX_TRANSFER_SIZE
@@ -812,65 +812,82 @@ def parse_at_config(line: str) -> tuple[bool, str, Optional[dict]]:
 
 
 def parse_at_ldinit(line: str) -> tuple[bool, str, Optional[dict]]:
-    """Parse + CRC16-verify an incoming AT#LDINIT (the 7-field large-data init,
-    same framing build_at_ldinit() emits). Verifies the CCITT-FALSE CRC16 over
-    the init metadata (SN/ID/total_size/total_chunks/last_chunk_size/CRC32),
-    matching cmd_ld_init() in src/large_data.c. Returns (ok, summary, parsed)
-    where parsed carries the whole-blob CRC32 for end-to-end verification."""
+    """Parse + CRC16-verify an incoming AT#LDINIT as seen on the GATEWAY side:
+    8 quoted fields —
+        sn, id, timestamp(uint64), total_size, total_chunks, last_chunk_size,
+        crc32, crc16
+    matching send_at_large_data_init() in src/large_data.c. This is asymmetric
+    with the sensor-side AT#LDINIT that build_at_ldinit() emits (7 fields, NO
+    timestamp): the gateway stamps a report_time_ms before forwarding upstream,
+    exactly as it does for AT#REPORT (see parse_at_report).
+
+    The CCITT-FALSE CRC16 covers the init metadata packed big-endian as
+    <SN:u64><ID:u16><TIMESTAMP:u64><TOTAL_SIZE:u32><TOTAL_CHUNKS:u16>
+    <LAST_CHUNK_SIZE:u16><CRC32:u32>, matching the crc_buf in
+    send_at_large_data_init(). Returns (ok, summary, parsed) where parsed carries
+    the whole-blob CRC32 for end-to-end verification and the gateway timestamp."""
     fields = _quoted_fields(line)
-    if fields is None or len(fields) < 7:
-        return False, f"malformed: expected 7 quoted fields, got {fields!r}", None
-    sn_hex, id_hex, total_hex, chunks_hex, last_hex, crc32_hex, crc16_hex = fields[:7]
+    if fields is None or len(fields) < 8:
+        return False, f"malformed: expected 8 quoted fields, got {fields!r}", None
+    (sn_hex, id_hex, ts_hex, total_hex, chunks_hex,
+     last_hex, crc32_hex, crc16_hex) = fields[:8]
     try:
         sn = int(sn_hex, 16); data_id = int(id_hex, 16)
+        timestamp = int(ts_hex, 16)
         total_size = int(total_hex, 16); total_chunks = int(chunks_hex, 16)
         last_chunk_size = int(last_hex, 16); crc32 = int(crc32_hex, 16)
         crc16 = int(crc16_hex, 16)
     except ValueError as e:
         return False, f"bad hex in header: {e}", None
-    meta = struct.pack(">QHIHHI", sn & 0xFFFFFFFFFFFFFFFF, data_id & 0xFFFF,
+    meta = struct.pack(">QHQIHHI", sn & 0xFFFFFFFFFFFFFFFF, data_id & 0xFFFF,
+                       timestamp & 0xFFFFFFFFFFFFFFFF,
                        total_size & 0xFFFFFFFF, total_chunks & 0xFFFF,
                        last_chunk_size & 0xFFFF, crc32 & 0xFFFFFFFF)
     calc = _crc16_ccitt(meta)
     if calc != crc16:
         return False, f"CRC16 mismatch: header 0x{crc16:04X}, calc 0x{calc:04X}", None
-    summary = (f"sn=0x{sn:016X} id={data_id} total={total_size} "
+    summary = (f"sn=0x{sn:016X} id={data_id} ts={timestamp}ms total={total_size} "
                f"chunks={total_chunks} last={last_chunk_size} crc32=0x{crc32:08X}")
-    return True, summary, {"sn": sn, "data_id": data_id, "total_size": total_size,
+    return True, summary, {"sn": sn, "data_id": data_id, "timestamp": timestamp,
+                           "total_size": total_size,
                            "total_chunks": total_chunks,
                            "last_chunk_size": last_chunk_size,
                            "crc32": crc32, "crc16": crc16}
 
 
 def parse_at_ld(line: str) -> tuple[bool, str, Optional[dict]]:
-    """Parse + CRC16-verify one incoming AT#LD chunk (the 6-field framing
-    build_at_ld() emits). Verifies the CCITT-FALSE CRC16 over the chunk payload.
-    Returns (ok, summary, parsed) with the decoded page/chunk indices and the
-    raw payload bytes."""
+    """Parse one incoming AT#LD chunk as emitted by the GATEWAY forward path:
+    5 quoted fields — sn, id, page, chunk, payload — matching at_send_next_chunk()
+    in src/large_data.c. This is asymmetric with the sensor-side AT#LD that
+    build_at_ld() emits (6 fields, WITH a per-chunk CRC16): the gateway forward
+    carries NO per-chunk CRC16, so integrity is covered end-to-end by the
+    whole-blob CRC32 announced in AT#LDINIT and re-checked on reassembly.
+
+    Note the gateway puts the sensor's 16-bit device id in the SN field here,
+    whereas AT#LDINIT announced the 64-bit serial number — callers correlate the
+    chunk to its transfer by data_id, not SN (see GatewayWorker._handle_ld).
+
+    Returns (ok, summary, parsed) with the decoded page/chunk indices, the linear
+    index, and the raw payload bytes."""
     fields = _quoted_fields(line)
-    if fields is None or len(fields) < 6:
-        return False, f"malformed: expected 6 quoted fields, got {fields!r}", None
-    sn_hex, id_hex, page_hex, chunk_hex, crc16_hex, data_hex = fields[:6]
+    if fields is None or len(fields) < 5:
+        return False, f"malformed: expected 5 quoted fields, got {fields!r}", None
+    sn_hex, id_hex, page_hex, chunk_hex, data_hex = fields[:5]
     try:
         sn = int(sn_hex, 16); data_id = int(id_hex, 16)
         page = int(page_hex, 16); chunk = int(chunk_hex, 16)
-        crc16 = int(crc16_hex, 16)
     except ValueError as e:
         return False, f"bad hex in header: {e}", None
     try:
         payload = bytes.fromhex(data_hex)
     except ValueError as e:
         return False, f"bad hex in payload: {e}", None
-    calc = _crc16_ccitt(payload)
-    if calc != crc16:
-        return False, f"CRC16 mismatch: header 0x{crc16:04X}, calc 0x{calc:04X}", None
     # Linear chunk index, matching iter_ld_chunks()'s page/chunk pagination.
     linear = page * LD_CHUNKS_PER_PAGE + chunk
     summary = (f"sn=0x{sn:016X} id={data_id} page={page} chunk={chunk} "
                f"linear={linear} len={len(payload)}")
     return True, summary, {"sn": sn, "data_id": data_id, "page": page,
-                           "chunk": chunk, "linear": linear,
-                           "crc16": crc16, "payload": payload}
+                           "chunk": chunk, "linear": linear, "payload": payload}
 
 
 # ---------------------------------------------------------------------------
