@@ -21,7 +21,7 @@
 #define LARGE_DATA_MAX_TRANSFER_SIZE            (200 * 1024)    /* some buffer for metadata */
 
 #define LARGE_DATA_SLOT_TIMEOUT_MS              (30 * 1000)     /* free slot if idle this long */
-#define PACKET_LARGE_DATA_TIMEOUT_MS            250             /* 250ms timeout for waiting ACKs before retrying */
+#define PACKET_LARGE_DATA_TIMEOUT_MS            150             /* 150ms timeout for waiting ACKs before retrying */
 #define LD_SENDER_TIMEOUT_MS                    (30 * 1000)     /* 30 seconds timeout for sender to wait for transfer completion before giving up */
 
 #define LD_CRC_VERIFY_STAGE_SIZE                1024  /* Read and process data in 1KB stages for CRC verification */

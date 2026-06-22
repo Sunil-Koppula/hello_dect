@@ -81,7 +81,10 @@ MAX_CONFIG_SIZE = 128           # src/config.h MAX_CONFIG_SIZE
 # Capped at 450 B/chunk to match the firmware's AT_DATA_PAYLOAD_MAX
 # (src/slm_at_main.c) -> ~955-char line, safely under the firmware's
 # SLM_UART_AT_COMMAND_LEN (1024, minus 1 for the NUL = 1023 usable).
-AT_LD_PAYLOAD_MAX = 256         # bytes of binary payload per AT#LD chunk
+AT_LD_PAYLOAD_MAX = 472         # bytes of binary payload per AT#LD chunk;
+                                # MUST equal the firmware's AT_DATA_PAYLOAD_MAX
+                                # (src/slm_at_main.h) — the two sides agree on
+                                # chunk boundaries by this value.
 LD_CHUNKS_PER_PAGE = 32         # chunk index rolls to next page after 32, matching
                                 # LARGE_DATA_CHUNKS_PER_SIZE in src/large_data.h
 LARGE_DATA_MAX_TRANSFER = 200 * 1024  # src/large_data.h LARGE_DATA_MAX_TRANSFER_SIZE

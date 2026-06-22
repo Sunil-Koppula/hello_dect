@@ -125,6 +125,10 @@ static int send_next_large_data_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t
     for (int i = 0; i < MAX_TX_QUEUE_PROCESS_PER_CYCLE/2; i++) {
         uint16_t page_idx = (ld_sender[sender_idx].next_chunk + i) / LARGE_DATA_CHUNKS_PER_PAGE;
         uint8_t chunk_idx = (ld_sender[sender_idx].next_chunk + i) % LARGE_DATA_CHUNKS_PER_PAGE;
+        if (page_idx * LARGE_DATA_CHUNKS_PER_PAGE + chunk_idx >= ld_sender[sender_idx].total_chunks) {
+            LOG_DBG("All chunks sent for sender index %d", sender_idx);
+            return 0;
+        }
         uint16_t csz = chunk_size_for_large_data(ld_sender[sender_idx].next_chunk + i, sender_idx);
 
         large_data_chunk_t chunk_pkt;
@@ -1107,7 +1111,7 @@ static int at_send_next_chunk(int sender_idx, int page_index, int chunk_index)
         return -1;
     }
 
-    LOG_INF("Sent AT#LD for sender index %d page %d chunk %d (size %d)", sender_idx, page_index, chunk_index, csz);
+    LOG_DBG("Sent AT#LD for sender index %d page %d chunk %d (size %d)", sender_idx, page_index, chunk_index, csz);
     return 0;
 }
 

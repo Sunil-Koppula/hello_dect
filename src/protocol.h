@@ -354,7 +354,7 @@ typedef struct {
 
 #define REPORT_RECEIVED_ACK_PACKET_SIZE sizeof(report_received_ack_t)
 
-#define SEND_LARGE_DATA_MAX 128
+#define SEND_LARGE_DATA_MAX 180
 
 /* LARGE DATA INIT Packet */
 typedef struct {

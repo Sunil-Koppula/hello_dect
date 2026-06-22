@@ -21,7 +21,7 @@
 extern "C" {
 #endif
 
-#define AT_DATA_PAYLOAD_MAX 256
+#define AT_DATA_PAYLOAD_MAX 472
 
 typedef struct {
     uint8_t data_type;
