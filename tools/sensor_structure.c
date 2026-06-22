@@ -178,6 +178,12 @@ typedef struct
 
 typedef struct
 {
+    sensor_report_info_3300_t report_info_3300;
+    uint8_t sound_record[SENSOR_LARGE_DATA_INFO_MAX - sizeof(sensor_report_info_3300_t) - 29]; // 29 bytes for the fixed header fields below
+} sensor_large_data_info_3300_t;
+
+typedef struct
+{
     int8_t temperature_max1;
     int8_t temperature_min1;
     uint8_t humidity_max1;
@@ -284,7 +290,7 @@ typedef struct
     uint8_t  ultrasound_center_frequency;
     uint16_t vibration_level_max;
     uint8_t  random_number;
-} __attribute__((packed)) sensor_config_info_3300_t;
+} sensor_config_info_3300_t;
 
 typedef struct
 {
@@ -345,7 +351,7 @@ typedef struct
     uint16_t large_data_crc16;        // covers the fixed header above
     union
     {
-        uint8_t  data_info[SENSOR_LARGE_DATA_INFO_MAX + SENSOR_REPORT_INFO_MAX];    // Maximum bytes in reported data = 16
+        uint8_t  data_info[SENSOR_LARGE_DATA_INFO_MAX - 29]; // 29 bytes for the fixed header fields above
         sensor_large_data_info_3300_t data_info_3300;
     };
 } sensor_large_data_structure_t;
@@ -361,6 +367,5 @@ _Static_assert(sizeof(sensor_data_structure_t) == 28 + SENSOR_REPORT_INFO_MAX,
                "sensor_data_structure_t layout changed");
 _Static_assert(sizeof(sensor_config_structure_t) == 21 + SENSOR_CONFIG_INFO_MAX,
                "sensor_config_structure_t layout changed");
-_Static_assert(sizeof(sensor_large_data_structure_t) ==
-                   29 + (SENSOR_LARGE_DATA_INFO_MAX + SENSOR_REPORT_INFO_MAX),
+_Static_assert(sizeof(sensor_large_data_structure_t) == SENSOR_LARGE_DATA_INFO_MAX,
                "sensor_large_data_structure_t layout changed");

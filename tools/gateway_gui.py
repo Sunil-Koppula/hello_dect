@@ -15,6 +15,14 @@ MCU *below* a sensor, this tool emulates the host *above* a gateway:
     '#REPORT: ...' + OK on success, ERROR on failure — matching what the
     gateway's dispatch expects (cmd_report_ack + OK releases the slot).
 
+  - RECEIVES large data coming up from sensors via the gateway, framed as
+    AT#LDINIT (announce) + a stream of AT#LD chunks (same framing the sensor
+    side uses downstream). Each line is CRC16-verified and acked (OK, with a
+    '#LDINIT: ...' echo) so the device's flow-controlled sender proceeds; once
+    every chunk arrives the blob is reassembled, its whole-transfer CRC32 is
+    verified, the sensor_large_data_structure_t header is decoded, and the
+    transfer is surfaced in a live table + log.
+
 Reuses sensor_sim.py for all encode/decode/framing. tkinter ships with CPython.
 
 Usage:
@@ -61,6 +69,9 @@ class GatewayWorker:
         self.stop_evt = threading.Event()
         self.events: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self._wlock = threading.Lock()
+        # In-flight large-data transfers, keyed by (sn, data_id). Each value is
+        # the AT#LDINIT metadata plus a {linear_index: payload} chunk store.
+        self._ld_xfers: dict[tuple[int, int], dict] = {}
 
     def log(self, msg: str) -> None:
         self.events.put(("log", f"[{time.strftime('%H:%M:%S')}] {msg}"))
@@ -88,15 +99,24 @@ class GatewayWorker:
             if not chunk:
                 continue
             buf.extend(chunk)
-            text = buf.decode("ascii", errors="replace")
-            parts = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-            buf = bytearray(parts[-1], "ascii")
-            for raw in parts[:-1]:
-                line = raw.strip()
+            # Split into complete lines at the BYTE level, keeping any trailing
+            # partial line in buf. Decoding per complete line (rather than the
+            # whole buffer and re-encoding the tail) avoids re-encoding a
+            # replacement char back to ascii, which would raise and silently
+            # kill this thread on stray non-ascii bytes (boot banners, noise).
+            data = bytes(buf).replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            *complete, tail = data.split(b"\n")
+            buf = bytearray(tail)
+            for raw in complete:
+                line = raw.decode("ascii", errors="replace").strip()
                 if not line:
                     continue
                 if line.startswith("AT#REPORT="):
                     self._handle_report(line)
+                elif line.startswith("AT#LDINIT="):
+                    self._handle_ldinit(line)
+                elif line.startswith("AT#LD="):
+                    self._handle_ld(line)
                 elif line in ("OK", "ERROR") or line.startswith("#CONFIG"):
                     # Replies to our AT#CONFIG push.
                     self.log(f"<<< {line}")
@@ -126,6 +146,114 @@ class GatewayWorker:
             "decoded": decoded,
         }))
 
+    # -- large-data reader ----------------------------------------------
+    def _handle_ldinit(self, line: str) -> None:
+        """An AT#LDINIT announces a large-data transfer. Verify its CRC16, open
+        a reassembly buffer, and ack (#LDINIT echo + OK) so the device's flow-
+        controlled sender starts streaming AT#LD chunks."""
+        ok, summary, parsed = sim.parse_at_ldinit(line)
+        if not ok:
+            with self._wlock:
+                self.io.write(b"\r\nERROR\r\n")
+            self.log(f"<<< AT#LDINIT rejected — {summary}")
+            return
+        key = (parsed["sn"], parsed["data_id"])
+        self._ld_xfers[key] = {
+            "sn": parsed["sn"], "data_id": parsed["data_id"],
+            "total_size": parsed["total_size"],
+            "total_chunks": parsed["total_chunks"],
+            "last_chunk_size": parsed["last_chunk_size"],
+            "crc32": parsed["crc32"],
+            "chunks": {}, "started": time.strftime("%H:%M:%S"),
+        }
+        # The gateway parses this #LDINIT ack with field_hex_u64() (every field is
+        # bare hex, NO "0x" prefix — an 'x' fails hex_nibble). It matches the
+        # transfer by SN + data_id, so both must be hex; total_size/total_chunks
+        # are echoed (hex) for symmetry though the firmware ignores them.
+        with self._wlock:
+            self.io.write(f'\r\n#LDINIT: "{parsed["sn"]:016X}",'
+                          f'"{parsed["data_id"]:04X}","{parsed["total_size"]:08X}",'
+                          f'"{parsed["total_chunks"]:04X}"\r\n'.encode("ascii"))
+            self.io.write(b"\r\nOK\r\n")
+        self.log(f"<<< AT#LDINIT — {summary}")
+        self.events.put(("ld_init", {
+            "ts": self._ld_xfers[key]["started"],
+            "sn": f"{parsed['sn']:016X}", "data_id": parsed["data_id"],
+            "total_size": parsed["total_size"],
+            "total_chunks": parsed["total_chunks"],
+        }))
+
+    def _handle_ld(self, line: str) -> None:
+        """One AT#LD chunk of an announced transfer. Verify it, stage it, and
+        ack with '#LD' + OK. When every chunk has arrived, reassemble, verify the
+        whole-transfer CRC32, decode the sensor_large_data_structure_t, and emit
+        the completed transfer."""
+        ok, summary, parsed = sim.parse_at_ld(line)
+        if not ok:
+            with self._wlock:
+                self.io.write(b"\r\nERROR\r\n")
+            self.log(f"<<< AT#LD rejected — {summary}")
+            return
+
+        # Per-chunk flow control mirrors AT#LDINIT: write '#LD: "<sn>","<id>",
+        # "<page>","<chunk>"' (arms the device's chunk pending-ack via
+        # cmd_ld_chunk_ack) THEN OK (which advances it to send the next chunk).
+        # Bare hex only — the firmware's field_hex_u64 rejects a '0x' prefix.
+        with self._wlock:
+            self.io.write(f'\r\n#LD: "{parsed["sn"]:016X}","{parsed["data_id"]:04X}",'
+                          f'"{parsed["page"]:04X}","{parsed["chunk"]:04X}"\r\n'
+                          .encode("ascii"))
+            self.io.write(b"\r\nOK\r\n")
+
+        key = (parsed["sn"], parsed["data_id"])
+        xfer = self._ld_xfers.get(key)
+        if xfer is None:
+            # The gateway's AT#LD puts the sensor's 16-bit device id in the SN
+            # field, while AT#LDINIT announced the 64-bit serial number — so the
+            # SN won't match. Correlate by data_id instead (one transfer at a
+            # time on the gateway forward path).
+            matches = [(k, x) for k, x in self._ld_xfers.items()
+                       if k[1] == parsed["data_id"]]
+            if len(matches) == 1:
+                key, xfer = matches[0]
+        if xfer is None:
+            # Chunk with no matching AT#LDINIT — already acked above so the
+            # device's sender advances, but we can't place it.
+            self.log(f"<<< AT#LD with no active transfer for sn=0x{parsed['sn']:016X} "
+                     f"id={parsed['data_id']} — ignored")
+            return
+
+        xfer["chunks"][parsed["linear"]] = parsed["payload"]
+
+        received = len(xfer["chunks"])
+        total = xfer["total_chunks"]
+        if received % 50 == 0 or received == total:
+            self.log(f"<<< AT#LD {received}/{total} (sn=0x{parsed['sn']:016X} "
+                     f"id={parsed['data_id']})")
+
+        if received < total:
+            return
+
+        # All chunks in — reassemble in linear order and verify end-to-end.
+        self._ld_xfers.pop(key, None)
+        blob = b"".join(xfer["chunks"][i] for i in sorted(xfer["chunks"]))
+        status = "OK"
+        if len(blob) != xfer["total_size"]:
+            status = f"SIZE ERR ({len(blob)} != {xfer['total_size']})"
+        else:
+            calc = zlib.crc32(blob) & 0xFFFFFFFF
+            if calc != xfer["crc32"]:
+                status = f"CRC32 ERR (0x{calc:08X} != 0x{xfer['crc32']:08X})"
+        decoded = sim.decode_large_data_payload(blob) if status == "OK" else None
+        self.log(f"<<< LARGE DATA received: sn=0x{xfer['sn']:016X} "
+                 f"id={xfer['data_id']} {len(blob)} B in {total} chunks [{status}]")
+        self.events.put(("large_data", {
+            "ts": time.strftime("%H:%M:%S"),
+            "sn": f"{xfer['sn']:016X}", "data_id": xfer["data_id"],
+            "blob_len": len(blob), "total_chunks": total,
+            "status": status, "decoded": decoded,
+        }))
+
     def start(self) -> None:
         threading.Thread(target=self.reader_loop, name="reader", daemon=True).start()
 
@@ -147,6 +275,7 @@ class GatewayGUI(tk.Tk):
 
         self._build_config_form(default_sn)
         self._build_report_table()
+        self._build_large_data_table()
         self._build_log()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -313,6 +442,70 @@ class GatewayGUI(tk.Tk):
         if len(kids) > 500:
             self.tree.delete(kids[0])
 
+    # -- large-data table ------------------------------------------------
+    def _build_large_data_table(self):
+        f = ttk.LabelFrame(self, text="Incoming Large Data (AT#LDINIT + AT#LD)", padding=8)
+        f.pack(fill="both", expand=True, pady=4)
+        cols = ("time", "sn", "id", "type", "size", "sound", "chunks",
+                "batt", "fw", "t1", "h1", "status")
+        self.ld_tree = ttk.Treeview(f, columns=cols, show="headings", height=5)
+        widths = {"time": 70, "sn": 130, "id": 45, "type": 60, "size": 80,
+                  "sound": 80, "chunks": 60, "batt": 50, "fw": 40, "t1": 65,
+                  "h1": 65, "status": 170}
+        heads = {"time": "Recv Time", "sn": "SN", "id": "Data ID", "type": "Type",
+                 "size": "Bytes", "sound": "Sound B", "chunks": "Chunks",
+                 "batt": "Batt%", "fw": "FW", "t1": "Temp1 C", "h1": "Hum1 %",
+                 "status": "Status"}
+        for c in cols:
+            self.ld_tree.heading(c, text=heads[c])
+            self.ld_tree.column(c, width=widths[c], anchor="w")
+        vsb = ttk.Scrollbar(f, orient="vertical", command=self.ld_tree.yview)
+        self.ld_tree.configure(yscrollcommand=vsb.set)
+        self.ld_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.ld_tree.tag_configure("err", foreground="red")
+        self.ld_tree.tag_configure("pending", foreground="gray")
+        # Map (sn, data_id) -> tree item, so the AT#LDINIT row is updated in
+        # place when the transfer completes instead of adding a second row.
+        self._ld_rows: dict[tuple[str, int], str] = {}
+
+    def _add_ld_init_row(self, ev: dict):
+        key = (ev["sn"], ev["data_id"])
+        vals = (ev["ts"], ev["sn"], ev["data_id"], "…", ev["total_size"], "…",
+                f"0/{ev['total_chunks']}", "…", "…", "…", "…", "receiving…")
+        if key in self._ld_rows and self.ld_tree.exists(self._ld_rows[key]):
+            self.ld_tree.item(self._ld_rows[key], values=vals, tags=("pending",))
+        else:
+            self._ld_rows[key] = self.ld_tree.insert("", "end", values=vals,
+                                                      tags=("pending",))
+        self.ld_tree.see(self._ld_rows[key])
+        kids = self.ld_tree.get_children()
+        if len(kids) > 200:
+            self.ld_tree.delete(kids[0])
+
+    def _add_ld_done_row(self, ev: dict):
+        key = (ev["sn"], ev["data_id"])
+        d = ev.get("decoded") or {}
+        ok = ev["status"] == "OK"
+        if d and "raw" not in d:
+            vals = (ev["ts"], d.get("sn") or ev["sn"], ev["data_id"],
+                    f"0x{d['data_type']:04X}", ev["blob_len"],
+                    d.get("sound_record_len", "?"),
+                    f"{ev['total_chunks']}/{ev['total_chunks']}",
+                    d["battery_level"], d["firmware_version"],
+                    d["temperature1"], d["humidity1"], ev["status"])
+        else:
+            vals = (ev["ts"], ev["sn"], ev["data_id"], "?", ev["blob_len"], "?",
+                    f"{ev['total_chunks']}/{ev['total_chunks']}", "?", "?",
+                    "?", "?", ev["status"])
+        tags = () if ok else ("err",)
+        if key in self._ld_rows and self.ld_tree.exists(self._ld_rows[key]):
+            self.ld_tree.item(self._ld_rows[key], values=vals, tags=tags)
+            self._ld_rows.pop(key, None)
+        else:
+            item = self.ld_tree.insert("", "end", values=vals, tags=tags)
+            self.ld_tree.see(item)
+
     # -- log -------------------------------------------------------------
     def _build_log(self):
         f = ttk.LabelFrame(self, text="Event Log", padding=8)
@@ -335,6 +528,10 @@ class GatewayGUI(tk.Tk):
                 elif kind == "report":
                     self._add_report_row(data)
                     self._auto_send_config(data)
+                elif kind == "ld_init":
+                    self._add_ld_init_row(data)
+                elif kind == "large_data":
+                    self._add_ld_done_row(data)
         except queue.Empty:
             pass
         self.after(100, self._drain_events)

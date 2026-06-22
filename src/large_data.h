@@ -8,18 +8,21 @@
 #include "psram.h"
 #include "timeout.h"
 
-#define LARGE_DATA_CHUNKS_PER_SIZE              20
-#define LARGE_DATA_SLOT_SIZE                    (LARGE_DATA_CHUNKS_PER_SIZE * SEND_DATA_MAX)
-#define LARGE_DATA_SLOT_COUNT                   (PSRAM_LARGE_DATA_SIZE / LARGE_DATA_SLOT_SIZE)
-#define LARGE_DATA_PSRAM_SIZE                   (LARGE_DATA_SLOT_COUNT * LARGE_DATA_SLOT_SIZE)
+#define LARGE_DATA_CHUNK_SIZE                   SEND_LARGE_DATA_MAX
+#define LARGE_DATA_CHUNKS_PER_PAGE              32
+#define LARGE_DATA_PAGE_SIZE                    (LARGE_DATA_CHUNK_SIZE * LARGE_DATA_CHUNKS_PER_PAGE)
+#define LARGE_DATA_MAX_PAGE_COUNT               (PSRAM_LARGE_DATA_SIZE / LARGE_DATA_PAGE_SIZE)
 
 #define LARGE_DATA_PSRAM_BASE                   PSRAM_LARGE_DATA_BASE
+#define LARGE_DATA_PSRAM_SIZE                   (LARGE_DATA_MAX_PAGE_COUNT * LARGE_DATA_PAGE_SIZE)
+
+#define LARGE_DATA_SENDER_SLOT_COUNT            1
 #define LARGE_DATA_RECEIVER_SLOT_COUNT          64
-#define SOUND_RECORD_DATA_MAX_SIZE              (200 * 1024)  /* 200KB max sound record size */
-#define LARGE_DATA_MAX_TRANSFER_SIZE            (SOUND_RECORD_DATA_MAX_SIZE + 64) /* some buffer for metadata */
-#define LARGE_DATA_SLOT_TIMEOUT_MS              (30 * 1000)  /* free slot if idle this long */
-#define PACKET_LARGE_DATA_TIMEOUT_MS            (70) /* 70ms timeout for waiting ACKs before retrying */
-#define LD_SENDER_TIMEOUT_MS                    (3 * 60 * 1000) /* 3 minutes timeout for sender to wait for transfer completion before giving up */
+#define LARGE_DATA_MAX_TRANSFER_SIZE            (200 * 1024)    /* some buffer for metadata */
+
+#define LARGE_DATA_SLOT_TIMEOUT_MS              (30 * 1000)     /* free slot if idle this long */
+#define PACKET_LARGE_DATA_TIMEOUT_MS            150             /* 150ms timeout for waiting ACKs before retrying */
+#define LD_SENDER_TIMEOUT_MS                    (30 * 1000)     /* 30 seconds timeout for sender to wait for transfer completion before giving up */
 
 #define LD_CRC_VERIFY_STAGE_SIZE                1024  /* Read and process data in 1KB stages for CRC verification */
 
@@ -53,12 +56,14 @@ struct large_data_slot {
     uint16_t    total_chunks;
     uint32_t    crc32;
     uint16_t    received_count;
+    uint8_t     bitmap[((LARGE_DATA_MAX_TRANSFER_SIZE / LARGE_DATA_CHUNK_SIZE) + 7) / 8];
     uint32_t    base_addr;
+    uint64_t    report_time_ms;
     struct nbtimeout idle_timeout;    
 };
 
-extern struct large_data_sender ld_sender[4]; // support up to 4 concurrent sending transfers
-extern bool is_ld_slot_empty[LARGE_DATA_SLOT_COUNT];    /* Track empty slots */
+extern struct large_data_sender ld_sender[LARGE_DATA_SENDER_SLOT_COUNT];
+extern bool is_ld_slot_empty[LARGE_DATA_MAX_PAGE_COUNT];    /* Track empty slots */
 extern struct large_data_slot ld_slot[LARGE_DATA_RECEIVER_SLOT_COUNT];
 
 /* Initialize large data module. Must be called after PSRAM initialization */
@@ -67,9 +72,11 @@ int large_data_init(void);
 /* Call from main loop to expire stale slots */
 void large_data_tick(void);
 
+/* AT command handlers */
 void cmd_ld_init(const char *args);
-
+void cmd_ld_init_ack(const char *args, bool is_ready);
 void cmd_ld_chunk(const char *args);
+void cmd_ld_chunk_ack(const char *args, bool is_ready);
 
 /* TX helpers */
 int send_large_data_init(large_data_init_t *pkt, uint16_t dst_id, uint8_t dst_type, uint8_t priority);

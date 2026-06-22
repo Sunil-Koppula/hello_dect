@@ -175,17 +175,17 @@ static int alloc_large_data_slot(uint32_t size)
         return -1;
     }
     uint16_t available_slots = 0;
-    for (int i = 0; i < LARGE_DATA_SLOT_COUNT; i++) {
+    for (int i = 0; i < LARGE_DATA_MAX_PAGE_COUNT; i++) {
         if (is_ld_slot_empty[i]) {
             available_slots++;
-            if (available_slots * SEND_DATA_MAX >= size) {
+            if (available_slots * LARGE_DATA_PAGE_SIZE >= size) {
                 // Mark these slots as used
                 for (int j = i - available_slots + 1; j <= i; j++) {
                     is_ld_slot_empty[j] = false;
                 }
                 ld_slot[idx].active = true;
-                ld_slot[idx].base_addr = LARGE_DATA_PSRAM_BASE + (i - available_slots + 1) * SEND_DATA_MAX;
-                LOG_INF("Allocated large data slot %d (PSRAM 0x%06x-0x%06x) for size %u bytes", idx, ld_slot[idx].base_addr, ld_slot[idx].base_addr + available_slots * SEND_DATA_MAX - 1, size);
+                ld_slot[idx].base_addr = LARGE_DATA_PSRAM_BASE + (i - available_slots + 1) * LARGE_DATA_PAGE_SIZE;
+                LOG_INF("Allocated large data slot %d (PSRAM 0x%06x-0x%06x) for size %u bytes", idx, ld_slot[idx].base_addr, ld_slot[idx].base_addr + available_slots * LARGE_DATA_PAGE_SIZE - 1, size);
                 return idx;
             }
         } else {
@@ -260,9 +260,9 @@ static void create_ld(uint32_t size, uint16_t data_id, int *idx_out)
 	ld_slot[idx].gen_device_id = get_device_id();
 	ld_slot[idx].data_id = data_id; // For testing, use the provided data_id
 	ld_slot[idx].total_size = size;
-	ld_slot[idx].page_count = (size + SEND_DATA_MAX * 20 - 1) / (SEND_DATA_MAX * 20); // Each page has 20 chunks
-	ld_slot[idx].last_chunk_size = size % SEND_DATA_MAX == 0 ? SEND_DATA_MAX : size % SEND_DATA_MAX;
-	ld_slot[idx].total_chunks = (size + SEND_DATA_MAX - 1) / SEND_DATA_MAX;
+	ld_slot[idx].page_count = (size + SEND_LARGE_DATA_MAX * LARGE_DATA_CHUNKS_PER_PAGE - 1) / (SEND_LARGE_DATA_MAX * LARGE_DATA_CHUNKS_PER_PAGE); // Each page has 32 chunks
+	ld_slot[idx].last_chunk_size = size % SEND_LARGE_DATA_MAX == 0 ? SEND_LARGE_DATA_MAX : size % SEND_LARGE_DATA_MAX;
+	ld_slot[idx].total_chunks = (size + SEND_LARGE_DATA_MAX - 1) / SEND_LARGE_DATA_MAX;
 	ld_slot[idx].crc32 = 0; // Will be calculated in the button handler for testing
 	ld_slot[idx].received_count = 0;
 

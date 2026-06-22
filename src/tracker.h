@@ -8,12 +8,12 @@
 #include "queue.h"
 #include "psram.h"
 
-#define TRACKER_MAX_ENTRIES (MAX_SENSORS + MAX_ANCHORS)
+#define TRACKER_MAX_ENTRIES 128
 #define TRACKER_PAYLOAD_MAX QUEUE_DATA_MAX
 
 /* Tracker payload storage lives at the start of PSRAM partition P1.
  * Layout: TRACKER_MAX_ENTRIES × TRACKER_PAYLOAD_MAX bytes
- *   TRACKER_MAX_ENTRIES = MAX_SENSORS + MAX_ANCHORS = 136
+ *   TRACKER_MAX_ENTRIES = 128
  *   TRACKER_PAYLOAD_MAX = QUEUE_DATA_MAX = 210 bytes
  *   Used: 136 × 210 = 28,560 bytes (~28KB)
  *   Allocated: 32KB (0x8000) — rest of P1 reserved for future use

@@ -37,6 +37,7 @@ Requires: pyserial  (pip install pyserial)
 from __future__ import annotations
 
 import argparse
+import struct
 import sys
 import threading
 import time
@@ -76,6 +77,29 @@ DEFAULT_TIMEOUT_S = 2.0
 # Max config payload size in bytes — must match firmware MAX_CONFIG_SIZE
 # (see protocol.h). The firmware's AT#CONFIG handler enforces this.
 MAX_CONFIG_SIZE = 128
+
+# Large-data forwarding (AT#LDINIT + AT#LD). The gateway re-chunks the blob over
+# the AT link at AT_DATA_PAYLOAD_MAX bytes/chunk, with chunk index rolling to the
+# next page every LARGE_DATA_CHUNKS_PER_SIZE — must match src/large_data.c.
+AT_LD_PAYLOAD_MAX = 450
+LD_CHUNKS_PER_PAGE = 32
+
+
+def _crc16_ccitt(data: bytes, init: int = 0xFFFF) -> int:
+    """CRC16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection/xorout) —
+    matches the firmware's crc16(0x1021, 0xFFFF, ...) in src/large_data.c."""
+    crc = init
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
+    return crc
+
+
+# In-flight large-data transfers, keyed by data_id. The AT#LD chunk SN field is
+# the sensor's 16-bit device id, while AT#LDINIT announces the 64-bit serial
+# number, so chunks are correlated to their transfer by data_id, not SN.
+_ld_xfers: dict[int, dict] = {}
 
 
 def parse_sn_hex(s: str) -> int:
@@ -371,6 +395,94 @@ def _handle_at_report_line(line: str) -> tuple[bool, str, dict | None]:
     return True, summary, parsed
 
 
+def _handle_at_ldinit_line(line: str) -> tuple[bool, str, dict | None]:
+    """Parse + CRC16-verify one AT#LDINIT line as emitted by the GATEWAY forward
+    path (send_at_large_data_init in src/large_data.c) — 8 quoted fields, WITH a
+    report timestamp (uint64 ms):
+        AT#LDINIT="<SN>","<ID>","<TIMESTAMP>","<TOTAL_SIZE>","<TOTAL_CHUNKS>",
+                  "<LAST_CHUNK_SIZE>","<CRC32>","<CRC16>"
+
+    The CCITT-FALSE CRC16 covers the metadata packed big-endian as
+    <SN:u64><ID:u16><TIMESTAMP:u64><TOTAL_SIZE:u32><TOTAL_CHUNKS:u16>
+    <LAST_CHUNK_SIZE:u16><CRC32:u32>. CRC32 is the whole-blob checksum, re-checked
+    on reassembly. (This is asymmetric with the sensor-side AT#LDINIT, which has
+    7 fields and no timestamp — see cmd_ld_init().)
+
+    Returns (ok, summary, parsed) like _handle_at_config_line.
+    """
+    fields = _extract_quoted_fields(line)
+    if fields is None or len(fields) < 8:
+        return False, f"malformed: expected 8 quoted fields, got {fields!r}", None
+
+    (sn_hex, id_hex, ts_hex, total_hex, chunks_hex,
+     last_hex, crc32_hex, crc16_hex) = fields[:8]
+    try:
+        sn              = int(sn_hex, 16)
+        data_id         = int(id_hex, 16)
+        timestamp       = int(ts_hex, 16)
+        total_size      = int(total_hex, 16)
+        total_chunks    = int(chunks_hex, 16)
+        last_chunk_size = int(last_hex, 16)
+        crc32           = int(crc32_hex, 16)
+        crc16           = int(crc16_hex, 16)
+    except ValueError as e:
+        return False, f"bad hex in header: {e}", None
+
+    meta = struct.pack(">QHQIHHI", sn & 0xFFFFFFFFFFFFFFFF, data_id & 0xFFFF,
+                       timestamp & 0xFFFFFFFFFFFFFFFF, total_size & 0xFFFFFFFF,
+                       total_chunks & 0xFFFF, last_chunk_size & 0xFFFF,
+                       crc32 & 0xFFFFFFFF)
+    calc = _crc16_ccitt(meta)
+    if calc != crc16:
+        return False, f"CRC16 mismatch: header 0x{crc16:04X}, calc 0x{calc:04X}", None
+
+    summary = (f"sn=0x{sn:016X} id={data_id} ts={timestamp}ms total={total_size} "
+               f"chunks={total_chunks} last={last_chunk_size} crc32=0x{crc32:08X}")
+    parsed = {
+        "sn": sn, "data_id": data_id, "timestamp": timestamp,
+        "total_size": total_size, "total_chunks": total_chunks,
+        "last_chunk_size": last_chunk_size, "crc32": crc32, "crc16": crc16,
+    }
+    return True, summary, parsed
+
+
+def _handle_at_ld_line(line: str) -> tuple[bool, str, dict | None]:
+    """Parse one AT#LD chunk as emitted by the GATEWAY forward path
+    (at_send_next_chunk in src/large_data.c) — 5 quoted fields, NO per-chunk
+    CRC16 (integrity is the whole-blob CRC32 from AT#LDINIT):
+        AT#LD="<SN>","<ID>","<PAGE>","<CHUNK>","<DATA hex>"
+
+    The SN field here is the sensor's 16-bit device id, not the serial number.
+    Returns (ok, summary, parsed) with the linear chunk index and raw payload.
+    """
+    fields = _extract_quoted_fields(line)
+    if fields is None or len(fields) < 5:
+        return False, f"malformed: expected 5 quoted fields, got {fields!r}", None
+
+    sn_hex, id_hex, page_hex, chunk_hex, data_hex = fields[:5]
+    try:
+        sn      = int(sn_hex, 16)
+        data_id = int(id_hex, 16)
+        page    = int(page_hex, 16)
+        chunk   = int(chunk_hex, 16)
+    except ValueError as e:
+        return False, f"bad hex in header: {e}", None
+
+    try:
+        payload = bytes.fromhex(data_hex)
+    except ValueError as e:
+        return False, f"bad hex in payload: {e}", None
+
+    linear = page * LD_CHUNKS_PER_PAGE + chunk
+    summary = (f"sn=0x{sn:016X} id={data_id} page={page} chunk={chunk} "
+               f"linear={linear} len={len(payload)}")
+    parsed = {
+        "sn": sn, "data_id": data_id, "page": page, "chunk": chunk,
+        "linear": linear, "payload": payload,
+    }
+    return True, summary, parsed
+
+
 # Status codes mirrored from src/protocol.h. Used to render AT#CONFIGRES.
 _STATUS_NAMES = {
     0x00: "SUCCESS",
@@ -486,14 +598,108 @@ def _auto_reply_to_at_report(client: "ATClient", line: str) -> str:
         return f"ERROR — {summary}"
 
 
+def _auto_reply_to_at_ldinit(client: "ATClient", line: str) -> str:
+    """If 'line' is an AT#LDINIT=... announcement, verify its CRC16, open a
+    reassembly buffer, and reply '#LDINIT: "<sn>","<id>","<total>","<chunks>"'
+    followed by OK so the gateway's flow-controlled sender starts streaming
+    AT#LD chunks. On any failure, reply ERROR.
+
+    The gateway parses this ack with field_hex_u64() (cmd_ld_init_ack), so every
+    field must be BARE hex — a '0x' prefix fails — and it matches the transfer by
+    SN + data_id, so both must be hex (total_size/total_chunks are echoed for
+    symmetry but the firmware ignores them).
+    """
+    ok, summary, parsed = _handle_at_ldinit_line(line)
+    _dbg(f"_auto_reply (ldinit) parsed ok={ok}: {summary}")
+    if not ok:
+        n = client.ser.write(b"\r\nERROR\r\n")
+        client.ser.flush()
+        _dbg(f"wrote {n} bytes (ERROR reply)")
+        return f"ERROR — {summary}"
+
+    _ld_xfers[parsed["data_id"]] = {
+        "sn": parsed["sn"], "data_id": parsed["data_id"],
+        "total_size": parsed["total_size"],
+        "total_chunks": parsed["total_chunks"],
+        "last_chunk_size": parsed["last_chunk_size"],
+        "crc32": parsed["crc32"], "chunks": {},
+    }
+    ack = (
+        f'\r\n#LDINIT: "{parsed["sn"]:016X}",'
+        f'"{parsed["data_id"]:04X}","{parsed["total_size"]:08X}",'
+        f'"{parsed["total_chunks"]:04X}"\r\n'
+    ).encode("ascii")
+    _dbg(f"writing LDINIT ACK {ack!r} then OK")
+    n1 = client.ser.write(ack)
+    n2 = client.ser.write(b"\r\nOK\r\n")
+    client.ser.flush()
+    _dbg(f"wrote {n1} + {n2} bytes (OK reply)")
+    return f"OK — {summary}"
+
+
+def _auto_reply_to_at_ld(client: "ATClient", line: str) -> str:
+    """If 'line' is an AT#LD=... chunk, stage it and reply OK. When every chunk
+    of the announced transfer has arrived, reassemble in linear order, verify the
+    whole-blob CRC32 from AT#LDINIT, and report the result.
+
+    Chunks are correlated to their transfer by data_id (the AT#LD SN field is a
+    device id, not the serial number AT#LDINIT announced).
+    """
+    ok, summary, parsed = _handle_at_ld_line(line)
+    _dbg(f"_auto_reply (ld) parsed ok={ok}: {summary}")
+    if not ok:
+        client.ser.write(b"\r\nERROR\r\n")
+        client.ser.flush()
+        return f"ERROR — {summary}"
+
+    # Per-chunk flow control mirrors AT#LDINIT: write '#LD: "<sn>","<id>",
+    # "<page>","<chunk>"' (arms the device's chunk pending-ack via
+    # cmd_ld_chunk_ack) THEN OK (which advances it to send the next chunk).
+    # Bare hex only — field_hex_u64 rejects a '0x' prefix.
+    ld_ack = (
+        f'\r\n#LD: "{parsed["sn"]:016X}","{parsed["data_id"]:04X}",'
+        f'"{parsed["page"]:04X}","{parsed["chunk"]:04X}"\r\n'
+    ).encode("ascii")
+    _dbg(f"writing LD ACK {ld_ack!r} then OK")
+    client.ser.write(ld_ack)
+    client.ser.write(b"\r\nOK\r\n")
+    client.ser.flush()
+
+    xfer = _ld_xfers.get(parsed["data_id"])
+    if xfer is None:
+        # Chunk with no matching AT#LDINIT — still acked above so the device's
+        # sender advances, but we can't place it.
+        return f"#LD+OK (no active transfer for id={parsed['data_id']}) — {summary}"
+
+    xfer["chunks"][parsed["linear"]] = parsed["payload"]
+
+    received = len(xfer["chunks"])
+    total = xfer["total_chunks"]
+    if received < total:
+        return f"#LD+OK {received}/{total} — {summary}"
+
+    # All chunks in — reassemble and verify end-to-end.
+    _ld_xfers.pop(parsed["data_id"], None)
+    blob = b"".join(xfer["chunks"][i] for i in sorted(xfer["chunks"]))
+    if len(blob) != xfer["total_size"]:
+        status = f"SIZE ERR ({len(blob)} != {xfer['total_size']})"
+    else:
+        calc = zlib.crc32(blob) & 0xFFFFFFFF
+        status = "OK" if calc == xfer["crc32"] else \
+                 f"CRC32 ERR (calc 0x{calc:08X} != header 0x{xfer['crc32']:08X})"
+    return (f"LARGE DATA complete: sn=0x{xfer['sn']:016X} id={xfer['data_id']} "
+            f"{len(blob)} B in {total} chunks [{status}]")
+
+
 def run_downstream(client: "ATClient") -> int:
     """Continuously read lines from the device and respond to AT#CONFIG.
 
     Acts as the application MCU on the sensor's downstream UART:
       - Wait for incoming complete lines (CR/LF terminated).
-      - For each AT#CONFIG / AT#REPORT line: parse + CRC-verify, then reply
-        OK or ERROR.
-      - Other AT#... lines: reply ERROR (only #CONFIG / #REPORT implemented).
+      - For each AT#CONFIG / AT#REPORT / AT#LDINIT / AT#LD line: parse +
+        CRC-verify, then reply OK or ERROR (reassembling large-data transfers
+        and checking their whole-blob CRC32 on completion).
+      - Other AT#... lines: reply ERROR (only the above are implemented).
       - Non-AT lines: log them and ignore (don't reply).
 
     Ctrl-C exits cleanly.
@@ -531,6 +737,12 @@ def run_downstream(client: "ATClient") -> int:
                     print(f"           {status}")
                 elif line.startswith("AT#REPORT="):
                     status = _auto_reply_to_at_report(client, line)
+                    print(f"           {status}")
+                elif line.startswith("AT#LDINIT="):
+                    status = _auto_reply_to_at_ldinit(client, line)
+                    print(f"           {status}")
+                elif line.startswith("AT#LD="):
+                    status = _auto_reply_to_at_ld(client, line)
                     print(f"           {status}")
                 elif line.startswith("AT"):
                     print("           (unknown AT command, replying ERROR)")
@@ -616,6 +828,10 @@ def _reader_loop(client: ATClient, stop_evt: threading.Event,
                     extra = f">>> {_auto_reply_to_at_config(client, line)}"
                 elif line.startswith("AT#REPORT="):
                     extra = f">>> {_auto_reply_to_at_report(client, line)}"
+                elif line.startswith("AT#LDINIT="):
+                    extra = f">>> {_auto_reply_to_at_ldinit(client, line)}"
+                elif line.startswith("AT#LD="):
+                    extra = f">>> {_auto_reply_to_at_ld(client, line)}"
             except Exception as e:
                 extra = f">>> handler error: {e!r}"
                 _dbg(f"reader: handler raised on line {line!r}:\n{traceback.format_exc()}")

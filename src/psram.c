@@ -28,6 +28,8 @@ LOG_MODULE_REGISTER(psram, CONFIG_PSRAM_LOG_LEVEL);
 #define PSRAM_MFG_ID     0x0D
 #define PSRAM_KGD_ID     0x5D
 
+#define PSRAM_PAGE_SIZE  1024
+
 static const struct spi_dt_spec psram_spi = SPI_DT_SPEC_GET(
 	DT_NODELABEL(psram),
 	SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER,
@@ -112,26 +114,42 @@ int psram_read(uint32_t addr, void *buf, size_t len)
 		return -EINVAL;
 	}
 
-	/* TX: command + 24-bit address. */
-	uint8_t cmd[4] = {
-		PSRAM_CMD_READ,
-		(addr >> 16) & 0xFF,
-		(addr >> 8) & 0xFF,
-		addr & 0xFF,
-	};
-
-	struct spi_buf tx_bufs[] = {
-		{ .buf = cmd, .len = sizeof(cmd) },
-	};
-	struct spi_buf rx_bufs[] = {
-		{ .buf = NULL, .len = sizeof(cmd) },  /* skip cmd bytes on RX */
-		{ .buf = buf, .len = len },
-	};
-	struct spi_buf_set tx_set = { .buffers = tx_bufs, .count = 1 };
-	struct spi_buf_set rx_set = { .buffers = rx_bufs, .count = 2 };
+	uint8_t *dst = buf;
+	int err = 0;
 
 	spi_bus_lock();
-	int err = spi_transceive_dt(&psram_spi, &tx_set, &rx_set);
+	while (len > 0) {
+		/* Never let a single burst cross a 1024-byte page boundary. */
+		size_t page_left = PSRAM_PAGE_SIZE - (addr & (PSRAM_PAGE_SIZE - 1));
+		size_t n = (len < page_left) ? len : page_left;
+
+		/* TX: command + 24-bit address. */
+		uint8_t cmd[4] = {
+			PSRAM_CMD_READ,
+			(addr >> 16) & 0xFF,
+			(addr >> 8) & 0xFF,
+			addr & 0xFF,
+		};
+
+		struct spi_buf tx_bufs[] = {
+			{ .buf = cmd, .len = sizeof(cmd) },
+		};
+		struct spi_buf rx_bufs[] = {
+			{ .buf = NULL, .len = sizeof(cmd) },  /* skip cmd bytes on RX */
+			{ .buf = dst, .len = n },
+		};
+		struct spi_buf_set tx_set = { .buffers = tx_bufs, .count = 1 };
+		struct spi_buf_set rx_set = { .buffers = rx_bufs, .count = 2 };
+
+		err = spi_transceive_dt(&psram_spi, &tx_set, &rx_set);
+		if (err) {
+			break;
+		}
+
+		addr += n;
+		dst += n;
+		len -= n;
+	}
 	spi_bus_unlock();
 
 	return err;
@@ -149,22 +167,38 @@ int psram_write(uint32_t addr, const void *buf, size_t len)
 		return -EINVAL;
 	}
 
-	/* TX: command + 24-bit address + data. */
-	uint8_t cmd[4] = {
-		PSRAM_CMD_WRITE,
-		(addr >> 16) & 0xFF,
-		(addr >> 8) & 0xFF,
-		addr & 0xFF,
-	};
-
-	struct spi_buf tx_bufs[] = {
-		{ .buf = cmd, .len = sizeof(cmd) },
-		{ .buf = (void *)buf, .len = len },
-	};
-	struct spi_buf_set tx_set = { .buffers = tx_bufs, .count = 2 };
+	const uint8_t *src = buf;
+	int err = 0;
 
 	spi_bus_lock();
-	int err = spi_write_dt(&psram_spi, &tx_set);
+	while (len > 0) {
+		/* Never let a single burst cross a 1024-byte page boundary. */
+		size_t page_left = PSRAM_PAGE_SIZE - (addr & (PSRAM_PAGE_SIZE - 1));
+		size_t n = (len < page_left) ? len : page_left;
+
+		/* TX: command + 24-bit address + data. */
+		uint8_t cmd[4] = {
+			PSRAM_CMD_WRITE,
+			(addr >> 16) & 0xFF,
+			(addr >> 8) & 0xFF,
+			addr & 0xFF,
+		};
+
+		struct spi_buf tx_bufs[] = {
+			{ .buf = cmd, .len = sizeof(cmd) },
+			{ .buf = (void *)src, .len = n },
+		};
+		struct spi_buf_set tx_set = { .buffers = tx_bufs, .count = 2 };
+
+		err = spi_write_dt(&psram_spi, &tx_set);
+		if (err) {
+			break;
+		}
+
+		addr += n;
+		src += n;
+		len -= n;
+	}
 	spi_bus_unlock();
 
 	return err;

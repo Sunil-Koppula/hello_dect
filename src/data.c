@@ -148,19 +148,47 @@ static uint8_t chunk_size_for(uint8_t chunk_idx, uint8_t sender_idx)
 
 static int send_next_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t sender_idx)
 {
-	uint8_t idx = report_sender[sender_idx].next_chunk;
-	if (idx >= report_sender[sender_idx].chunk_count) {
-		LOG_ERR("send_next_chunk called but all chunks already sent");
+	for (int i = 0; i < (report_sender[sender_idx].total_size + SEND_DATA_MAX - 1) / SEND_DATA_MAX; i++) {
+		uint8_t idx = report_sender[sender_idx].next_chunk;
+		if (idx >= report_sender[sender_idx].chunk_count) {
+			LOG_ERR("send_next_chunk called but all chunks already sent");
+			return -EINVAL;
+		}
+		uint8_t csz = chunk_size_for(idx, sender_idx);
+
+		memset(&chunk_pkt, 0, sizeof(chunk_pkt));
+		chunk_pkt.gen_device_id = report_sender[sender_idx].gen_device_id;
+		chunk_pkt.data_id = report_sender[sender_idx].data_id;
+		chunk_pkt.chunk_index = idx;
+
+		uint32_t addr = slot_psram_addr(0) + (uint32_t)idx * SEND_DATA_MAX;
+		int err = psram_read(addr, chunk_pkt.data, csz);
+		if (err) {
+			LOG_ERR("psram_read @0x%06x failed (%d), aborting transfer", addr, err);
+			report_sender[sender_idx].active = false;
+			return err;
+		}
+
+		send_report_chunk(&chunk_pkt, dst_id, dst_type, report_sender[sender_idx].priority, sender_idx);
+		report_sender[sender_idx].next_chunk = idx + 1;
+	}
+	return 0;
+}
+
+static int resend_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t sender_idx, uint8_t chunk_idx)
+{
+	if (chunk_idx >= report_sender[sender_idx].chunk_count) {
+		LOG_ERR("resend_chunk called with invalid chunk_idx %d", chunk_idx);
 		return -EINVAL;
 	}
-	uint8_t csz = chunk_size_for(idx, sender_idx);
+	uint8_t csz = chunk_size_for(chunk_idx, sender_idx);
 
 	memset(&chunk_pkt, 0, sizeof(chunk_pkt));
 	chunk_pkt.gen_device_id = report_sender[sender_idx].gen_device_id;
 	chunk_pkt.data_id = report_sender[sender_idx].data_id;
-	chunk_pkt.chunk_index = idx;
+	chunk_pkt.chunk_index = chunk_idx;
 
-	uint32_t addr = slot_psram_addr(0) + (uint32_t)idx * SEND_DATA_MAX;
+	uint32_t addr = slot_psram_addr(0) + (uint32_t)chunk_idx * SEND_DATA_MAX;
 	int err = psram_read(addr, chunk_pkt.data, csz);
 	if (err) {
 		LOG_ERR("psram_read @0x%06x failed (%d), aborting transfer", addr, err);
@@ -169,7 +197,6 @@ static int send_next_chunk(uint16_t dst_id, uint8_t dst_type, uint8_t sender_idx
 	}
 
 	send_report_chunk(&chunk_pkt, dst_id, dst_type, report_sender[sender_idx].priority, sender_idx);
-	report_sender[sender_idx].next_chunk = idx + 1;
 	return 0;
 }
 
@@ -886,17 +913,11 @@ void handle_report_chunk_ack(const report_chunk_ack_t *pkt, uint16_t dst_id, int
 					return;
 				} else if (pkt->hdr.status == STATUS_FAILURE || pkt->hdr.status == STATUS_INVALID_PARAMETER) {
 					// Rebuild same chunk and resend
-					report_sender[sender_idx].next_chunk--;
-				}
-				// Send next chunk if status is success
-				if (send_next_chunk(dst_id, pkt->hdr.device_type, sender_idx) != 0) {
-					report_sender[sender_idx].active = false;
-					int idx = find_slot(report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
-					if (idx < 0) {
-						LOG_ERR("No active slot found for gen %d data_id %d on chunk ack error, this should not happen", report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+					if (resend_chunk(dst_id, pkt->hdr.device_type, sender_idx, pkt->chunk_index) != 0) {
+						LOG_ERR("Failed to resend chunk %d for gen %d data_id %d after receiving failure ack, marking sender inactive to retry", pkt->chunk_index, report_sender[sender_idx].gen_device_id, report_sender[sender_idx].data_id);
+						report_sender[sender_idx].active = false;
 						return;
 					}
-					report_slot[idx].is_sent = false;
 				}
 			} else {
 				// Reject report chunk ack except from gateway and anchor
@@ -1208,4 +1229,141 @@ int report_slot_release_by_id(uint16_t device_id, uint16_t report_id, bool is_su
 	}
 	LOG_WRN("No active slot found for report ID:%d to release", report_id);
 	return -ENOENT;
+}
+
+void cmd_report(const char *args)
+{
+    if (get_device_type() != DEVICE_TYPE_SENSOR) {
+        at_error();
+        return;
+    }
+
+    if (get_connected_device_id() == 0xFFFF) {
+        LOG_WRN("AT#REPORT received but no paired device");
+        at_error();
+        return;
+    }
+
+    /* Fields 0..4: sn, id, len, prio, crc32 (all quoted hex). */
+    uint64_t v_sn, v_id, v_len, v_prio, v_crc;
+    if (field_hex_u64(args, 0, &v_sn)  != 0) { at_error(); return; }
+    if (field_hex_u64(args, 1, &v_id)  != 0) { at_error(); return; }
+    if (field_hex_u64(args, 2, &v_len) != 0) { at_error(); return; }
+    if (field_hex_u64(args, 3, &v_prio) != 0) { at_error(); return; }
+    if (field_hex_u64(args, 4, &v_crc) != 0) { at_error(); return; }
+
+    if (v_id > 0xFFFF || v_len == 0 || v_len > MAX_REPORT_SIZE || v_crc > 0xFFFFFFFF) {
+        at_error();
+        return;
+    }
+
+    slm_at_structure_t report = {
+        .data_id = (uint16_t)v_id,
+        .data_len = (uint16_t)v_len,
+        .data_crc32 = (uint32_t)v_crc,
+    };
+
+    uint64_t sn = v_sn;
+
+    /* Field 5: the payload hex. */
+    size_t      hex_len;
+    const char *payload_hex = field_get(args, 5, &hex_len);
+    if (payload_hex == NULL || hex_len != (size_t)report.data_len * 2) {
+        at_error();
+        return;
+    }
+
+    uint8_t payload[MAX_REPORT_SIZE];
+    int     decoded = hex_decode(payload_hex, hex_len, payload, sizeof(payload));
+    if (decoded < 0 || decoded != report.data_len) {
+        at_error();
+        return;
+    }
+
+    /* CRC32 over the payload must match. */
+    uint32_t calc_crc32 = crc32_ieee(payload, (size_t)decoded);
+    if (calc_crc32 != report.data_crc32) {
+        LOG_WRN("AT#REPORT sn=0x%016llx id=%u CRC mismatch: got 0x%08x, calc 0x%08x",
+                (unsigned long long)sn, report.data_id, report.data_crc32, calc_crc32);
+        at_error();
+        return;
+    }
+
+    /* SN should match this sensor's SN. */
+    if (sn != get_serial_number()) {
+        LOG_WRN("AT#REPORT SN mismatch: got 0x%016llx, expected 0x%016llx", (unsigned long long)sn, (unsigned long long)get_serial_number());
+        at_error();
+        return;
+    }
+
+    int err = validate_at_report(&report, (uint8_t)v_prio, payload);
+    if (err < 0) {
+        at_error();
+        return;
+    }
+
+    LOG_INF("AT#REPORT accepted: sn=0x%016llx %s ID:%d len=%u",
+            (unsigned long long)sn,
+            device_type_str(get_device_type()),
+            report.data_id, report.data_len);
+         
+    char resp[SLM_UART_STRING_MESSAGE_SIZE_MAX];
+    snprintf(resp, sizeof(resp),
+        "#REPORT:\"0x%016llx\",\"%u\",\"%u\",\"0x%08lx\"",
+        (unsigned long long)sn, report.data_id, report.data_len,
+        (unsigned long)report.data_crc32);
+    at_send_line(resp);
+    at_ok();
+}
+
+void cmd_report_ack(const char *args)
+{
+    uint64_t v_sn, v_id;
+    if (field_hex_u64(args, 0, &v_sn) != 0) {
+        LOG_WRN("AT#REPORT_ACK missing or invalid SN field");
+        return;
+    }
+    if (field_hex_u64(args, 1, &v_id) != 0) {
+        LOG_WRN("AT#REPORT_ACK missing or invalid ID field");
+        return;
+    }
+
+    if (v_id > 0xFFFF) {
+        LOG_WRN("AT#REPORT_ACK invalid ID value %lu", (unsigned long)v_id);
+        return;
+    }
+
+    /* SN must be a known mesh device. */
+    uint16_t mesh_idx;
+    uint8_t hop_num;
+    bool     found = false;
+    for (mesh_idx = 0; mesh_idx < mesh_count; mesh_idx++) {
+        if (mesh_devices[mesh_idx].serial_num == v_sn) {
+            found = true;
+            break;
+        }
+    }
+    if (found) {
+        hop_num = find_hop_num(mesh_devices[mesh_idx].device_id, mesh_devices[mesh_idx].device_type);
+        if (hop_num == 0xFF) {
+            found = false;
+            LOG_WRN("AT#REPORT: SN 0x%016llx in mesh but no route found", (unsigned long long)v_sn);
+        }
+    }
+    if (!found) {
+        LOG_WRN("AT#REPORT: SN 0x%016llx not in mesh", (unsigned long long)v_sn);
+        return;
+    }
+
+	at_pending_ack_t ack = {
+		.data_type = DATA_TYPE_REPORT,
+		.sn = v_sn,
+		.id = (uint16_t)v_id,
+		.page = 0,
+		.chunk = 0,
+	};
+	set_at_pending_ack(ack);
+
+    LOG_INF("Received AT#REPORT_ACK for SN 0x%016llx ID %u",
+            (unsigned long long)v_sn, (unsigned)v_id);
 }

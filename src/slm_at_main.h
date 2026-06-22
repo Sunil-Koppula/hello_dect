@@ -21,7 +21,15 @@
 extern "C" {
 #endif
 
-#define AT_DATA_PAYLOAD_MAX 450
+#define AT_DATA_PAYLOAD_MAX 472
+
+typedef struct {
+    uint8_t data_type;
+    uint64_t sn;
+    uint16_t id;
+    int8_t page;
+    int8_t chunk;
+} at_pending_ack_t;
 
 typedef struct {
     uint16_t device_id;
@@ -80,6 +88,8 @@ void at_error(void);
 /** @brief Emit "\r\n<s>\r\n" as an AT response line. */
 void at_send_line(const char *s);
 
+/** @brief  Set the pending AT acknowledgment. */
+void set_at_pending_ack(at_pending_ack_t ack);
 
 #ifdef __cplusplus
 }

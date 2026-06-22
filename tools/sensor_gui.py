@@ -97,8 +97,10 @@ class SensorWorker:
 
     # -- large-data (AT#LDINIT + AT#LD) ----------------------------------
     def send_large_data(self, total_bytes: int) -> None:
-        """Kick off a dummy sound-record large-data transfer on a background
-        thread so the Tk loop stays responsive. Ignored if one is in flight."""
+        """Kick off a dummy large-data transfer on a background thread so the Tk
+        loop stays responsive. total_bytes is the WHOLE sensor_large_data_
+        structure_t size (header + report_info_3300 + sound_record), so "100 KB"
+        is 100 KB total. Ignored if one is in flight."""
         if self._ld_busy:
             self.log("LD: a transfer is already in progress")
             return
@@ -109,7 +111,13 @@ class SensorWorker:
     def _ld_worker(self, total_bytes: int) -> None:
         data_id = self.ld_data_id
         try:
-            blob = sim.make_dummy_sound_record(total_bytes)
+            # The transfer payload is a serialized sensor_large_data_structure_t
+            # sized so the WHOLE blob (header + report_info_3300 + sound_record)
+            # is exactly total_bytes — the sound_record is sized to fill it.
+            sound_len = sim.ld_sound_record_len_for_total(total_bytes)
+            sound_record = sim.make_dummy_sound_record(sound_len)
+            blob = sim.build_large_data_blob(self.state, sound_record)
+            assert len(blob) == total_bytes
             chunks = list(sim.iter_ld_chunks(blob))
             n = len(chunks)
             last = len(chunks[-1][2])
@@ -414,6 +422,8 @@ class SensorGUI(tk.Tk):
 
         # Large-data (sound record) test transfers — own row, below Stop alarm.
         ttk.Label(f, text="Large data:").grid(row=4, column=0, sticky="w", pady=4)
+        # Sizes are the WHOLE structure (header + report_info_3300 + sound_record);
+        # 200 KB is the max (SENSOR_LARGE_DATA_INFO_MAX).
         ttk.Button(f, text="Send LD 100KB",
                    command=lambda: self.worker.send_large_data(100 * 1024)
                    ).grid(row=4, column=1, columnspan=2, padx=4, sticky="w")
